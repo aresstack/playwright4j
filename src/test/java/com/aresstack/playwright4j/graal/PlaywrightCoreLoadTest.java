@@ -29,7 +29,7 @@ final class PlaywrightCoreLoadTest {
 
             assertFalse(message.contains("SyntaxError"), message);
             assertTrue(message.contains("Unsupported Playwright4J module"), message);
-            assertTrue(reporter.missingFunctions().contains("require(./lib/program)"), reporter.missingFunctions().toString());
+            assertTrue(reporter.missingFunctions().contains("require(./lib/cli/programWithTestStub)"), reporter.missingFunctions().toString());
         }
     }
 }
