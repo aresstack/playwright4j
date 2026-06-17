@@ -11,9 +11,6 @@ java {
     }
 }
 
-repositories {
-    mavenCentral()
-}
 
 dependencies {
     api 'org.graalvm.polyglot:polyglot:25.0.0'
@@ -21,6 +18,7 @@ dependencies {
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.13.1'
 }
 
 tasks.withType(JavaCompile).configureEach {
