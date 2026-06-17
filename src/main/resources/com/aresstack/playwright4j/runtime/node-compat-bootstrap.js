@@ -2,6 +2,8 @@
   const modules = {};
   const host = global.__playwright4jHost;
 
+  global.global = global;
+
   function reportMissing(name) {
     host.missingHostFunctionReporter().reportMissingHostFunction(name);
   }
@@ -50,6 +52,16 @@
       const match = String(value).match(/(\.[^./\\]+)$/);
       return match ? match[1] : '';
     },
+    isAbsolute: function (value) {
+      const text = String(value);
+      return text.indexOf('/') === 0 || /^[A-Za-z]:[\\/]/.test(text);
+    },
+    normalize: function (value) {
+      return normalizeResourceName(String(value));
+    },
+    relative: function (from, to) {
+      return String(to).replace(String(from), '').replace(/^[\\/]/, '');
+    },
     sep: '/'
   };
 
@@ -77,45 +89,59 @@
     execFileSync: unsupported('child_process.execFileSync')
   };
 
-  modules.events = {
-    EventEmitter: class EventEmitter {
-      constructor() {
-        this.listenersByName = {};
-      }
-
-      on(name, listener) {
-        this.listenersByName[name] = this.listenersByName[name] || [];
-        this.listenersByName[name].push(listener);
-        return this;
-      }
-
-      once(name, listener) {
-        const self = this;
-        function onceListener() {
-          self.off(name, onceListener);
-          return listener.apply(this, arguments);
-        }
-        return this.on(name, onceListener);
-      }
-
-      off(name, listener) {
-        const listeners = this.listenersByName[name] || [];
-        this.listenersByName[name] = listeners.filter(function (candidate) {
-          return candidate !== listener;
-        });
-        return this;
-      }
-
-      emit(name) {
-        const args = Array.prototype.slice.call(arguments, 1);
-        const listeners = this.listenersByName[name] || [];
-        listeners.slice().forEach(function (listener) {
-          listener.apply(null, args);
-        });
-        return listeners.length > 0;
-      }
+  class EventEmitter {
+    constructor() {
+      this.listenersByName = {};
     }
-  };
+
+    on(name, listener) {
+      this.listenersByName[name] = this.listenersByName[name] || [];
+      this.listenersByName[name].push(listener);
+      return this;
+    }
+
+    once(name, listener) {
+      const self = this;
+      function onceListener() {
+        self.off(name, onceListener);
+        return listener.apply(this, arguments);
+      }
+      return this.on(name, onceListener);
+    }
+
+    off(name, listener) {
+      const listeners = this.listenersByName[name] || [];
+      this.listenersByName[name] = listeners.filter(function (candidate) {
+        return candidate !== listener;
+      });
+      return this;
+    }
+
+    removeListener(name, listener) {
+      return this.off(name, listener);
+    }
+
+    setMaxListeners(value) {
+      this.maxListeners = value;
+      return this;
+    }
+
+    getMaxListeners() {
+      return this.maxListeners || 0;
+    }
+
+    emit(name) {
+      const args = Array.prototype.slice.call(arguments, 1);
+      const listeners = this.listenersByName[name] || [];
+      listeners.slice().forEach(function (listener) {
+        listener.apply(null, args);
+      });
+      return listeners.length > 0;
+    }
+  }
+
+  modules.events = EventEmitter;
+  modules.events.EventEmitter = EventEmitter;
 
   modules.assert = function assert(condition, message) {
     if (!condition) {
@@ -131,6 +157,29 @@
         return String(value);
       }
     },
+    format: function (pattern) {
+      const args = Array.prototype.slice.call(arguments, 1);
+      let index = 0;
+      let result = String(pattern).replace(/%[sdj]/g, function (token) {
+        const value = args[index++];
+
+        if (token === '%j') {
+          try {
+            return JSON.stringify(value);
+          } catch (error) {
+            return '[Circular]';
+          }
+        }
+
+        return String(value);
+      });
+
+      while (index < args.length) {
+        result += ' ' + String(args[index++]);
+      }
+
+      return result;
+    },
     promisify: function (fn) {
       return function () {
         const args = Array.prototype.slice.call(arguments);
@@ -144,12 +193,76 @@
           }));
         });
       };
+    },
+    deprecate: function (fn) {
+      return fn;
+    },
+    inherits: function (constructor, superConstructor) {
+      if (!superConstructor || !superConstructor.prototype) {
+        superConstructor = Object;
+      }
+
+      constructor.super_ = superConstructor;
+      constructor.prototype = Object.create(superConstructor.prototype, {
+        constructor: {
+          value: constructor,
+          enumerable: false,
+          writable: true,
+          configurable: true
+        }
+      });
     }
+  };
+
+  modules.async_hooks = {
+    AsyncLocalStorage: class AsyncLocalStorage {
+      constructor() {
+        this.store = undefined;
+      }
+
+      run(store, callback) {
+        const previousStore = this.store;
+        this.store = store;
+
+        try {
+          return callback();
+        } finally {
+          this.store = previousStore;
+        }
+      }
+
+      getStore() {
+        return this.store;
+      }
+
+      enterWith(store) {
+        this.store = store;
+      }
+
+      disable() {
+        this.store = undefined;
+      }
+    }
+  };
+
+  modules.constants = {
+    O_RDONLY: 0,
+    O_WRONLY: 1,
+    O_RDWR: 2,
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGTERM: 15
   };
 
   modules.crypto = {
     randomBytes: function (size) {
-      return new Uint8Array(size);
+      const bytes = new Uint8Array(size);
+
+      for (let index = 0; index < size; index++) {
+        bytes[index] = Math.floor(Math.random() * 256);
+      }
+
+      return bytes;
     },
     createHash: unsupported('crypto.createHash')
   };
@@ -164,9 +277,15 @@
   };
 
   modules.stream = {
-    Readable: class Readable {},
-    Writable: class Writable {},
-    PassThrough: class PassThrough {}
+    Stream: class Stream extends EventEmitter {},
+    Readable: class Readable extends EventEmitter {},
+    Writable: class Writable extends EventEmitter {},
+    Transform: class Transform extends EventEmitter {
+      pipe(destination) {
+        return destination;
+      }
+    },
+    PassThrough: class PassThrough extends EventEmitter {}
   };
 
   modules.readline = {
@@ -174,14 +293,81 @@
     emitKeypressEvents: unsupported('readline.emitKeypressEvents')
   };
 
-  modules.http = {};
-  modules.https = {};
+  modules.tty = {
+    isatty: function () {
+      return false;
+    }
+  };
+
+  modules.http = {
+    Agent: class Agent {
+      constructor(options) {
+        this.options = options || {};
+      }
+    },
+    request: unsupported('http.request'),
+    get: unsupported('http.get')
+  };
+  modules.https = {
+    Agent: class Agent {
+      constructor(options) {
+        this.options = options || {};
+      }
+    },
+    request: unsupported('https.request'),
+    get: unsupported('https.get')
+  };
   modules.http2 = {};
   modules.dns = {
     lookup: unsupported('dns.lookup'),
     resolve: unsupported('dns.resolve')
   };
-  modules.net = {};
+  modules.net = {
+    Socket: class Socket extends modules.events.EventEmitter {
+      constructor() {
+        super();
+      }
+
+      connect() {
+        return unsupported('net.Socket.connect')();
+      }
+
+      destroy() {
+        return this;
+      }
+    },
+    Server: class Server extends modules.events.EventEmitter {
+      constructor(connectionListener) {
+        super();
+
+        if (connectionListener) {
+          this.on('connection', connectionListener);
+        }
+      }
+
+      listen() {
+        return unsupported('net.Server.listen')();
+      }
+
+      close(callback) {
+        if (callback) {
+          callback();
+        }
+
+        return this;
+      }
+    },
+    isIP: function (value) {
+      return /^\d+\.\d+\.\d+\.\d+$/.test(String(value)) ? 4 : 0;
+    },
+    isIPv4: function (value) {
+      return /^\d+\.\d+\.\d+\.\d+$/.test(String(value));
+    },
+    isIPv6: function (value) {
+      return String(value).indexOf(':') >= 0;
+    },
+    createConnection: unsupported('net.createConnection')
+  };
   modules.tls = {};
   modules.url = {
     URL: global.URL,
@@ -200,6 +386,27 @@
     cwd: function () {
       return host.environment().currentWorkingDirectory();
     },
+    stdin: {
+      fd: 0,
+      isTTY: false,
+      on: function () {
+        return this;
+      }
+    },
+    stdout: {
+      fd: 1,
+      isTTY: false,
+      write: function () {
+        return true;
+      }
+    },
+    stderr: {
+      fd: 2,
+      isTTY: false,
+      write: function () {
+        return true;
+      }
+    },
     nextTick: function (callback) {
       return Promise.resolve().then(callback);
     },
@@ -209,6 +416,8 @@
     }
   };
 
+  modules.process = global.process;
+
   global.Buffer = {
     from: function (value) {
       if (typeof value === 'string') {
@@ -216,12 +425,19 @@
       }
       return value;
     },
+    byteLength: function (value) {
+      return global.Buffer.from(value).length;
+    },
     isBuffer: function () {
       return false;
     },
     alloc: function (size) {
       return new Uint8Array(size);
     }
+  };
+
+  modules.buffer = {
+    Buffer: global.Buffer
   };
 
   global.setImmediate = function (callback) {
@@ -280,10 +496,14 @@
 
     const parentDirectory = dirname(parentResourceName);
     const rawCandidate = normalizeResourceName(parentDirectory + '/' + name);
-    const candidates = [
-      rawCandidate,
+    const hasExplicitExtension = /\.[^/]+$/.test(rawCandidate);
+    const candidates = hasExplicitExtension ? [
+      rawCandidate
+    ] : [
       rawCandidate + '.js',
-      rawCandidate + '/index.js'
+      rawCandidate + '.json',
+      rawCandidate + '/index.js',
+      rawCandidate
     ];
 
     for (let index = 0; index < candidates.length; index++) {
@@ -444,6 +664,24 @@
     return exportsObject;
   }
 
+  function createInitialModuleExports(resourceName) {
+    const exportsObject = {};
+
+    if (resourceName.endsWith('/lib/utils.js') || resourceName.endsWith('/lib/utils/index.js')) {
+      return new Proxy(exportsObject, {
+        get: function (target, property) {
+          if (property === 'assert') {
+            return modules.assert;
+          }
+
+          return target[property];
+        }
+      });
+    }
+
+    return exportsObject;
+  }
+
   function loadCommonJsModule(resourceName) {
     const normalizedResourceName = normalizeResourceName(resourceName);
 
@@ -451,33 +689,45 @@
       return commonJsModuleCache[normalizedResourceName].exports;
     }
 
-    const module = { exports: {} };
+    const module = { exports: createInitialModuleExports(normalizedResourceName) };
     commonJsModuleCache[normalizedResourceName] = module;
 
-    const source = global.__playwright4jDriverBundleSource.readResource(normalizedResourceName);
+    let source = global.__playwright4jDriverBundleSource.readResource(normalizedResourceName);
 
     if (normalizedResourceName.endsWith('.json')) {
       module.exports = JSON.parse(source);
-      module.exports.default = module.exports;
+      Object.defineProperty(module.exports, 'default', {
+        value: module.exports,
+        enumerable: false,
+        configurable: true
+      });
       return module.exports;
     }
 
     const factory = new Function('require', 'module', 'exports', '__filename', '__dirname', source);
-    factory(createRequire(normalizedResourceName), module, module.exports, normalizedResourceName, dirname(normalizedResourceName));
+
+    try {
+      global.__playwright4jCurrentModule = normalizedResourceName;
+      factory(createRequire(normalizedResourceName), module, module.exports, normalizedResourceName, dirname(normalizedResourceName));
+    } catch (error) {
+      error.message = error.message + ' while loading ' + normalizedResourceName;
+      throw error;
+    }
+
     module.exports = installKnownModuleFallbacks(normalizedResourceName, module.exports);
 
     return module.exports;
   }
 
   function createRequire(parentResourceName) {
-    return function require(name) {
+    const requireFunction = function require(name) {
       const normalizedName = name.indexOf('node:') === 0 ? name.substring(5) : name;
 
       if (modules[normalizedName]) {
         return modules[normalizedName];
       }
 
-      if (name.indexOf('./') === 0 || name.indexOf('../') === 0) {
+      if (name === '.' || name === '..' || name.indexOf('./') === 0 || name.indexOf('../') === 0) {
         const resolvedResourceName = resolveRelativeModule(name, parentResourceName);
 
         if (resolvedResourceName) {
@@ -488,6 +738,27 @@
       reportMissing('require(' + name + ')');
       throw new Error('Unsupported Playwright4J module: ' + name);
     };
+
+    requireFunction.resolve = function resolve(name) {
+      const normalizedName = name.indexOf('node:') === 0 ? name.substring(5) : name;
+
+      if (modules[normalizedName]) {
+        return normalizedName;
+      }
+
+      if (name === '.' || name === '..' || name.indexOf('./') === 0 || name.indexOf('../') === 0) {
+        const resolvedResourceName = resolveRelativeModule(name, parentResourceName);
+
+        if (resolvedResourceName) {
+          return resolvedResourceName;
+        }
+      }
+
+      reportMissing('require.resolve(' + name + ')');
+      throw new Error('Unsupported Playwright4J module resolution: ' + name);
+    };
+
+    return requireFunction;
   }
 
   global.require = createRequire('');

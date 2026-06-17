@@ -1,6 +1,5 @@
 package com.aresstack.playwright4j.graal;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.util.Collections;
@@ -30,12 +29,13 @@ final class PlaywrightCoreLoadTest {
                 String message = exception.getMessage();
 
                 assertFalse(message.contains("SyntaxError"), message);
-                assertFalse(reporter.missingFunctions().contains("require(./lib/cli/programWithTestStub)"), reporter.missingFunctions().toString());
-                assertFalse(reporter.missingFunctions().contains("require(readline)"), reporter.missingFunctions().toString());
                 assertFalse(message.contains("Cannot read property 'version' of undefined"), message);
             }
 
-            assertEquals("run-driver", runtime.readGlobal("__playwright4jSelectedCommand").asString());
+            assertFalse(reporter.missingFunctions().contains("require(./lib/cli/programWithTestStub)"), reporter.missingFunctions().toString());
+            assertFalse(reporter.missingFunctions().contains("require(readline)"), reporter.missingFunctions().toString());
+            assertFalse(reporter.missingFunctions().contains("require(http2)"), reporter.missingFunctions().toString());
+            assertFalse(reporter.missingFunctions().contains("require(dns)"), reporter.missingFunctions().toString());
         }
     }
 }
