@@ -32,10 +32,6 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
         evaluateRuntimeResource("node-compat-bootstrap.js");
     }
 
-    public void loadPlaywrightCoreBundle() {
-        evaluateRuntimeResource("playwright-core-bundle.js");
-    }
-
     public Value evaluate(String sourceName, String script) {
         try {
             Source source = Source.newBuilder(LANGUAGE_ID, script, sourceName).build();
