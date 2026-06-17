@@ -23,10 +23,21 @@ import org.junit.jupiter.api.Test;
 final class InstalledChromePlaywrightJavaSpikeTest {
 
     /**
-     * Executes test to launch Chrome and navigate using Playwright
+     * Tests the launch of an installed Chrome browser using the official Playwright Java baseline.
+     * This test assumes that the system property `playwright4j.chromeSpike` is set to true,
+     * and it requires valid configurations for the Chrome executable path and navigation URL.
+     *
+     * The test performs the following steps:
+     * 1. Checks if the prerequisite system property is enabled.
+     * 2. Locates the Chrome executable using predefined paths or a specified system property.
+     * 3. Validates that both the Chrome executable and the navigation URL are valid.
+     * 4. Configures and launches Chromium with the specified options, including the path to the Chrome executable.
+     * 5. Navigates to the specified URL and asserts that the page title matches the expected value.
      */
     @Test
     void launchesInstalledChromeAndNavigatesWithOfficialPlaywrightJavaBaseline() {
+        // Führe den Test nur weiter aus, wenn die Bedingung true ist.
+        // Wenn die Bedingung false ist, schlägt der Test nicht fehl, sondern wird als übersprungen / aborted markiert.
         assumeTrue(Boolean.getBoolean("playwright4j.chromeSpike"),
                 "Enable with -Pplaywright4j.chromeSpike=true");
 
