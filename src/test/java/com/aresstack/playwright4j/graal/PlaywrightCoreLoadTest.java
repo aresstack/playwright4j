@@ -19,17 +19,16 @@ final class PlaywrightCoreLoadTest {
         PlaywrightDriverBundleSource driverBundleSource = new PlaywrightDriverBundleSource(
                 Thread.currentThread().getContextClassLoader());
 
-        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host)) {
+        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {
             runtime.loadNodeCompatibilityLayer();
-            runtime.evaluate(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
-
-            fail("Expected the real Playwright CLI script to reach the next unsupported module boundary.");
+            runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
         } catch (PolyglotException exception) {
             String message = exception.getMessage();
 
             assertFalse(message.contains("SyntaxError"), message);
-            assertTrue(message.contains("Unsupported Playwright4J module"), message);
-            assertTrue(reporter.missingFunctions().contains("require(./lib/cli/programWithTestStub)"), reporter.missingFunctions().toString());
+            assertFalse(reporter.missingFunctions().contains("require(./lib/cli/programWithTestStub)"), reporter.missingFunctions().toString());
+            assertFalse(reporter.missingFunctions().contains("require(readline)"), reporter.missingFunctions().toString());
+            assertFalse(message.contains("Cannot read property 'version' of undefined"), message);
         }
     }
 }

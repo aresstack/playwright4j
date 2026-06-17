@@ -18,6 +18,10 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
     private final Context context;
 
     public GraalPlaywrightRuntime(Playwright4JHost host) {
+        this(host, null);
+    }
+
+    public GraalPlaywrightRuntime(Playwright4JHost host, PlaywrightDriverBundleSource driverBundleSource) {
         this.context = Context.newBuilder(LANGUAGE_ID)
                 .allowHostAccess(createHostAccess())
                 .allowHostClassLookup(new DenyAllHostClassLookup())
@@ -26,6 +30,10 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
                 .build();
 
         this.context.getBindings(LANGUAGE_ID).putMember("__playwright4jHost", host);
+
+        if (driverBundleSource != null) {
+            this.context.getBindings(LANGUAGE_ID).putMember("__playwright4jDriverBundleSource", driverBundleSource);
+        }
     }
 
     public void loadNodeCompatibilityLayer() {
@@ -41,12 +49,72 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
         }
     }
 
+    public Value evaluateCommonJsEntry(String sourceName, String script) {
+        String normalizedScript = removeHashbang(script);
+        String wrapper = "(function(entryScript) {"
+                + "var module = { exports: {} };"
+                + "var require = globalThis.__playwright4jCreateRequire(" + quoteJavaScriptString(sourceName) + ");"
+                + "var factory = new Function('require', 'module', 'exports', '__filename', '__dirname', entryScript);"
+                + "factory(require, module, module.exports, " + quoteJavaScriptString(sourceName) + ", globalThis.__playwright4jDirname(" + quoteJavaScriptString(sourceName) + "));"
+                + "return module.exports;"
+                + "})(" + quoteJavaScriptString(normalizedScript) + ");";
+
+        return evaluate(sourceName + "#commonjs-entry", wrapper);
+    }
+
     public Value readGlobal(String name) {
         return context.getBindings(LANGUAGE_ID).getMember(name);
     }
 
     private void evaluateRuntimeResource(String resourceName) {
         evaluate(resourceName, readRuntimeResource(resourceName));
+    }
+
+    private String removeHashbang(String script) {
+        if (script.startsWith("#!")) {
+            int lineBreakIndex = script.indexOf('\n');
+
+            if (lineBreakIndex >= 0) {
+                return script.substring(lineBreakIndex + 1);
+            }
+
+            return "";
+        }
+
+        return script;
+    }
+
+    private String quoteJavaScriptString(String value) {
+        StringBuilder builder = new StringBuilder();
+        builder.append('\"');
+
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+
+            switch (character) {
+                case '\\':
+                    builder.append("\\\\");
+                    break;
+                case '\"':
+                    builder.append("\\\"");
+                    break;
+                case '\n':
+                    builder.append("\\n");
+                    break;
+                case '\r':
+                    builder.append("\\r");
+                    break;
+                case '\t':
+                    builder.append("\\t");
+                    break;
+                default:
+                    builder.append(character);
+                    break;
+            }
+        }
+
+        builder.append('\"');
+        return builder.toString();
     }
 
     private String readRuntimeResource(String resourceName) {

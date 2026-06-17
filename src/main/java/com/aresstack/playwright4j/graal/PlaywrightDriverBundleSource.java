@@ -26,6 +26,20 @@ public final class PlaywrightDriverBundleSource {
         return readRequiredResource(cliScriptResourceName());
     }
 
+    @org.graalvm.polyglot.HostAccess.Export
+    public boolean hasResource(String resourceName) {
+        try (InputStream inputStream = classLoader.getResourceAsStream(resourceName)) {
+            return inputStream != null;
+        } catch (IOException exception) {
+            throw new IllegalStateException("Could not check Playwright driver-bundle resource: " + resourceName, exception);
+        }
+    }
+
+    @org.graalvm.polyglot.HostAccess.Export
+    public String readResource(String resourceName) {
+        return readRequiredResource(resourceName);
+    }
+
     private String platformDirectory() {
         String operatingSystem = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         String architecture = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);

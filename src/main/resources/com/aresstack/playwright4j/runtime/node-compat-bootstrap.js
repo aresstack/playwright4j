@@ -169,6 +169,11 @@
     PassThrough: class PassThrough {}
   };
 
+  modules.readline = {
+    createInterface: unsupported('readline.createInterface'),
+    emitKeypressEvents: unsupported('readline.emitKeypressEvents')
+  };
+
   modules.http = {};
   modules.https = {};
   modules.net = {};
@@ -221,16 +226,172 @@
     return clearTimeout(handle);
   };
 
-  global.require = function require(name) {
-    const normalizedName = name.indexOf('node:') === 0 ? name.substring(5) : name;
+  const commonJsModuleCache = {};
 
-    if (modules[normalizedName]) {
-      return modules[normalizedName];
+  function normalizeResourceName(resourceName) {
+    const parts = String(resourceName).replace(/\\/g, '/').split('/');
+    const normalizedParts = [];
+
+    for (let index = 0; index < parts.length; index++) {
+      const part = parts[index];
+
+      if (!part || part === '.') {
+        continue;
+      }
+
+      if (part === '..') {
+        normalizedParts.pop();
+        continue;
+      }
+
+      normalizedParts.push(part);
     }
 
-    reportMissing('require(' + name + ')');
-    throw new Error('Unsupported Playwright4J module: ' + name);
-  };
+    return normalizedParts.join('/');
+  }
 
+  function dirname(resourceName) {
+    const normalizedName = normalizeResourceName(resourceName);
+    const lastSeparatorIndex = normalizedName.lastIndexOf('/');
+
+    if (lastSeparatorIndex < 0) {
+      return '';
+    }
+
+    return normalizedName.substring(0, lastSeparatorIndex);
+  }
+
+  function resolveRelativeModule(name, parentResourceName) {
+    if (!global.__playwright4jDriverBundleSource) {
+      return null;
+    }
+
+    const parentDirectory = dirname(parentResourceName);
+    const rawCandidate = normalizeResourceName(parentDirectory + '/' + name);
+    const candidates = [
+      rawCandidate,
+      rawCandidate + '.js',
+      rawCandidate + '/index.js'
+    ];
+
+    for (let index = 0; index < candidates.length; index++) {
+      const candidate = candidates[index];
+
+      if (global.__playwright4jDriverBundleSource.hasResource(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  function createChainableProgramStub() {
+    let proxy;
+    const callable = function () {
+      return proxy;
+    };
+
+    proxy = new Proxy(callable, {
+      get: function (target, property) {
+        if (property === 'opts') {
+          return function () {
+            return {};
+          };
+        }
+
+        if (property === 'commands') {
+          return [];
+        }
+
+        if (property === Symbol.toPrimitive) {
+          return function () {
+            return '';
+          };
+        }
+
+        return function () {
+          return proxy;
+        };
+      }
+    });
+
+    return proxy;
+  }
+
+  function createProgramOptionStub() {
+    return function ProgramOption() {
+      return createChainableProgramStub();
+    };
+  }
+
+  function installKnownModuleFallbacks(resourceName, exportsObject) {
+    if (resourceName.endsWith('/lib/utilsBundle.js') && exportsObject.program === undefined) {
+      return new Proxy(exportsObject, {
+        get: function (target, property) {
+          if (property === 'program') {
+            return createChainableProgramStub();
+          }
+
+          if (property === 'ProgramOption') {
+            return createProgramOptionStub();
+          }
+
+          return target[property];
+        }
+      });
+    }
+
+    return exportsObject;
+  }
+
+  function loadCommonJsModule(resourceName) {
+    const normalizedResourceName = normalizeResourceName(resourceName);
+
+    if (commonJsModuleCache[normalizedResourceName]) {
+      return commonJsModuleCache[normalizedResourceName].exports;
+    }
+
+    const module = { exports: {} };
+    commonJsModuleCache[normalizedResourceName] = module;
+
+    const source = global.__playwright4jDriverBundleSource.readResource(normalizedResourceName);
+
+    if (normalizedResourceName.endsWith('.json')) {
+      module.exports = JSON.parse(source);
+      module.exports.default = module.exports;
+      return module.exports;
+    }
+
+    const factory = new Function('require', 'module', 'exports', '__filename', '__dirname', source);
+    factory(createRequire(normalizedResourceName), module, module.exports, normalizedResourceName, dirname(normalizedResourceName));
+    module.exports = installKnownModuleFallbacks(normalizedResourceName, module.exports);
+
+    return module.exports;
+  }
+
+  function createRequire(parentResourceName) {
+    return function require(name) {
+      const normalizedName = name.indexOf('node:') === 0 ? name.substring(5) : name;
+
+      if (modules[normalizedName]) {
+        return modules[normalizedName];
+      }
+
+      if (name.indexOf('./') === 0 || name.indexOf('../') === 0) {
+        const resolvedResourceName = resolveRelativeModule(name, parentResourceName);
+
+        if (resolvedResourceName) {
+          return loadCommonJsModule(resolvedResourceName);
+        }
+      }
+
+      reportMissing('require(' + name + ')');
+      throw new Error('Unsupported Playwright4J module: ' + name);
+    };
+  }
+
+  global.require = createRequire('');
+  global.__playwright4jCreateRequire = createRequire;
+  global.__playwright4jDirname = dirname;
   global.__playwright4jModules = modules;
 })(globalThis);
