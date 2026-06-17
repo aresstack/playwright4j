@@ -39,11 +39,13 @@ final class InstalledChromePlaywrightJavaSpikeTest {
         Map<String, String> environment = new LinkedHashMap<String, String>();
         environment.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
 
+        // Configures and launches Chromium with specified options; ensures valid Chrome executable and URL
         try (Playwright playwright = Playwright.create(new Playwright.CreateOptions().setEnv(environment))) {
             BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions()
                     .setExecutablePath(chromeExecutable)
                     .setHeadless(Boolean.getBoolean("playwright4j.chrome.headless"));
 
+            // Launches browser, navigates URL, asserts page title
             try (Browser browser = playwright.chromium().launch(launchOptions)) {
                 Page page = browser.newPage();
                 page.navigate(url);
@@ -53,6 +55,9 @@ final class InstalledChromePlaywrightJavaSpikeTest {
         }
     }
 
+    /**
+     * Locates Chrome executable from system properties or predefined paths
+     */
     private Path locateChromeExecutable() {
         String configuredPath = System.getProperty("playwright4j.chrome.executablePath", "");
 
@@ -69,6 +74,9 @@ final class InstalledChromePlaywrightJavaSpikeTest {
         throw new IllegalStateException("Could not locate Google Chrome. Provide -Pplaywright4j.chrome.executablePath=<path-to-chrome.exe>.");
     }
 
+    /**
+     * Builds list of potential Chrome executable paths
+     */
     private List<Path> chromeCandidates() {
         List<Path> candidates = new ArrayList<Path>();
         addCandidate(candidates, System.getenv("PROGRAMFILES"), "Google", "Chrome", "Application", "chrome.exe");
@@ -77,6 +85,9 @@ final class InstalledChromePlaywrightJavaSpikeTest {
         return candidates;
     }
 
+    /**
+     * Adds candidate executable path if root is valid
+     */
     private void addCandidate(List<Path> candidates, String root, String... children) {
         if (root == null || root.isBlank()) {
             return;
