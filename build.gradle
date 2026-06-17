@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'com.aresstack'
+version = '0.1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    api 'org.graalvm.polyglot:polyglot:25.0.0'
+    api 'org.graalvm.polyglot:js:25.0.0'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+test {
+    useJUnitPlatform()
+}
