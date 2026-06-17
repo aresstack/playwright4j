@@ -22,6 +22,9 @@ import org.junit.jupiter.api.Test;
 
 final class InstalledChromePlaywrightJavaSpikeTest {
 
+    /**
+     * Executes test to launch Chrome and navigate using Playwright
+     */
     @Test
     void launchesInstalledChromeAndNavigatesWithOfficialPlaywrightJavaBaseline() {
         assumeTrue(Boolean.getBoolean("playwright4j.chromeSpike"),
