@@ -17,6 +17,11 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
+/**
+ * This final class contains a test method designed to verify the launch of an installed
+ * Chrome browser using the official Playwright Java baseline. The test is executed under specific conditions
+ * and requires proper configuration for successful execution.
+ */
 final class InstalledChromePlaywrightJavaSpikeTest {
 
     /**
