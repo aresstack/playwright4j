@@ -49,6 +49,21 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
         }
     }
 
+    public void setProcessArguments(String... arguments) {
+        StringBuilder script = new StringBuilder("process.argv = [");
+
+        for (int index = 0; index < arguments.length; index++) {
+            if (index > 0) {
+                script.append(", ");
+            }
+
+            script.append(quoteJavaScriptString(arguments[index]));
+        }
+
+        script.append("];");
+        evaluate("playwright4j-process-argv.js", script.toString());
+    }
+
     public Value evaluateCommonJsEntry(String sourceName, String script) {
         String normalizedScript = removeHashbang(script);
         String wrapper = "(function(entryScript) {"

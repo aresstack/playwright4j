@@ -285,7 +285,29 @@
     return null;
   }
 
-  function createChainableProgramStub() {
+  function commandNameFromDeclaration(declaration) {
+    return String(declaration).split(' ')[0].split('[')[0];
+  }
+
+  function firstCommandArgument(argv) {
+    const args = Array.prototype.slice.call(argv || []);
+
+    for (let index = 2; index < args.length; index++) {
+      const argument = String(args[index]);
+
+      if (argument && argument.indexOf('-') !== 0) {
+        return argument;
+      }
+    }
+
+    return '';
+  }
+
+  function createCommandStub(commandName) {
+    const state = {
+      commandName: commandName,
+      action: null
+    };
     let proxy;
     const callable = function () {
       return proxy;
@@ -293,6 +315,70 @@
 
     proxy = new Proxy(callable, {
       get: function (target, property) {
+        if (property === '__playwright4jCommandState') {
+          return state;
+        }
+
+        if (property === 'action') {
+          return function (callback) {
+            state.action = callback;
+            return proxy;
+          };
+        }
+
+        if (property === 'opts') {
+          return function () {
+            return {};
+          };
+        }
+
+        if (property === Symbol.toPrimitive) {
+          return function () {
+            return commandName;
+          };
+        }
+
+        return function () {
+          return proxy;
+        };
+      }
+    });
+
+    return proxy;
+  }
+
+  function createProgramStub() {
+    const commands = {};
+    let proxy;
+    const callable = function () {
+      return proxy;
+    };
+
+    proxy = new Proxy(callable, {
+      get: function (target, property) {
+        if (property === 'command') {
+          return function (declaration) {
+            const commandName = commandNameFromDeclaration(declaration);
+            const command = createCommandStub(commandName);
+            commands[commandName] = command;
+            return command;
+          };
+        }
+
+        if (property === 'parse' || property === 'parseAsync') {
+          return function (argv) {
+            const selectedCommandName = firstCommandArgument(argv || global.process.argv);
+            const command = commands[selectedCommandName];
+            global.__playwright4jSelectedCommand = selectedCommandName;
+
+            if (command && command.__playwright4jCommandState.action) {
+              return command.__playwright4jCommandState.action({});
+            }
+
+            return proxy;
+          };
+        }
+
         if (property === 'opts') {
           return function () {
             return {};
@@ -300,7 +386,9 @@
         }
 
         if (property === 'commands') {
-          return [];
+          return Object.keys(commands).map(function (name) {
+            return commands[name];
+          });
         }
 
         if (property === Symbol.toPrimitive) {
@@ -320,7 +408,7 @@
 
   function createProgramOptionStub() {
     return function ProgramOption() {
-      return createChainableProgramStub();
+      return createCommandStub('option');
     };
   }
 
@@ -329,7 +417,7 @@
       return new Proxy(exportsObject, {
         get: function (target, property) {
           if (property === 'program') {
-            return createChainableProgramStub();
+            return createProgramStub();
           }
 
           if (property === 'ProgramOption') {
