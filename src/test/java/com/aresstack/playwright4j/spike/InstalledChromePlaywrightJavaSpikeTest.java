@@ -12,10 +12,7 @@ import com.microsoft.playwright.Playwright;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -36,12 +33,10 @@ final class InstalledChromePlaywrightJavaSpikeTest {
      */
     @Test
     void launchesInstalledChromeAndNavigatesWithOfficialPlaywrightJavaBaseline() {
-        // Führe den Test nur weiter aus, wenn die Bedingung true ist.
-        // Wenn die Bedingung false ist, schlägt der Test nicht fehl, sondern wird als übersprungen / aborted markiert.
         assumeTrue(Boolean.getBoolean("playwright4j.chromeSpike"),
                 "Enable with -Pplaywright4j.chromeSpike=true");
 
-        Path chromeExecutable = locateChromeExecutable();
+        Path chromeExecutable = new InstalledChromeLocator().locateChromeExecutable();
         String url = System.getProperty("playwright4j.chrome.url");
 
         assertTrue(Files.isRegularFile(chromeExecutable), "Chrome executable must exist: " + chromeExecutable);
@@ -66,45 +61,4 @@ final class InstalledChromePlaywrightJavaSpikeTest {
         }
     }
 
-    /**
-     * Locates Chrome executable from system properties or predefined paths
-     */
-    private Path locateChromeExecutable() {
-        String configuredPath = System.getProperty("playwright4j.chrome.executablePath", "");
-
-        if (!configuredPath.isBlank()) {
-            return Paths.get(configuredPath);
-        }
-
-        for (Path candidate : chromeCandidates()) {
-            if (Files.isRegularFile(candidate)) {
-                return candidate;
-            }
-        }
-
-        throw new IllegalStateException("Could not locate Google Chrome. Provide -Pplaywright4j.chrome.executablePath=<path-to-chrome.exe>.");
-    }
-
-    /**
-     * Builds list of potential Chrome executable paths
-     */
-    private List<Path> chromeCandidates() {
-        List<Path> candidates = new ArrayList<Path>();
-        addCandidate(candidates, System.getenv("PROGRAMFILES"), "Google", "Chrome", "Application", "chrome.exe");
-        addCandidate(candidates, System.getenv("PROGRAMFILES(X86)"), "Google", "Chrome", "Application", "chrome.exe");
-        addCandidate(candidates, System.getenv("LOCALAPPDATA"), "Google", "Chrome", "Application", "chrome.exe");
-        return candidates;
-    }
-
-    /**
-     * Adds candidate executable path if root is valid
-     */
-    private void addCandidate(List<Path> candidates, String root, String... children) {
-        if (root == null || root.isBlank()) {
-            return;
-        }
-
-        Path path = Paths.get(root, children);
-        candidates.add(path);
-    }
 }

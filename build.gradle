@@ -30,6 +30,7 @@ tasks.withType(JavaCompile).configureEach {
 test {
     useJUnitPlatform()
     systemProperty 'playwright4j.chromeSpike', findProperty('playwright4j.chromeSpike') ?: 'false'
+    systemProperty 'playwright4j.graalChromeSpike', findProperty('playwright4j.graalChromeSpike') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
     systemProperty 'playwright4j.chrome.headless', findProperty('playwright4j.chrome.headless') ?: 'false'
     systemProperty 'playwright4j.chrome.url', findProperty('playwright4j.chrome.url') ?: 'data:text/html,<title>Playwright4J Chrome Spike</title><h1>Playwright4J Chrome Spike</h1>'

@@ -26,6 +26,14 @@ public final class PlaywrightDriverBundleSource {
         return readRequiredResource(cliScriptResourceName());
     }
 
+    public String packageResourceName(String packageRelativePath) {
+        return "driver/" + platformDirectory() + "/package/" + packageRelativePath;
+    }
+
+    public String readPackageResource(String packageRelativePath) {
+        return readRequiredResource(packageResourceName(packageRelativePath));
+    }
+
     @org.graalvm.polyglot.HostAccess.Export
     public boolean hasResource(String resourceName) {
         try (InputStream inputStream = classLoader.getResourceAsStream(resourceName)) {

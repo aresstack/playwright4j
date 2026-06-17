@@ -176,6 +176,11 @@
 
   modules.http = {};
   modules.https = {};
+  modules.http2 = {};
+  modules.dns = {
+    lookup: unsupported('dns.lookup'),
+    resolve: unsupported('dns.resolve')
+  };
   modules.net = {};
   modules.tls = {};
   modules.url = {
@@ -198,8 +203,9 @@
     nextTick: function (callback) {
       return Promise.resolve().then(callback);
     },
+    version: 'v20.0.0',
     versions: {
-      node: '0.0.0-playwright4j'
+      node: '20.0.0'
     }
   };
 
@@ -224,6 +230,12 @@
 
   global.clearImmediate = function (handle) {
     return clearTimeout(handle);
+  };
+
+  global.performance = {
+    now: function () {
+      return Date.now();
+    }
   };
 
   const commonJsModuleCache = {};

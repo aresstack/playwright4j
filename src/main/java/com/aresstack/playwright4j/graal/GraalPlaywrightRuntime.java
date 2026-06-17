@@ -64,17 +64,28 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
         evaluate("playwright4j-process-argv.js", script.toString());
     }
 
+    public Value evaluateCommonJsEntryAsGlobal(String globalName, String sourceName, String script) {
+        String normalizedScript = removeHashbang(script);
+        String wrapper = "globalThis[" + quoteJavaScriptString(globalName) + "] = "
+                + commonJsEntryExpression(sourceName, normalizedScript) + ";"
+                + "globalThis[" + quoteJavaScriptString(globalName) + "];";
+
+        return evaluate(sourceName + "#commonjs-global", wrapper);
+    }
+
     public Value evaluateCommonJsEntry(String sourceName, String script) {
         String normalizedScript = removeHashbang(script);
-        String wrapper = "(function(entryScript) {"
+        return evaluate(sourceName + "#commonjs-entry", commonJsEntryExpression(sourceName, normalizedScript));
+    }
+
+    private String commonJsEntryExpression(String sourceName, String normalizedScript) {
+        return "(function(entryScript) {"
                 + "var module = { exports: {} };"
                 + "var require = globalThis.__playwright4jCreateRequire(" + quoteJavaScriptString(sourceName) + ");"
                 + "var factory = new Function('require', 'module', 'exports', '__filename', '__dirname', entryScript);"
                 + "factory(require, module, module.exports, " + quoteJavaScriptString(sourceName) + ", globalThis.__playwright4jDirname(" + quoteJavaScriptString(sourceName) + "));"
                 + "return module.exports;"
-                + "})(" + quoteJavaScriptString(normalizedScript) + ");";
-
-        return evaluate(sourceName + "#commonjs-entry", wrapper);
+                + "})(" + quoteJavaScriptString(normalizedScript) + ")";
     }
 
     public Value readGlobal(String name) {
