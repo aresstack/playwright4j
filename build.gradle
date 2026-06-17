@@ -17,6 +17,7 @@ dependencies {
     api 'org.graalvm.polyglot:js:25.0.0'
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
+    testImplementation 'com.microsoft.playwright:playwright:1.59.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.13.1'
     testRuntimeOnly 'com.microsoft.playwright:driver-bundle:1.59.0'
@@ -28,4 +29,8 @@ tasks.withType(JavaCompile).configureEach {
 
 test {
     useJUnitPlatform()
+    systemProperty 'playwright4j.chromeSpike', findProperty('playwright4j.chromeSpike') ?: 'false'
+    systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
+    systemProperty 'playwright4j.chrome.headless', findProperty('playwright4j.chrome.headless') ?: 'false'
+    systemProperty 'playwright4j.chrome.url', findProperty('playwright4j.chrome.url') ?: 'data:text/html,<title>Playwright4J Chrome Spike</title><h1>Playwright4J Chrome Spike</h1>'
 }
