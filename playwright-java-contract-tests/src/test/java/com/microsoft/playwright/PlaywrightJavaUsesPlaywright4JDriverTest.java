@@ -30,6 +30,7 @@ final class PlaywrightJavaUsesPlaywright4JDriverTest {
 
         Path chromeExecutable = locateChromeExecutable();
 
+        // Orchestrates browser session via remote debugging connection
         try (RemoteDebuggingChrome chrome = RemoteDebuggingChrome.start(chromeExecutable);
              Playwright playwright = Playwright.create(new Playwright.CreateOptions()
                      .setEnv(Collections.singletonMap("PW_LANG_NAME", "java")))) {
@@ -42,6 +43,9 @@ final class PlaywrightJavaUsesPlaywright4JDriverTest {
         }
     }
 
+    /**
+     * Resolves Chrome binary location from properties or system paths
+     */
     private Path locateChromeExecutable() {
         String configuredPath = System.getProperty("playwright4j.chrome.executablePath", "");
 
@@ -49,6 +53,7 @@ final class PlaywrightJavaUsesPlaywright4JDriverTest {
             return Paths.get(configuredPath);
         }
 
+        // Defines potential installation paths for Chrome executable
         Path[] candidates = new Path[] {
                 chromeCandidate(System.getenv("PROGRAMFILES")),
                 chromeCandidate(System.getenv("PROGRAMFILES(X86)")),
@@ -64,6 +69,9 @@ final class PlaywrightJavaUsesPlaywright4JDriverTest {
         throw new IllegalStateException("Could not locate Google Chrome. Provide -Pplaywright4j.chrome.executablePath=<path-to-chrome.exe>.");
     }
 
+    /**
+     * Constructs Chrome executable path from root directory
+     */
     private Path chromeCandidate(String root) {
         if (root == null || root.isBlank()) {
             return null;
@@ -84,6 +92,9 @@ final class PlaywrightJavaUsesPlaywright4JDriverTest {
             this.remoteDebuggingPort = remoteDebuggingPort;
         }
 
+        /**
+         * Launches Chrome with remote debugging; returns control once ready
+         */
         static RemoteDebuggingChrome start(Path chromeExecutable) {
             int port = findFreePort();
             Path userDataDirectory = createUserDataDirectory();

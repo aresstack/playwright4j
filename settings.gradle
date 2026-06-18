@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 rootProject.name = 'playwright4j-workspace'
 
 include 'playwright4j'
-include 'playwright-java'
+include 'playwright-java-contract-tests'

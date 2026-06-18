@@ -1,12 +1,15 @@
 plugins {
-    id 'java-library'
+    id 'java'
 }
+
+description = 'Non-published contract tests for the official Playwright Java API against the playwright4j driver replacement.'
 
 ext.upstreamPlaywrightVersion = '1.59.0'
 
 dependencies {
-    implementation project(':playwright4j')
-    implementation("com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}") {
+    testImplementation project(':playwright4j')
+    testImplementation("com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}") {
+        // The contract tests use the official Playwright Java API jar, but not the Microsoft Node driver.
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
     }
