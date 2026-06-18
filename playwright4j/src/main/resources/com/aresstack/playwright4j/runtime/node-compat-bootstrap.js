@@ -250,11 +250,22 @@
     return stream;
   }
 
-  function createBrowserPipe(processId, endpoint) {
+  function closeSpawnedProcess(child) {
+    if (!child || child.__playwright4jClosed) {
+      return;
+    }
+    child.__playwright4jClosed = true;
+    child.killed = true;
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+  }
+
+  function createBrowserPipe(processId, endpoint, child) {
     const pipe = createProcessStream();
     pipe.__playwright4jBrowserPipe = true;
     pipe.__playwright4jProcessId = processId;
     pipe.__playwright4jEndpoint = endpoint;
+    pipe.__playwright4jChildProcess = child;
     return pipe;
   }
 
@@ -262,16 +273,15 @@
     const child = new EventEmitter();
     child.pid = Math.floor(Math.random() * 1000000) + 1;
     child.killed = false;
+    child.__playwright4jClosed = false;
     child.stdin = createProcessStream();
     child.stdout = createProcessStream();
     child.stderr = createProcessStream();
-    child.stdio = [child.stdin, child.stdout, child.stderr, createBrowserPipe(processId, endpoint), createBrowserPipe(processId, endpoint)];
+    child.stdio = [child.stdin, child.stdout, child.stderr, createBrowserPipe(processId, endpoint, child), createBrowserPipe(processId, endpoint, child)];
     child.kill = function () {
-      if (!child.killed) {
-        child.killed = true;
+      if (!child.__playwright4jClosed) {
         host.processLauncher().close(processId);
-        child.emit('exit', 0, null);
-        child.emit('close', 0, null);
+        closeSpawnedProcess(child);
       }
       return true;
     };
@@ -546,6 +556,12 @@
   modules.ws = HostBackedWebSocket;
   modules.ws.WebSocket = HostBackedWebSocket;
 
+  function traceRuntime(message) {
+    if (host.environment().getEnvironmentValue('PLAYWRIGHT4J_TRACE_RUNTIME') === 'true') {
+      host.driverPipe().writeErr('[playwright4j] ' + message + '\n');
+    }
+  }
+
   function requestOptionsToUrl(options) {
     if (typeof options === 'string') {
       return options;
@@ -586,16 +602,25 @@
         chunks.push(String(chunk));
       }
 
+      request.emit('finish');
+      traceRuntime('http.end ' + requestOptionsToUrl(options));
+
       Promise.resolve().then(function () {
         try {
           const method = String(options.method || 'GET').toUpperCase();
-          const response = host.httpClient().request(method, requestOptionsToUrl(options), chunks.join(''));
+          const url = requestOptionsToUrl(options);
+          const response = host.httpClient().request(method, url, chunks.join(''));
+          traceRuntime('http.response ' + response.statusCode() + ' ' + url);
           const incomingMessage = new EventEmitter();
           incomingMessage.statusCode = response.statusCode();
           incomingMessage.headers = {};
+          incomingMessage.rawHeaders = [];
+          incomingMessage.complete = false;
           incomingMessage.setEncoding = function () {
             return incomingMessage;
           };
+
+          request.emit('response', incomingMessage);
 
           if (callback) {
             callback(incomingMessage);
@@ -608,7 +633,10 @@
               incomingMessage.emit('data', body);
             }
 
+            incomingMessage.complete = true;
             incomingMessage.emit('end');
+            incomingMessage.emit('close');
+            request.emit('close');
           });
         } catch (error) {
           request.emit('error', error);
@@ -1043,6 +1071,7 @@
 
   function createHostBackedPipeTransport() {
     const activePipeTransports = [];
+    let drainLoopStarted = false;
 
     function emitTransportMessages(transport, joinedMessages) {
       String(joinedMessages || '').split('\u001e').forEach(function (message) {
@@ -1058,17 +1087,39 @@
       });
     }
 
+    function scheduleBrowserDrainLoop() {
+      if (drainLoopStarted) {
+        return;
+      }
+      drainLoopStarted = true;
+
+      Promise.resolve().then(function drainLoop() {
+        if (activePipeTransports.length === 0) {
+          drainLoopStarted = false;
+          return;
+        }
+
+        activePipeTransports.slice().forEach(function (transport) {
+          transport.drain();
+        });
+        Promise.resolve().then(drainLoop);
+      });
+    }
+
     return class HostBackedPipeTransport {
       constructor(pipeWrite, pipeRead) {
         this.onmessage = undefined;
         this.onclose = undefined;
         this.browserConnectionId = undefined;
         this.browserProcessId = undefined;
+        this.browserChildProcess = undefined;
 
         if (pipeWrite && pipeWrite.__playwright4jBrowserPipe) {
           this.browserProcessId = String(pipeWrite['__playwright4jProcessId']);
+          this.browserChildProcess = pipeWrite.__playwright4jChildProcess;
           this.browserConnectionId = host.webSocketClient().open(String(pipeWrite.__playwright4jEndpoint));
           activePipeTransports.push(this);
+          scheduleBrowserDrainLoop();
         } else {
           global.__playwright4jProtocolTransport = this;
         }
@@ -1079,6 +1130,9 @@
           const payload = typeof message === 'string' ? message : JSON.stringify(message);
           const response = host.webSocketClient().sendAndWait(this.browserConnectionId, payload);
           emitTransportMessages(this, response);
+          if (payload.indexOf('Browser' + '.close') >= 0) {
+            this.close();
+          }
           return undefined;
         }
 
@@ -1095,12 +1149,24 @@
       }
 
       close() {
+        const index = activePipeTransports.indexOf(this);
+        if (index >= 0) {
+          activePipeTransports.splice(index, 1);
+        }
+
         if (this.browserConnectionId) {
           host.webSocketClient().close(this.browserConnectionId);
+          this.browserConnectionId = undefined;
         }
 
         if (this.browserProcessId) {
           host.processLauncher().close(this.browserProcessId);
+          this.browserProcessId = undefined;
+        }
+
+        if (this.browserChildProcess && !this.browserChildProcess.killed) {
+          closeSpawnedProcess(this.browserChildProcess);
+          this.browserChildProcess = undefined;
         }
 
         if (this.onclose) {

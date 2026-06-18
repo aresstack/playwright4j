@@ -48,6 +48,12 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         }
     }
 
+    public void closeAll() {
+        for (String processId : new ArrayList<String>(processes.keySet())) {
+            close(processId);
+        }
+    }
+
     private Process startProcess(String command, List<String> browserArguments, String workingDirectory) throws IOException {
         List<String> commandLine = new ArrayList<String>();
         commandLine.add(command);
