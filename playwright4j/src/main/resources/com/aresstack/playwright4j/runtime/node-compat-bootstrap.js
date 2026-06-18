@@ -557,7 +557,7 @@
   modules.ws.WebSocket = HostBackedWebSocket;
 
   function traceRuntime(message) {
-    if (host.environment().getEnvironmentValue('PLAYWRIGHT4J_TRACE_RUNTIME') === 'true') {
+    if (true || host.environment().getEnvironmentValue('PLAYWRIGHT4J_TRACE_RUNTIME') === 'true') {
       host.driverPipe().writeErr('[playwright4j] ' + message + '\n');
     }
   }
@@ -1071,7 +1071,6 @@
 
   function createHostBackedPipeTransport() {
     const activePipeTransports = [];
-    let drainLoopStarted = false;
 
     function emitTransportMessages(transport, joinedMessages) {
       String(joinedMessages || '').split('\u001e').forEach(function (message) {
@@ -1087,24 +1086,11 @@
       });
     }
 
-    function scheduleBrowserDrainLoop() {
-      if (drainLoopStarted) {
-        return;
-      }
-      drainLoopStarted = true;
-
-      Promise.resolve().then(function drainLoop() {
-        if (activePipeTransports.length === 0) {
-          drainLoopStarted = false;
-          return;
-        }
-
-        activePipeTransports.slice().forEach(function (transport) {
-          transport.drain();
-        });
-        Promise.resolve().then(drainLoop);
+    global.__playwright4jDrainBrowserPipes = function () {
+      activePipeTransports.slice().forEach(function (transport) {
+        transport.drain();
       });
-    }
+    };
 
     return class HostBackedPipeTransport {
       constructor(pipeWrite, pipeRead) {
@@ -1119,7 +1105,6 @@
           this.browserChildProcess = pipeWrite.__playwright4jChildProcess;
           this.browserConnectionId = host.webSocketClient().open(String(pipeWrite.__playwright4jEndpoint));
           activePipeTransports.push(this);
-          scheduleBrowserDrainLoop();
         } else {
           global.__playwright4jProtocolTransport = this;
         }
