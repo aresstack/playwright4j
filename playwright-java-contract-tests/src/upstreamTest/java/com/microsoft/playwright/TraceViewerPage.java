@@ -43,7 +43,7 @@ class TraceViewerPage {
   }
 
   Locator stackFrames() {
-    return this.page.getByRole(AriaRole.LISTBOX, new Page.GetByRoleOptions().setName("stack trace")).getByRole(AriaRole.OPTION);
+    return this.page.getByRole(AriaRole.LIST, new Page.GetByRoleOptions().setName("stack trace")).getByRole(AriaRole.LISTITEM);
   }
 
   void selectAction(String title, int ordinal) {

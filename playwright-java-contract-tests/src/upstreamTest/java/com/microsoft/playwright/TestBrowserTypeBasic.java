@@ -40,14 +40,10 @@ public class TestBrowserTypeBasic extends TestBase {
     assertEquals(getBrowserNameFromEnv(), browserType.name());
   }
 
-  static boolean isChromiumOrWebKit() {
-    return isChromium() || isWebKit();
-  }
-
   @Test
-  @DisabledIf(value="isChromiumOrWebKit", disabledReason="Connecting over CDP is supported in Chromium and WebKit")
+  @DisabledIf(value="com.microsoft.playwright.TestBase#isChromium", disabledReason="Non-chromium behavior")
   void shouldThrowWhenTryingToConnectWithNotChromium() {
     PlaywrightException e = assertThrows(PlaywrightException.class, () -> browserType.connectOverCDP("foo"));
-    assertTrue(e.getMessage().contains("Connecting over CDP is only supported in Chromium and WebKit."));
+    assertTrue(e.getMessage().contains("Connecting over CDP is only supported in Chromium."));
   }
 }

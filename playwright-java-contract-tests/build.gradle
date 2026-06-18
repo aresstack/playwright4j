@@ -5,7 +5,7 @@ plugins {
 description = 'Non-published contract tests for the official Playwright Java API against the playwright4j driver replacement.'
 
 ext.upstreamPlaywrightVersion = findProperty('upstreamPlaywrightVersion') ?: '1.59.0'
-ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: 'https://github.com/Miguel0888/playwright-java/archive/refs/heads/main.zip'
+ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: "https://github.com/Miguel0888/playwright-java/archive/refs/tags/v${upstreamPlaywrightVersion}.zip"
 
 sourceSets {
     upstreamTest {
@@ -38,6 +38,10 @@ dependencies {
 test {
     systemProperty 'playwright4j.officialApiSpike', findProperty('playwright4j.officialApiSpike') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
+}
+
+tasks.named('processUpstreamTestResources') {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
 tasks.register('upstreamTest', Test) {

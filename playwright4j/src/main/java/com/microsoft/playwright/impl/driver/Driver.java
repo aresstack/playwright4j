@@ -1,6 +1,8 @@
 package com.microsoft.playwright.impl.driver;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -45,6 +47,10 @@ public final class Driver {
 
     private boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase().contains("win");
+    }
+
+    public Path driverDir() {
+        return Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
     }
 
     public Map<String, String> environment() {

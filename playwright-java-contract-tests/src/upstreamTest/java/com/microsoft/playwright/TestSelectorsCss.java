@@ -16,7 +16,6 @@
 
 package com.microsoft.playwright;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -25,7 +24,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@Tag("smoke")
 public class TestSelectorsCss extends TestBase {
 
   @Test

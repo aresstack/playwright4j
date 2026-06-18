@@ -16,6 +16,7 @@
 
 package com.microsoft.playwright;
 
+import com.microsoft.playwright.options.ScreencastFrame;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -112,31 +113,9 @@ public class TestScreencast extends TestBase {
       assertFalse(frames.isEmpty(), "expected at least one frame");
       // JPEG-encoded frames start with FF D8.
       for (ScreencastFrame frame : frames) {
-        assertNotNull(frame.data());
-        assertEquals((byte) 0xFF, frame.data()[0]);
-        assertEquals((byte) 0xD8, frame.data()[1]);
-      }
-    } finally {
-      context.close();
-    }
-  }
-
-  @Test
-  void onFrameShouldReceiveViewportSizeAndTimestamp() {
-    BrowserContext context = browser.newContext(new Browser.NewContextOptions().setViewportSize(1000, 400));
-    Page page = context.newPage();
-    try {
-      List<ScreencastFrame> frames = new ArrayList<>();
-      page.screencast().start(new Screencast.StartOptions().setOnFrame(frames::add).setSize(500, 400));
-      page.navigate(server.EMPTY_PAGE);
-      page.evaluate("() => document.body.style.backgroundColor = 'red'");
-      page.waitForTimeout(500);
-      page.screencast().stop();
-      assertFalse(frames.isEmpty(), "expected at least one frame");
-      for (ScreencastFrame frame : frames) {
-        assertEquals(1000, frame.viewportWidth());
-        assertEquals(400, frame.viewportHeight());
-        assertTrue(frame.timestamp() > 0, "expected a positive timestamp, got " + frame.timestamp());
+        assertNotNull(frame.data);
+        assertEquals((byte) 0xFF, frame.data[0]);
+        assertEquals((byte) 0xD8, frame.data[1]);
       }
     } finally {
       context.close();

@@ -45,13 +45,13 @@ public class TestRouteWebSocket {
   }
   private void setupWS(Frame target, Server server, int port, String binaryType) {
     target.navigate(server.EMPTY_PAGE);
-    // No 'error' listener: WebKit fires a spurious 'error' before 'close' on non-normal closures (e.g. 1008).
     target.evaluate("({ port, binaryType }) => {\n" +
       "    window.log = [];\n" +
       "    window.ws = new WebSocket('ws://localhost:' + port + '/ws');\n" +
       "    window.ws.binaryType = binaryType;\n" +
       "    window.ws.addEventListener('open', () => window.log.push('open'));\n" +
       "    window.ws.addEventListener('close', event => window.log.push(`close code=${event.code} reason=${event.reason}`));\n" +
+      "    window.ws.addEventListener('error', event => window.log.push(`error`));\n" +
       "    window.ws.addEventListener('message', async event => {\n" +
       "      let data;\n" +
       "      if (typeof event.data === 'string')\n" +
@@ -390,30 +390,5 @@ public class TestRouteWebSocket {
       return result;
     });
     assertEquals(asList("response"), page.evaluate("window.log"));
-  }
-
-  @Test
-  public void shouldExposeProtocolsToTheRouteHandler(Page page, Server server) {
-    List<com.microsoft.playwright.WebSocketRoute> routes = new ArrayList<>();
-    page.routeWebSocket(Pattern.compile(".*"), ws -> routes.add(ws));
-
-    page.navigate(server.EMPTY_PAGE);
-    int port = webSocketServer.getPort();
-    page.evaluate("({ port }) => {\n" +
-      "  window.wsNone = new WebSocket('ws://localhost:' + port + '/ws-none');\n" +
-      "  window.wsString = new WebSocket('ws://localhost:' + port + '/ws-string', 'chat.v1');\n" +
-      "  window.wsArray = new WebSocket('ws://localhost:' + port + '/ws-array', ['chat.v2', 'chat.v1']);\n" +
-      "}", mapOf("port", port));
-
-    page.waitForCondition(() -> routes.size() == 3);
-
-    java.util.Map<String, com.microsoft.playwright.WebSocketRoute> byUrl = new java.util.HashMap<>();
-    for (com.microsoft.playwright.WebSocketRoute r : routes) {
-      String path = java.net.URI.create(r.url()).getPath();
-      byUrl.put(path, r);
-    }
-    assertEquals(asList(), byUrl.get("/ws-none").protocols());
-    assertEquals(asList("chat.v1"), byUrl.get("/ws-string").protocols());
-    assertEquals(asList("chat.v2", "chat.v1"), byUrl.get("/ws-array").protocols());
   }
 }

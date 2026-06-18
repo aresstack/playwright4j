@@ -18,7 +18,6 @@ package com.microsoft.playwright;
 
 import com.microsoft.playwright.junit.FixtureTest;
 import com.microsoft.playwright.junit.UsePlaywright;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.OutputStreamWriter;
@@ -33,7 +32,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @FixtureTest
 @UsePlaywright(TestOptionsFactories.BasicOptionsFactory.class)
-@Tag("smoke")
 public class TestBrowserContextBasic {
   @Test
   void shouldCreateNewContext(Browser browser) {

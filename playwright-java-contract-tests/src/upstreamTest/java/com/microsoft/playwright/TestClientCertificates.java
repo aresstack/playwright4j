@@ -5,7 +5,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledIf;
-import org.junit.jupiter.api.io.CleanupMode;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -224,9 +223,7 @@ public class TestClientCertificates extends TestBase {
 
   @Test
   @DisabledIf(value="com.microsoft.playwright.TestClientCertificates#isWebKitMacOS", disabledReason="The network connection was lost.")
-  // No cleanup: on Windows Chromium may keep chrome_debug.log in the user data dir
-  // locked briefly after close, failing the deletion.
-  public void shouldWorkWithBrowserLaunchPersistentContext(@TempDir(cleanup = CleanupMode.NEVER) Path tmpDir) {
+  public void shouldWorkWithBrowserLaunchPersistentContext(@TempDir Path tmpDir) {
     BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
       .setIgnoreHTTPSErrors(true) // TODO: remove once we can pass a custom CA.
       .setClientCertificates(asList(
