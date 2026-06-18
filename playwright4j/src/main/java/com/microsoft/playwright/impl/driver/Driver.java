@@ -1,9 +1,13 @@
 package com.microsoft.playwright.impl.driver;
 
+import com.aresstack.playwright4j.driver.browser.Playwright4JBrowserSettings;
+
 import java.io.File;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class Driver {
@@ -31,13 +35,25 @@ public final class Driver {
     }
 
     public ProcessBuilder createProcessBuilder() {
-        ProcessBuilder processBuilder = new ProcessBuilder(
-                javaExecutable(),
-                "-cp",
-                System.getProperty("java.class.path"),
-                "com.aresstack.playwright4j.driver.GraalDriverMain");
+        Playwright4JBrowserSettings browserSettings = Playwright4JBrowserSettings.fromSystemPropertiesAndEnvironment(environment);
+        ProcessBuilder processBuilder = new ProcessBuilder(javaCommand(browserSettings));
         processBuilder.environment().putAll(environment);
+        browserSettings.applyToEnvironment(processBuilder.environment());
         return processBuilder;
+    }
+
+    private List<String> javaCommand(Playwright4JBrowserSettings browserSettings) {
+        List<String> command = new ArrayList<String>();
+        command.add(javaExecutable());
+
+        for (Map.Entry<String, String> property : browserSettings.childJavaProperties().entrySet()) {
+            command.add("-D" + property.getKey() + "=" + property.getValue());
+        }
+
+        command.add("-cp");
+        command.add(System.getProperty("java.class.path"));
+        command.add("com.aresstack.playwright4j.driver.GraalDriverMain");
+        return command;
     }
 
     private String javaExecutable() {
