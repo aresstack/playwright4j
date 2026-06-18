@@ -1,5 +1,6 @@
 package com.microsoft.playwright.impl.driver;
 
+import java.io.File;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -20,8 +21,22 @@ public final class Driver {
     }
 
     public ProcessBuilder createProcessBuilder() {
-        throw new UnsupportedOperationException(
-                "playwright4j replaces the external Node driver; patch PlaywrightImpl to use the Graal driver runtime instead of ProcessBuilder.");
+        ProcessBuilder processBuilder = new ProcessBuilder(
+                javaExecutable(),
+                "-cp",
+                System.getProperty("java.class.path"),
+                "com.aresstack.playwright4j.driver.GraalDriverMain");
+        processBuilder.environment().putAll(environment);
+        return processBuilder;
+    }
+
+    private String javaExecutable() {
+        String executableName = isWindows() ? "java.exe" : "java";
+        return System.getProperty("java.home") + File.separator + "bin" + File.separator + executableName;
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 
     public Map<String, String> environment() {

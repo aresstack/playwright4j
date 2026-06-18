@@ -8,13 +8,14 @@ public final class Playwright4JHost {
     private final HostFileSystem fileSystem;
     private final HostHttpClient httpClient;
     private final HostWebSocketClient webSocketClient;
+    private final HostDriverPipe driverPipe;
     private final MissingHostFunctionReporter missingHostFunctionReporter;
 
     public Playwright4JHost(
             HostEnvironment environment,
             HostFileSystem fileSystem,
             MissingHostFunctionReporter missingHostFunctionReporter) {
-        this(environment, fileSystem, new JdkHostHttpClient(), new JdkHostWebSocketClient(), missingHostFunctionReporter);
+        this(environment, fileSystem, new JdkHostHttpClient(), new JdkHostWebSocketClient(), new NoopHostDriverPipe(), missingHostFunctionReporter);
     }
 
     public Playwright4JHost(
@@ -23,10 +24,21 @@ public final class Playwright4JHost {
             HostHttpClient httpClient,
             HostWebSocketClient webSocketClient,
             MissingHostFunctionReporter missingHostFunctionReporter) {
+        this(environment, fileSystem, httpClient, webSocketClient, new NoopHostDriverPipe(), missingHostFunctionReporter);
+    }
+
+    public Playwright4JHost(
+            HostEnvironment environment,
+            HostFileSystem fileSystem,
+            HostHttpClient httpClient,
+            HostWebSocketClient webSocketClient,
+            HostDriverPipe driverPipe,
+            MissingHostFunctionReporter missingHostFunctionReporter) {
         this.environment = environment;
         this.fileSystem = fileSystem;
         this.httpClient = httpClient;
         this.webSocketClient = webSocketClient;
+        this.driverPipe = driverPipe;
         this.missingHostFunctionReporter = missingHostFunctionReporter;
     }
 
@@ -55,6 +67,11 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public HostWebSocketClient webSocketClient() {
         return webSocketClient;
+    }
+
+    @HostAccess.Export
+    public HostDriverPipe driverPipe() {
+        return driverPipe;
     }
 
     @HostAccess.Export

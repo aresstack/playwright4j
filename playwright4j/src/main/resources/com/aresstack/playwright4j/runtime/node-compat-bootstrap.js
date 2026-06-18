@@ -645,22 +645,25 @@
     stdin: {
       fd: 0,
       isTTY: false,
-      on: function () {
-        return this;
-      }
+      readable: true,
+      listenersByName: {},
+      emit: EventEmitter.prototype.emit,
+      on: EventEmitter.prototype.on,
+      once: EventEmitter.prototype.once,
+      off: EventEmitter.prototype.off
     },
     stdout: {
       fd: 1,
       isTTY: false,
-      write: function () {
-        return true;
+      write: function (chunk) {
+        return host.driverPipe().writeOut(String(chunk));
       }
     },
     stderr: {
       fd: 2,
       isTTY: false,
-      write: function () {
-        return true;
+      write: function (chunk) {
+        return host.driverPipe().writeErr(String(chunk));
       }
     },
     nextTick: function (callback) {
@@ -683,6 +686,15 @@
     },
     byteLength: function (value) {
       return global.Buffer.from(value).length;
+    },
+    concat: function (values) {
+      return {
+        toString: function () {
+          return values.map(function (value) {
+            return String(value);
+          }).join('');
+        }
+      };
     },
     isBuffer: function () {
       return false;
@@ -900,6 +912,32 @@
     };
   }
 
+  function createHostBackedPipeTransport() {
+    return class HostBackedPipeTransport {
+      constructor(pipeWrite, pipeRead) {
+        this.onmessage = undefined;
+        this.onclose = undefined;
+        global.__playwright4jProtocolTransport = this;
+      }
+
+      send(message) {
+        return host.driverPipe().writeMessage(String(message));
+      }
+
+      close() {
+        if (this.onclose) {
+          this.onclose();
+        }
+      }
+
+      _deliver(message) {
+        if (this.onmessage) {
+          this.onmessage(String(message));
+        }
+      }
+    };
+  }
+
   function createHostBackedWebSocketTransport() {
     const activeTransports = [];
 
@@ -976,6 +1014,20 @@
   }
 
   function installKnownModuleFallbacks(resourceName, exportsObject) {
+    if (resourceName.endsWith('/lib/utils/pipeTransport.js') || resourceName.endsWith('/lib/server/utils/pipeTransport.js')) {
+      const HostBackedPipeTransport = createHostBackedPipeTransport();
+
+      return new Proxy(exportsObject, {
+        get: function (target, property) {
+          if (property === 'PipeTransport') {
+            return HostBackedPipeTransport;
+          }
+
+          return target[property];
+        }
+      });
+    }
+
     if (resourceName.endsWith('/lib/server/transport.js')) {
       const HostBackedWebSocketTransport = createHostBackedWebSocketTransport();
 
@@ -1105,6 +1157,15 @@
 
     return requireFunction;
   }
+
+  global.__playwright4jDriverPipeDeliver = function (message) {
+    if (global.__playwright4jProtocolTransport) {
+      global.__playwright4jProtocolTransport._deliver(String(message));
+      return;
+    }
+
+    global.process.stdin.emit('data', String(message));
+  };
 
   global.require = createRequire('');
   global.__playwright4jCreateRequire = createRequire;
