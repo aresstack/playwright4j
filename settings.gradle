@@ -12,4 +12,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = 'playwright4j'
+rootProject.name = 'playwright4j-workspace'
+
+include 'playwright4j'
+include 'playwright-java'
