@@ -10,13 +10,14 @@ public final class Playwright4JHost {
     private final HostWebSocketClient webSocketClient;
     private final HostDriverPipe driverPipe;
     private final HostBrowserConfiguration browserConfiguration;
+    private final HostProcessLauncher processLauncher;
     private final MissingHostFunctionReporter missingHostFunctionReporter;
 
     public Playwright4JHost(
             HostEnvironment environment,
             HostFileSystem fileSystem,
             MissingHostFunctionReporter missingHostFunctionReporter) {
-        this(environment, fileSystem, new JdkHostHttpClient(), new JdkHostWebSocketClient(), new NoopHostDriverPipe(), new DisabledHostBrowserConfiguration(), missingHostFunctionReporter);
+        this(environment, fileSystem, new JdkHostHttpClient(), new JdkHostWebSocketClient(), new NoopHostDriverPipe(), new DisabledHostBrowserConfiguration(), new DisabledHostProcessLauncher(), missingHostFunctionReporter);
     }
 
     public Playwright4JHost(
@@ -25,7 +26,7 @@ public final class Playwright4JHost {
             HostHttpClient httpClient,
             HostWebSocketClient webSocketClient,
             MissingHostFunctionReporter missingHostFunctionReporter) {
-        this(environment, fileSystem, httpClient, webSocketClient, new NoopHostDriverPipe(), new DisabledHostBrowserConfiguration(), missingHostFunctionReporter);
+        this(environment, fileSystem, httpClient, webSocketClient, new NoopHostDriverPipe(), new DisabledHostBrowserConfiguration(), new DisabledHostProcessLauncher(), missingHostFunctionReporter);
     }
 
     public Playwright4JHost(
@@ -35,7 +36,7 @@ public final class Playwright4JHost {
             HostWebSocketClient webSocketClient,
             HostDriverPipe driverPipe,
             MissingHostFunctionReporter missingHostFunctionReporter) {
-        this(environment, fileSystem, httpClient, webSocketClient, driverPipe, new DisabledHostBrowserConfiguration(), missingHostFunctionReporter);
+        this(environment, fileSystem, httpClient, webSocketClient, driverPipe, new DisabledHostBrowserConfiguration(), new DisabledHostProcessLauncher(), missingHostFunctionReporter);
     }
 
     public Playwright4JHost(
@@ -45,6 +46,7 @@ public final class Playwright4JHost {
             HostWebSocketClient webSocketClient,
             HostDriverPipe driverPipe,
             HostBrowserConfiguration browserConfiguration,
+            HostProcessLauncher processLauncher,
             MissingHostFunctionReporter missingHostFunctionReporter) {
         this.environment = environment;
         this.fileSystem = fileSystem;
@@ -52,6 +54,7 @@ public final class Playwright4JHost {
         this.webSocketClient = webSocketClient;
         this.driverPipe = driverPipe;
         this.browserConfiguration = browserConfiguration;
+        this.processLauncher = processLauncher;
         this.missingHostFunctionReporter = missingHostFunctionReporter;
     }
 
@@ -90,6 +93,11 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public HostBrowserConfiguration browserConfiguration() {
         return browserConfiguration;
+    }
+
+    @HostAccess.Export
+    public HostProcessLauncher processLauncher() {
+        return processLauncher;
     }
 
     @HostAccess.Export
