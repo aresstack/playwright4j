@@ -16,7 +16,15 @@ public final class Driver {
         return new Driver(environment);
     }
 
+    public static Driver ensureDriverInstalled(Map<String, String> environment, Boolean installBrowsers) {
+        return new Driver(environment);
+    }
+
     public static Driver createAndInstall(Map<String, String> environment, boolean installBrowsers) {
+        return new Driver(environment);
+    }
+
+    public static Driver createAndInstall(Map<String, String> environment, Boolean installBrowsers) {
         return new Driver(environment);
     }
 
