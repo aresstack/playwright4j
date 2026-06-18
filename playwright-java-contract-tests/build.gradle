@@ -5,7 +5,10 @@ plugins {
 description = 'Non-published contract tests for the official Playwright Java API against the playwright4j driver replacement.'
 
 ext.upstreamPlaywrightVersion = findProperty('upstreamPlaywrightVersion') ?: '1.59.0'
-ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: "https://github.com/Miguel0888/playwright-java/archive/refs/tags/v${upstreamPlaywrightVersion}.zip"
+ext.microsoftPlaywrightJavaRepository = 'https://github.com/microsoft/playwright-java'
+// ext.playwrightJavaForkRepository = 'https://github.com/Miguel0888/playwright-java'
+ext.upstreamPlaywrightJavaRepository = microsoftPlaywrightJavaRepository
+ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: "${upstreamPlaywrightJavaRepository}/archive/refs/tags/v${upstreamPlaywrightVersion}.zip"
 
 sourceSets {
     upstreamTest {
