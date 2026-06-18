@@ -37,6 +37,8 @@ final class RemoteDebuggingChrome implements AutoCloseable {
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-background-networking",
+                "--disable-extensions",
+                "--disable-component-extensions-with-background-pages",
                 "about:blank");
 
         try {

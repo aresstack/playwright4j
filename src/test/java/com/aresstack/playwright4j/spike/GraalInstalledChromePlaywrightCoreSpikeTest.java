@@ -1,5 +1,6 @@
 package com.aresstack.playwright4j.spike;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -47,14 +48,38 @@ final class GraalInstalledChromePlaywrightCoreSpikeTest {
             try {
                 runtime.evaluate(
                         "connect-over-cdp-spike.js",
-                        "globalThis.__playwright4jConnectOverCdpResult = "
-                                + "globalThis.__playwright4jPlaywright.chromium.connectOverCDP('" + chrome.cdpEndpoint() + "');");
+                        "globalThis.__playwright4jConnectOverCdpStatus = 'pending';"
+                                + "Promise.resolve(globalThis.__playwright4jPlaywright.chromium.connectOverCDP('" + chrome.cdpEndpoint() + "'))"
+                                + ".then(async function(browser) {"
+                                + "  globalThis.__playwright4jConnectOverCdpBrowserType = typeof browser;"
+                                + "  const page = await browser.newPage();"
+                                + "  await page.goto('data:text/html,<title>Playwright4J Spike</title><h1>ok</h1>');"
+                                + "  globalThis.__playwright4jPageTitle = await page.title();"
+                                + "  await browser.close();"
+                                + "  globalThis.__playwright4jConnectOverCdpStatus = 'resolved';"
+                                + "})"
+                                + ".catch(function(error) {"
+                                + "  globalThis.__playwright4jConnectOverCdpStatus = 'rejected';"
+                                + "  globalThis.__playwright4jConnectOverCdpError = error && (error.stack || error.message) || String(error);"
+                                + "});");
+                for (int index = 0; index < 200; index++) {
+                    runtime.evaluate(
+                            "connect-over-cdp-flush-" + index + ".js",
+                            "if (globalThis.__playwright4jDrainTransports) globalThis.__playwright4jDrainTransports();"
+                                    + "Promise.resolve().then(function() {});");
+                }
             } catch (PolyglotException exception) {
                 String message = exception.getMessage();
 
                 assertFalse(message.contains("SyntaxError"), message);
                 assertFalse(reporter.missingFunctions().isEmpty(), "The spike should expose the next missing host boundary.");
             }
+
+            assertEquals("resolved", runtime.readGlobal("__playwright4jConnectOverCdpStatus").asString(),
+                    String.valueOf(runtime.readGlobal("__playwright4jConnectOverCdpError"))
+                            + " wsEvents=" + String.valueOf(runtime.readGlobal("__playwright4jWsEvents")));
+            assertEquals("object", runtime.readGlobal("__playwright4jConnectOverCdpBrowserType").asString());
+            assertEquals("Playwright4J Spike", runtime.readGlobal("__playwright4jPageTitle").asString());
         }
     }
 

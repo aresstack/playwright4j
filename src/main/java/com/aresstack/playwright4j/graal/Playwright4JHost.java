@@ -6,14 +6,27 @@ public final class Playwright4JHost {
 
     private final HostEnvironment environment;
     private final HostFileSystem fileSystem;
+    private final HostHttpClient httpClient;
+    private final HostWebSocketClient webSocketClient;
     private final MissingHostFunctionReporter missingHostFunctionReporter;
 
     public Playwright4JHost(
             HostEnvironment environment,
             HostFileSystem fileSystem,
             MissingHostFunctionReporter missingHostFunctionReporter) {
+        this(environment, fileSystem, new JdkHostHttpClient(), new JdkHostWebSocketClient(), missingHostFunctionReporter);
+    }
+
+    public Playwright4JHost(
+            HostEnvironment environment,
+            HostFileSystem fileSystem,
+            HostHttpClient httpClient,
+            HostWebSocketClient webSocketClient,
+            MissingHostFunctionReporter missingHostFunctionReporter) {
         this.environment = environment;
         this.fileSystem = fileSystem;
+        this.httpClient = httpClient;
+        this.webSocketClient = webSocketClient;
         this.missingHostFunctionReporter = missingHostFunctionReporter;
     }
 
@@ -32,6 +45,16 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public HostFileSystem fileSystem() {
         return fileSystem;
+    }
+
+    @HostAccess.Export
+    public HostHttpClient httpClient() {
+        return httpClient;
+    }
+
+    @HostAccess.Export
+    public HostWebSocketClient webSocketClient() {
+        return webSocketClient;
     }
 
     @HostAccess.Export
