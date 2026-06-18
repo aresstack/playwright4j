@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -116,6 +117,7 @@ public class Utils {
     }
     return entries;
   }
+
 
   enum OS { WINDOWS, MAC, LINUX, UNKNOWN }
   static OS getOS() {
@@ -208,6 +210,7 @@ public class Utils {
     try  {
       return cwd.relativize(path.toAbsolutePath());
     } catch (IllegalArgumentException e) {
+      // May happen on Windows when the path and temp are on different disks.
       if (e.getMessage().contains("has different root")) {
         Assumptions.assumeTrue(false, "cwd is on another disk, skipping the test.");
       }

@@ -1,0 +1,141 @@
+/*
+ * Copyright (c) Microsoft Corporation.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.microsoft.playwright;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.FileReader;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import static java.util.Arrays.asList;
+import static org.junit.jupiter.api.Assertions.*;
+
+@EnabledIf(value="com.microsoft.playwright.TestBase#isChromium", disabledReason="Chromium-only API")
+public class TestChromiumTracing extends TestBase {
+  @Test
+  void shouldOutputATrace(@TempDir Path tempDir) {
+    try (Page page = browser.newPage()) {
+      Path outputTraceFile = tempDir.resolve("trace.json");
+      browser.startTracing(page, new Browser.StartTracingOptions()
+        .setScreenshots(true).setPath(outputTraceFile));
+      page.navigate(server.PREFIX + "/grid.html");
+      browser.stopTracing();
+      assertTrue(Files.exists(outputTraceFile));
+    }
+  }
+
+  @Test
+  void shouldCreateDirectoriesAsNeeded(@TempDir Path tempDir) {
+    try (Page page = browser.newPage()) {
+      Path filePath = tempDir.resolve("these/are/directories/trace.json");
+      browser.startTracing(page, new Browser.StartTracingOptions()
+        .setScreenshots(true).setPath(filePath));
+      page.navigate(server.PREFIX + "/grid.html");
+      browser.stopTracing();
+      assertTrue(Files.exists(filePath));
+    }
+  }
+
+  private static void rafraf(Page page) {
+    int count = 2;
+    for (int i = 0; i < count; i++) {
+      page.evaluate("() => new Promise(f => requestAnimationFrame(() => requestAnimationFrame(f)))");
+    }
+  }
+
+  @Test
+  void shouldRunWithCustomCategoriesIfProvided(@TempDir Path tempDir) throws IOException {
+    try (Page page = browser.newPage()) {
+      Path outputTraceFile = tempDir.resolve("trace.json");
+      browser.startTracing(page, new Browser.StartTracingOptions()
+        .setPath(outputTraceFile)
+        .setCategories(asList("disabled-by-default-cc.debug")));
+      rafraf(page);
+      browser.stopTracing();
+      try (FileReader fileReader = new FileReader(outputTraceFile.toFile())) {
+        JsonObject traceJson = new Gson().fromJson(fileReader, JsonObject.class);
+        // NOTE: trace-config is deprecated as per http://crrev.com/c/6628182
+        boolean hasTraceConfig =
+              traceJson.getAsJsonObject("metadata").get("trace-config") != null
+          && traceJson.getAsJsonObject("metadata").get("trace-config").getAsString().contains("disabled-by-default-cc.debug");
+        boolean hasTraceEvents = traceJson.getAsJsonArray("traceEvents").asList().stream()
+            .anyMatch(event -> {
+              JsonObject eventObj = (JsonObject) event;
+              return eventObj.has("cat") &&
+                eventObj.get("cat").getAsString().equals("disabled-by-default-cc.debug");
+            });
+        assertTrue(hasTraceConfig || hasTraceEvents);
+      }
+    }
+  }
+
+  @Test
+  void shouldThrowIfTracingOnTwoPages(@TempDir Path tempDir) {
+    try (Page page = browser.newPage()) {
+      Path outputTraceFile = tempDir.resolve("trace.json");
+      browser.startTracing(page, new Browser.StartTracingOptions()
+        .setPath(outputTraceFile));
+      Page newPage = browser.newPage();
+      assertThrows(PlaywrightException.class, () -> {
+        browser.startTracing(newPage, new Browser.StartTracingOptions()
+          .setPath(outputTraceFile));
+      });
+      newPage.close();
+      browser.stopTracing();
+    }
+  }
+
+  @Test
+  void shouldReturnABuffer(@TempDir Path tempDir) throws IOException {
+    try (Page page = browser.newPage()) {
+      Path outputTraceFile = tempDir.resolve("trace.json");
+      browser.startTracing(page, new Browser.StartTracingOptions()
+        .setScreenshots(true).setPath(outputTraceFile));
+      page.navigate(server.PREFIX + "/grid.html");
+      byte[] trace = browser.stopTracing();
+      byte[] buf = Files.readAllBytes(outputTraceFile);
+      assertArrayEquals(buf, trace);
+    }
+  }
+
+  @Test
+  void shouldWorkWithoutOptions() {
+    try (Page page = browser.newPage()) {
+      browser.startTracing(page);
+      page.navigate(server.PREFIX + "/grid.html");
+      byte[] trace = browser.stopTracing();
+      assertNotNull(trace);
+    }
+  }
+
+  @Test
+  void shouldSupportABufferWithoutAPath() {
+    try (Page page = browser.newPage()) {
+      browser.startTracing(page, new Browser.StartTracingOptions().setScreenshots(true));
+      page.navigate(server.PREFIX + "/grid.html");
+      byte[] trace = browser.stopTracing();
+      assertTrue(new String(trace, StandardCharsets.UTF_8).contains("screenshot"));
+    }
+  }
+}

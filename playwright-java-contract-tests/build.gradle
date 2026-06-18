@@ -4,7 +4,8 @@ plugins {
 
 description = 'Non-published contract tests for the official Playwright Java API against the playwright4j driver replacement.'
 
-ext.upstreamPlaywrightVersion = '1.59.0'
+ext.upstreamPlaywrightVersion = findProperty('upstreamPlaywrightVersion') ?: '1.59.0'
+ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: 'https://github.com/Miguel0888/playwright-java/archive/refs/heads/main.zip'
 
 sourceSets {
     upstreamTest {
@@ -23,12 +24,13 @@ configurations {
 dependencies {
     testImplementation project(':playwright4j')
     testImplementation("com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}") {
-        // The contract tests use the official Playwright Java API jar, but not the Microsoft Node driver.
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
     }
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
+    testImplementation 'org.junit.jupiter:junit-jupiter-params:5.13.1'
+    testImplementation 'org.java-websocket:Java-WebSocket:1.6.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.13.1'
 }
@@ -39,11 +41,64 @@ test {
 }
 
 tasks.register('upstreamTest', Test) {
-    description = 'Runs selected official Microsoft Playwright Java upstream tests against the playwright4j driver replacement.'
+    description = 'Runs imported official Microsoft Playwright Java upstream tests against the playwright4j driver replacement.'
     group = 'verification'
     testClassesDirs = sourceSets.upstreamTest.output.classesDirs
     classpath = sourceSets.upstreamTest.runtimeClasspath
     shouldRunAfter test
 }
 
-check.dependsOn tasks.named('upstreamTest')
+tasks.register('syncUpstreamPlaywrightJavaTests') {
+    description = 'Imports all upstream Playwright Java tests into src/upstreamTest.'
+    group = 'verification'
+
+    doLast {
+        def tempRoot = layout.buildDirectory.dir('tmp/upstream-playwright-java-tests').get().asFile
+        def zipFile = new File(tempRoot, 'playwright-java.zip')
+        def extractRoot = new File(tempRoot, 'extract')
+        def targetJava = file('src/upstreamTest/java')
+        def targetResources = file('src/upstreamTest/resources')
+
+        delete tempRoot
+        mkdir tempRoot
+
+        logger.lifecycle("Fetching ${upstreamPlaywrightTestsZipUrl}")
+        ant.get(src: upstreamPlaywrightTestsZipUrl, dest: zipFile, skipexisting: false)
+
+        copy {
+            from zipTree(zipFile)
+            into extractRoot
+        }
+
+        def repoDir = extractRoot.listFiles().find { it.directory }
+        if (repoDir == null) {
+            throw new GradleException("Could not find extracted repository directory under ${extractRoot}")
+        }
+
+        def sourceTestRoot = new File(repoDir, 'playwright/src/test')
+        def sourceJava = new File(sourceTestRoot, 'java')
+        def sourceResources = new File(sourceTestRoot, 'resources')
+
+        if (!sourceJava.directory) {
+            throw new GradleException("Could not find upstream test sources at ${sourceJava}")
+        }
+
+        delete targetJava
+        copy {
+            from sourceJava
+            into targetJava
+        }
+
+        delete targetResources
+        if (sourceResources.directory) {
+            copy {
+                from sourceResources
+                into targetResources
+            }
+        }
+
+        def javaCount = fileTree(targetJava).matching { include '**/*.java' }.files.size()
+        def resourceCount = targetResources.directory ? fileTree(targetResources).files.size() : 0
+        logger.lifecycle("Imported upstream Playwright Java tests. Java files: ${javaCount}, resource files: ${resourceCount}")
+    }
+}
