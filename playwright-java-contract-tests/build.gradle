@@ -6,6 +6,20 @@ description = 'Non-published contract tests for the official Playwright Java API
 
 ext.upstreamPlaywrightVersion = '1.59.0'
 
+sourceSets {
+    upstreamTest {
+        java.srcDir 'src/upstreamTest/java'
+        resources.srcDir 'src/upstreamTest/resources'
+        compileClasspath += sourceSets.test.output + sourceSets.test.compileClasspath
+        runtimeClasspath += output + compileClasspath + sourceSets.test.runtimeClasspath
+    }
+}
+
+configurations {
+    upstreamTestImplementation.extendsFrom testImplementation
+    upstreamTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
 dependencies {
     testImplementation project(':playwright4j')
     testImplementation("com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}") {
@@ -23,3 +37,13 @@ test {
     systemProperty 'playwright4j.officialApiSpike', findProperty('playwright4j.officialApiSpike') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
 }
+
+tasks.register('upstreamTest', Test) {
+    description = 'Runs selected official Microsoft Playwright Java upstream tests against the playwright4j driver replacement.'
+    group = 'verification'
+    testClassesDirs = sourceSets.upstreamTest.output.classesDirs
+    classpath = sourceSets.upstreamTest.runtimeClasspath
+    shouldRunAfter test
+}
+
+check.dependsOn tasks.named('upstreamTest')
