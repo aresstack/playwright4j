@@ -40,26 +40,6 @@
     };
   }
 
-  function createHostStats(path) {
-    const filePath = String(path);
-    return {
-      size: Number(host.fileSystem().size(filePath)),
-      mtimeMs: Number(host.fileSystem().lastModifiedMillis(filePath)),
-      isFile: function () {
-        return host.fileSystem().isFile(filePath);
-      },
-      isDirectory: function () {
-        return host.fileSystem().isDirectory(filePath);
-      }
-    };
-  }
-
-  function assertHostFileExists(operation, path) {
-    if (!host.fileSystem().existsSync(String(path))) {
-      throw new Error(operation + ' failed: ' + path);
-    }
-  }
-
   modules.fs = {
     existsSync: function (path) {
       return host.fileSystem().existsSync(String(path));
@@ -67,47 +47,19 @@
     readFileSync: function (path, encoding) {
       return host.fileSystem().readFileSync(String(path), encoding || 'utf8');
     },
-    statSync: function (path) {
-      assertHostFileExists('stat', path);
-      return createHostStats(path);
-    },
-    mkdirSync: function (path) {
-      host.fileSystem().createDirectories(String(path));
-    },
-    mkdtempSync: function (prefix) {
-      return host.fileSystem().createTempDirectory(String(prefix));
-    },
     writeFileSync: unsupported('fs.writeFileSync'),
+    mkdirSync: unsupported('fs.mkdirSync'),
     rmSync: unsupported('fs.rmSync'),
     promises: {
       readFile: async function (path, encoding) {
         return host.fileSystem().readFileSync(String(path), encoding || 'utf8');
       },
-      stat: function (path) {
-        return Promise.resolve().then(function () {
-          assertHostFileExists('stat', path);
-          return createHostStats(path);
-        });
+      mkdtemp: async function (prefix) {
+        return String(prefix || '/tmp/playwright4j-') + Math.floor(Math.random() * 1000000000);
       },
-      access: function (path) {
-        return Promise.resolve().then(function () {
-          assertHostFileExists('access', path);
-        });
-      },
-      mkdir: function (path) {
-        return Promise.resolve().then(function () {
-          host.fileSystem().createDirectories(String(path));
-        });
-      },
-      mkdtemp: function (prefix) {
-        return Promise.resolve().then(function () {
-          return host.fileSystem().createTempDirectory(String(prefix));
-        });
-      },
-      writeFile: function (path, content) {
-        return Promise.resolve().then(function () {
-          host.fileSystem().writeFile(String(path), String(content));
-        });
+      writeFile: unsupported('fs.promises.writeFile'),
+      mkdir: async function () {
+        return undefined;
       },
       rm: async function () {
         return undefined;
@@ -1061,70 +1013,7 @@
     };
   }
 
-  function localChromiumExecutablePath() {
-    try {
-      const executablePath = host.browserConfiguration().localChromiumExecutablePath();
-      return executablePath ? String(executablePath) : '';
-    } catch (error) {
-      return '';
-    }
-  }
-
-  function createLocalChromiumExecutable(original, executablePath) {
-    return new Proxy(original || {}, {
-      get: function (target, property) {
-        if (property === 'executablePath') {
-          return function () {
-            return executablePath;
-          };
-        }
-
-        if (property === 'executablePathOrDie') {
-          return function () {
-            return executablePath;
-          };
-        }
-
-        return target[property];
-      }
-    });
-  }
-
-  function createPlaywright4JRegistryFallback(registry) {
-    return new Proxy(registry, {
-      get: function (target, property) {
-        if (property === 'findExecutable') {
-          return function (name) {
-            const original = target.findExecutable.apply(target, arguments);
-            const executablePath = localChromiumExecutablePath();
-            const executableName = String(name);
-
-            if (executablePath && (executableName === 'chromium' || executableName === 'chromium-headless-shell')) {
-              return createLocalChromiumExecutable(original, executablePath);
-            }
-
-            return original;
-          };
-        }
-
-        return target[property];
-      }
-    });
-  }
-
   function installKnownModuleFallbacks(resourceName, exportsObject) {
-    if (resourceName.endsWith('/lib/server/registry/index.js') && exportsObject.registry) {
-      return new Proxy(exportsObject, {
-        get: function (target, property) {
-          if (property === 'registry') {
-            return createPlaywright4JRegistryFallback(target.registry);
-          }
-
-          return target[property];
-        }
-      });
-    }
-
     if (resourceName.endsWith('/lib/utils/pipeTransport.js') || resourceName.endsWith('/lib/server/utils/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
 

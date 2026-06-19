@@ -1,7 +1,5 @@
 package com.aresstack.playwright4j.driver;
 
-import com.aresstack.playwright4j.driver.browser.LocalChromiumExecutableProvider;
-import com.aresstack.playwright4j.driver.browser.Playwright4JBrowserSettings;
 import com.aresstack.playwright4j.graal.*;
 
 import java.io.BufferedInputStream;
@@ -23,14 +21,12 @@ public final class GraalDriverMain {
         environment.putIfAbsent("PW_LANG_NAME", "java");
 
         PlaywrightDriverBundleSource driverBundleSource = new PlaywrightDriverBundleSource(Thread.currentThread().getContextClassLoader());
-        Playwright4JBrowserSettings browserSettings = Playwright4JBrowserSettings.fromSystemPropertiesAndEnvironment(environment);
         Playwright4JHost host = new Playwright4JHost(
                 new FixedHostEnvironment(platform(), architecture(), Paths.get("").toAbsolutePath().toString(), environment),
-                new LocalHostFileSystem(),
+                new EmptyHostFileSystem(),
                 new JdkHostHttpClient(),
                 new JdkHostWebSocketClient(),
                 new StandardIoDriverPipe(System.out, System.err),
-                new ResolvedHostBrowserConfiguration(new LocalChromiumExecutableProvider(browserSettings, environment)),
                 new RecordingMissingHostFunctionReporter());
 
         try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {
