@@ -24,7 +24,6 @@ public final class GraalDriverMain {
 
         PlaywrightDriverBundleSource driverBundleSource = new PlaywrightDriverBundleSource(Thread.currentThread().getContextClassLoader());
         Playwright4JBrowserSettings browserSettings = Playwright4JBrowserSettings.fromSystemPropertiesAndEnvironment(environment);
-        JdkHostProcessLauncher processLauncher = new JdkHostProcessLauncher();
         Playwright4JHost host = new Playwright4JHost(
                 new FixedHostEnvironment(platform(), architecture(), Paths.get("").toAbsolutePath().toString(), environment),
                 new LocalHostFileSystem(),
@@ -32,7 +31,7 @@ public final class GraalDriverMain {
                 new JdkHostWebSocketClient(),
                 new StandardIoDriverPipe(System.out, System.err),
                 new ResolvedHostBrowserConfiguration(new LocalChromiumExecutableProvider(browserSettings, environment)),
-                processLauncher,
+                new JdkHostProcessLauncher(),
                 new RecordingMissingHostFunctionReporter());
 
         try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {
@@ -40,8 +39,6 @@ public final class GraalDriverMain {
             runtime.setProcessArguments(processArguments(driverBundleSource, args));
             runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
             pumpInput(runtime);
-        } finally {
-            processLauncher.closeAll();
         }
     }
 

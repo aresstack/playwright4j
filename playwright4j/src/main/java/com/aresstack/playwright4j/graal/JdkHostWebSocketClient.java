@@ -10,10 +10,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -23,14 +20,11 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     private static final Pattern MESSAGE_ID_PATTERN = Pattern.compile("\\\"id\\\"\\s*:\\s*(\\d+)");
 
     private final HttpClient client;
-    private final ExecutorService executor;
     private final Map<String, Connection> connections = new ConcurrentHashMap<>();
 
     public JdkHostWebSocketClient() {
-        this.executor = Executors.newCachedThreadPool(new DaemonThreadFactory("playwright4j-ws"));
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
-                .executor(executor)
                 .build();
     }
 
@@ -133,22 +127,6 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     private static String messageId(String message) {
         Matcher matcher = MESSAGE_ID_PATTERN.matcher(message);
         return matcher.find() ? matcher.group(1) : null;
-    }
-
-    private static final class DaemonThreadFactory implements ThreadFactory {
-        private final String namePrefix;
-        private int sequence;
-
-        private DaemonThreadFactory(String namePrefix) {
-            this.namePrefix = namePrefix;
-        }
-
-        @Override
-        public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable, namePrefix + "-" + (++sequence));
-            thread.setDaemon(true);
-            return thread;
-        }
     }
 
     private static final class Connection implements WebSocket.Listener {
