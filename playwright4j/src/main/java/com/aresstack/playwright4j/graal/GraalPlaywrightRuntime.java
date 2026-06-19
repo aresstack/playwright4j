@@ -26,6 +26,11 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
                 .allowHostAccess(createHostAccess())
                 .allowHostClassLookup(new DenyAllHostClassLookup())
                 .allowIO(false)
+                // System.out is the length-prefixed driver protocol channel to the Playwright
+                // Java client. Any stray JS output (console.log, print, ...) must not land
+                // there, so route the guest's stdout/stderr to the process stderr instead.
+                .out(System.err)
+                .err(System.err)
                 .option("js.ecmascript-version", "latest")
                 .build();
 
@@ -90,6 +95,49 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
 
     public Value readGlobal(String name) {
         return context.getBindings(LANGUAGE_ID).getMember(name);
+    }
+
+    /**
+     * Drains all host-backed transports (browser CDP pipes and WebSocket transports) once,
+     * delivering any pending messages into the JS event loop. Returns the number of raw
+     * messages that were pulled so the caller can detect progress.
+     */
+    public int drainTransports() {
+        int drained = 0;
+        drained += executeGlobalIntFunctionIfPresent("__playwright4jDrainBrowserPipes");
+        drained += executeGlobalIntFunctionIfPresent("__playwright4jDrainTransports");
+        return drained;
+    }
+
+    /**
+     * Fires every JS timer whose deadline has elapsed. Returns the number fired.
+     */
+    public int runDueTimers() {
+        return executeGlobalIntFunctionIfPresent("__playwright4jRunDueTimers");
+    }
+
+    /**
+     * Whether any delayed JS timer is still scheduled (and therefore some operation may be
+     * waiting on it).
+     */
+    public boolean hasPendingTimers() {
+        Value value = readGlobal("__playwright4jHasPendingTimers");
+        if (value != null && value.canExecute()) {
+            Value result = value.execute();
+            return result != null && result.isBoolean() && result.asBoolean();
+        }
+        return false;
+    }
+
+    private int executeGlobalIntFunctionIfPresent(String name) {
+        Value value = readGlobal(name);
+        if (value != null && value.canExecute()) {
+            Value result = value.execute();
+            if (result != null && result.fitsInInt()) {
+                return result.asInt();
+            }
+        }
+        return 0;
     }
 
     private void evaluateRuntimeResource(String resourceName) {

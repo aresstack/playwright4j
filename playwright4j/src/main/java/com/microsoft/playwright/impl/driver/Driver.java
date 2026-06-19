@@ -30,12 +30,24 @@ public final class Driver {
         return new Driver(environment);
     }
 
+    private static final String[] FORWARDED_SYSTEM_PROPERTIES = {
+            "playwright4j.debug"
+    };
+
     public ProcessBuilder createProcessBuilder() {
-        ProcessBuilder processBuilder = new ProcessBuilder(
-                javaExecutable(),
-                "-cp",
-                System.getProperty("java.class.path"),
-                "com.aresstack.playwright4j.driver.GraalDriverMain");
+        java.util.List<String> command = new java.util.ArrayList<>();
+        command.add(javaExecutable());
+        command.add("-cp");
+        command.add(System.getProperty("java.class.path"));
+        for (String property : FORWARDED_SYSTEM_PROPERTIES) {
+            String value = System.getProperty(property);
+            if (value != null && !value.trim().isEmpty()) {
+                command.add("-D" + property + "=" + value);
+            }
+        }
+        command.add("com.aresstack.playwright4j.driver.GraalDriverMain");
+
+        ProcessBuilder processBuilder = new ProcessBuilder(command);
         processBuilder.environment().putAll(environment);
         return processBuilder;
     }

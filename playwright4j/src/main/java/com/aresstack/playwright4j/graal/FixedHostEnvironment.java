@@ -12,6 +12,7 @@ public final class FixedHostEnvironment implements HostEnvironment {
     private final String architecture;
     private final String currentWorkingDirectory;
     private final Map<String, String> environmentValues;
+    private final Map<String, String> environmentValuesByLowerCaseName;
 
     public FixedHostEnvironment() {
         this("win32", "x64", "/", Collections.<String, String>emptyMap());
@@ -26,6 +27,10 @@ public final class FixedHostEnvironment implements HostEnvironment {
         this.architecture = architecture;
         this.currentWorkingDirectory = currentWorkingDirectory;
         this.environmentValues = new LinkedHashMap<String, String>(environmentValues);
+        this.environmentValuesByLowerCaseName = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, String> entry : environmentValues.entrySet()) {
+            this.environmentValuesByLowerCaseName.put(entry.getKey().toLowerCase(), entry.getValue());
+        }
     }
 
     @Override
@@ -50,6 +55,11 @@ public final class FixedHostEnvironment implements HostEnvironment {
     @HostAccess.Export
     public String getEnvironmentValue(String name) {
         String value = environmentValues.get(name);
+        if (value == null && name != null) {
+            // Node's process.env is case-insensitive on Windows; mirror that so the bundled
+            // registry can resolve PROGRAMFILES / LOCALAPPDATA and friends.
+            value = environmentValuesByLowerCaseName.get(name.toLowerCase());
+        }
         return value == null ? "" : value;
     }
 }

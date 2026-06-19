@@ -9,6 +9,7 @@ public final class Playwright4JHost {
     private final HostHttpClient httpClient;
     private final HostWebSocketClient webSocketClient;
     private final HostDriverPipe driverPipe;
+    private final HostProcessLauncher processLauncher;
     private final MissingHostFunctionReporter missingHostFunctionReporter;
 
     public Playwright4JHost(
@@ -34,11 +35,24 @@ public final class Playwright4JHost {
             HostWebSocketClient webSocketClient,
             HostDriverPipe driverPipe,
             MissingHostFunctionReporter missingHostFunctionReporter) {
+        this(environment, fileSystem, httpClient, webSocketClient, driverPipe,
+                new DisabledHostProcessLauncher(), missingHostFunctionReporter);
+    }
+
+    public Playwright4JHost(
+            HostEnvironment environment,
+            HostFileSystem fileSystem,
+            HostHttpClient httpClient,
+            HostWebSocketClient webSocketClient,
+            HostDriverPipe driverPipe,
+            HostProcessLauncher processLauncher,
+            MissingHostFunctionReporter missingHostFunctionReporter) {
         this.environment = environment;
         this.fileSystem = fileSystem;
         this.httpClient = httpClient;
         this.webSocketClient = webSocketClient;
         this.driverPipe = driverPipe;
+        this.processLauncher = processLauncher;
         this.missingHostFunctionReporter = missingHostFunctionReporter;
     }
 
@@ -72,6 +86,16 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public HostDriverPipe driverPipe() {
         return driverPipe;
+    }
+
+    @HostAccess.Export
+    public HostProcessLauncher processLauncher() {
+        return processLauncher;
+    }
+
+    @HostAccess.Export
+    public void debugLog(String message) {
+        Playwright4JDebug.log("[pw4j-js] " + message);
     }
 
     @HostAccess.Export

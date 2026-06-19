@@ -10,23 +10,29 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public final class GraalDriverMain {
 
     private GraalDriverMain() {
     }
 
+    private static final long PUMP_HARD_DEADLINE_MILLIS = 60_000L;
+    private static final long PUMP_QUIET_WINDOW_MILLIS = 40L;
+
     public static void main(String[] args) throws IOException {
         Map<String, String> environment = new LinkedHashMap<String, String>(System.getenv());
         environment.putIfAbsent("PW_LANG_NAME", "java");
 
         PlaywrightDriverBundleSource driverBundleSource = new PlaywrightDriverBundleSource(Thread.currentThread().getContextClassLoader());
+        JdkHostProcessLauncher processLauncher = new JdkHostProcessLauncher();
         Playwright4JHost host = new Playwright4JHost(
                 new FixedHostEnvironment(platform(), architecture(), Paths.get("").toAbsolutePath().toString(), environment),
-                new EmptyHostFileSystem(),
+                new LocalHostFileSystem(),
                 new JdkHostHttpClient(),
                 new JdkHostWebSocketClient(),
                 new StandardIoDriverPipe(System.out, System.err),
+                processLauncher,
                 new RecordingMissingHostFunctionReporter());
 
         try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {
@@ -34,6 +40,8 @@ public final class GraalDriverMain {
             runtime.setProcessArguments(processArguments(driverBundleSource, args));
             runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
             pumpInput(runtime);
+        } finally {
+            processLauncher.closeAll();
         }
     }
 
@@ -49,11 +57,88 @@ public final class GraalDriverMain {
         DataInputStream input = new DataInputStream(new BufferedInputStream(System.in));
 
         while (true) {
+            String message;
             try {
-                runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(readLengthPrefixedMessage(input));
+                message = readLengthPrefixedMessage(input);
             } catch (EOFException exception) {
                 return;
             }
+
+            if (Playwright4JDebug.enabled()) {
+                Playwright4JDebug.log("[pw4j-protocol] IN " + (message.length() <= 300 ? message : message.substring(0, 300) + "..."));
+            }
+
+            runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(message);
+            pumpUntilIdle(runtime);
+        }
+    }
+
+    /**
+     * Drives the single-threaded GraalJS event loop until the work triggered by the last
+     * delivered protocol message has settled: it repeatedly fires due timers and drains the
+     * browser CDP transports. This is what lets an asynchronous {@code launch()} (or any
+     * command that waits on browser events) complete, instead of stalling because no further
+     * input arrives. The loop is strictly bounded so it always terminates.
+     */
+    private static void pumpUntilIdle(GraalPlaywrightRuntime runtime) {
+        long hardDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PUMP_HARD_DEADLINE_MILLIS);
+        long quietDeadline = -1L;
+        long totalFired = 0;
+        long totalDrained = 0;
+        long iterations = 0;
+
+        while (true) {
+            iterations++;
+            int fired = runtime.runDueTimers();
+            int drained = runtime.drainTransports();
+            totalFired += fired;
+            totalDrained += drained;
+
+            if (fired > 0 || drained > 0) {
+                quietDeadline = -1L;
+                if (System.nanoTime() > hardDeadline) {
+                    logPumpSummary("hard-deadline-active", iterations, totalFired, totalDrained);
+                    return;
+                }
+                continue;
+            }
+
+            // Something is still waiting on a future timer (e.g. a Playwright progress
+            // timeout). Keep ticking so that timer can fire and resolve or reject the work.
+            if (runtime.hasPendingTimers()) {
+                if (System.nanoTime() > hardDeadline) {
+                    logPumpSummary("hard-deadline-pending-timers", iterations, totalFired, totalDrained);
+                    return;
+                }
+                sleepQuietly(5L);
+                continue;
+            }
+
+            // No browser activity and no scheduled timers: settle after a short quiet window.
+            long now = System.nanoTime();
+            if (quietDeadline < 0L) {
+                quietDeadline = now + TimeUnit.MILLISECONDS.toNanos(PUMP_QUIET_WINDOW_MILLIS);
+            }
+            if (now >= quietDeadline || now > hardDeadline) {
+                logPumpSummary("idle", iterations, totalFired, totalDrained);
+                return;
+            }
+            sleepQuietly(2L);
+        }
+    }
+
+    private static void logPumpSummary(String reason, long iterations, long totalFired, long totalDrained) {
+        if (Playwright4JDebug.enabled()) {
+            Playwright4JDebug.log("[pw4j-pump] exit reason=" + reason + " iterations=" + iterations
+                    + " timersFired=" + totalFired + " messagesDrained=" + totalDrained);
+        }
+    }
+
+    private static void sleepQuietly(long milliseconds) {
+        try {
+            Thread.sleep(milliseconds);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
         }
     }
 

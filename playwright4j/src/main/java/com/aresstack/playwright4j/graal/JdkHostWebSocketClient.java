@@ -39,6 +39,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         String id = UUID.randomUUID().toString();
         connection.attach(webSocket);
         connections.put(id, connection);
+        Playwright4JDebug.log("[pw4j-cdp] OPEN " + url);
         return id;
     }
 
@@ -47,6 +48,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     public String sendAndWait(String connectionId, String message) {
         Connection connection = connection(connectionId);
         String requestId = messageId(message);
+        Playwright4JDebug.log("[pw4j-cdp] SEND " + truncate(message));
         connection.webSocket.sendText(message, true).join();
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -60,6 +62,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
             }
 
             messages.add(response);
+            Playwright4JDebug.log("[pw4j-cdp] RECV " + truncate(response));
 
             if (requestId == null || requestId.equals(messageId(response))) {
                 drainBriefly(connection, messages);
@@ -67,7 +70,15 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
             }
         }
 
+        Playwright4JDebug.log("[pw4j-cdp] TIMEOUT waiting for id " + requestId);
         throw new IllegalStateException("Timed out waiting for WebSocket response to message id " + requestId);
+    }
+
+    private static String truncate(String message) {
+        if (message == null) {
+            return "";
+        }
+        return message.length() <= 300 ? message : message.substring(0, 300) + "...";
     }
 
     private static void drainBriefly(Connection connection, List<String> messages) {
@@ -132,6 +143,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     private static final class Connection implements WebSocket.Listener {
 
         private final LinkedBlockingQueue<String> messages = new LinkedBlockingQueue<>();
+        private final StringBuilder partialFrame = new StringBuilder();
         private volatile WebSocket webSocket;
 
         void attach(WebSocket webSocket) {
@@ -156,7 +168,11 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
 
         @Override
         public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-            messages.offer(data.toString());
+            partialFrame.append(data);
+            if (last) {
+                messages.offer(partialFrame.toString());
+                partialFrame.setLength(0);
+            }
             webSocket.request(1);
             return null;
         }

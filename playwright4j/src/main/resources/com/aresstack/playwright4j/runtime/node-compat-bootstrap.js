@@ -4,30 +4,140 @@
 
   global.global = global;
 
+  // Keep all console output off the protocol channel (System.out is reserved for the
+  // length-prefixed driver protocol). Route everything to the host stderr pipe.
+  function consoleWrite(args) {
+    try {
+      const text = Array.prototype.map.call(args, function (value) {
+        if (typeof value === 'string') {
+          return value;
+        }
+        try {
+          return JSON.stringify(value);
+        } catch (error) {
+          return String(value);
+        }
+      }).join(' ');
+      host.driverPipe().writeErr(text + '\n');
+    } catch (error) {
+      // Diagnostics must never break the run.
+    }
+  }
+  global.console = {
+    log: function () { consoleWrite(arguments); },
+    info: function () { consoleWrite(arguments); },
+    warn: function () { consoleWrite(arguments); },
+    error: function () { consoleWrite(arguments); },
+    debug: function () { consoleWrite(arguments); },
+    trace: function () { consoleWrite(arguments); },
+    dir: function () { consoleWrite(arguments); },
+    assert: function () {}
+  };
+
+  function pw4jDebug(message) {
+    try {
+      host.debugLog(String(message));
+    } catch (error) {
+      // Diagnostics must never break the run.
+    }
+  }
+  global.__pw4jDebug = pw4jDebug;
+
+  // Timers are driven by the Java pump (GraalDriverMain) which repeatedly fires due
+  // timers via __playwright4jRunDueTimers(). Zero-delay timers take the microtask fast
+  // path so they still resolve within the current evaluation. Delayed timers are stored
+  // in a queue and fired once their wall-clock deadline passes. This makes Playwright's
+  // progress timeouts and polling waits work without any background thread.
   let timerSequence = 0;
   const canceledTimers = {};
+  const pendingTimers = new Map();
+
+  function scheduleTimer(callback, delay, args) {
+    const handle = ++timerSequence;
+    const numericDelay = typeof delay === 'number' && delay > 0 ? delay : 0;
+
+    if (numericDelay === 0) {
+      Promise.resolve().then(function () {
+        if (!canceledTimers[handle]) {
+          delete canceledTimers[handle];
+          callback.apply(null, args);
+        }
+      });
+      return handle;
+    }
+
+    pendingTimers.set(handle, {
+      due: Date.now() + numericDelay,
+      callback: callback,
+      args: args
+    });
+    return handle;
+  }
+
+  function clearTimer(handle) {
+    canceledTimers[handle] = true;
+    pendingTimers.delete(handle);
+  }
 
   if (typeof global.setTimeout !== 'function') {
     global.setTimeout = function (callback, delay) {
-      const handle = ++timerSequence;
-
-      if (!delay || delay <= 0) {
-        Promise.resolve().then(function () {
-          if (!canceledTimers[handle]) {
-            callback();
-          }
-        });
-      }
-
-      return handle;
+      return scheduleTimer(callback, delay, Array.prototype.slice.call(arguments, 2));
     };
   }
 
   if (typeof global.clearTimeout !== 'function') {
-    global.clearTimeout = function (handle) {
-      canceledTimers[handle] = true;
+    global.clearTimeout = clearTimer;
+  }
+
+  if (typeof global.setInterval !== 'function') {
+    // Playwright's bundled driver does not use setInterval, but provide a safe shim.
+    global.setInterval = function () {
+      return ++timerSequence;
     };
   }
+
+  if (typeof global.clearInterval !== 'function') {
+    global.clearInterval = clearTimer;
+  }
+
+  // Fires every timer whose deadline has passed. Returns the number fired so the Java
+  // pump can tell whether progress was made this tick.
+  global.__playwright4jRunDueTimers = function () {
+    if (pendingTimers.size === 0) {
+      return 0;
+    }
+
+    const now = Date.now();
+    const due = [];
+    pendingTimers.forEach(function (timer, handle) {
+      if (timer.due <= now) {
+        due.push({ handle: handle, timer: timer });
+      }
+    });
+
+    due.sort(function (left, right) {
+      return left.timer.due - right.timer.due;
+    });
+
+    let fired = 0;
+    for (let index = 0; index < due.length; index++) {
+      const entry = due[index];
+      if (pendingTimers.delete(entry.handle) && !canceledTimers[entry.handle]) {
+        fired++;
+        try {
+          entry.timer.callback.apply(null, entry.timer.args);
+        } catch (error) {
+          host.driverPipe().writeErr('[playwright4j] timer callback failed: ' + String(error && error.stack || error) + '\n');
+        }
+      }
+    }
+
+    return fired;
+  };
+
+  global.__playwright4jHasPendingTimers = function () {
+    return pendingTimers.size > 0;
+  };
 
   function reportMissing(name) {
     host.missingHostFunctionReporter().reportMissingHostFunction(name);
@@ -40,29 +150,87 @@
     };
   }
 
+  function hostExists(path) {
+    try {
+      return host.fileSystem().existsSync(String(path));
+    } catch (error) {
+      return false;
+    }
+  }
+
   modules.fs = {
     existsSync: function (path) {
-      return host.fileSystem().existsSync(String(path));
+      return hostExists(path);
     },
     readFileSync: function (path, encoding) {
       return host.fileSystem().readFileSync(String(path), encoding || 'utf8');
     },
-    writeFileSync: unsupported('fs.writeFileSync'),
-    mkdirSync: unsupported('fs.mkdirSync'),
-    rmSync: unsupported('fs.rmSync'),
+    accessSync: function (path) {
+      if (!hostExists(path)) {
+        throw new Error('ENOENT: no such file or directory, access ' + String(path));
+      }
+    },
+    writeFileSync: function (path, content) {
+      host.fileSystem().writeFile(String(path), content === undefined ? '' : String(content));
+    },
+    mkdirSync: function (path) {
+      host.fileSystem().createDirectories(String(path));
+      return undefined;
+    },
+    mkdtempSync: function (prefix) {
+      return host.fileSystem().createTempDirectory(String(prefix));
+    },
+    rmSync: function () {
+      return undefined;
+    },
+    stat: function (path, callback) {
+      const exists = hostExists(path);
+      Promise.resolve().then(function () {
+        if (exists) {
+          callback(null, { isFile: function () { return true; }, isDirectory: function () { return false; } });
+        } else {
+          const error = new Error('ENOENT: no such file or directory, stat ' + String(path));
+          error.code = 'ENOENT';
+          callback(error);
+        }
+      });
+    },
     promises: {
       readFile: async function (path, encoding) {
         return host.fileSystem().readFileSync(String(path), encoding || 'utf8');
       },
       mkdtemp: async function (prefix) {
-        return String(prefix || '/tmp/playwright4j-') + Math.floor(Math.random() * 1000000000);
+        return host.fileSystem().createTempDirectory(String(prefix));
       },
-      writeFile: unsupported('fs.promises.writeFile'),
-      mkdir: async function () {
+      stat: async function (path) {
+        if (!hostExists(path)) {
+          const error = new Error('ENOENT: no such file or directory, stat ' + String(path));
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return {
+          mtime: new Date(0),
+          mtimeMs: 0,
+          size: 0,
+          isFile: function () { return true; },
+          isDirectory: function () { return false; }
+        };
+      },
+      writeFile: async function (path, content) {
+        host.fileSystem().writeFile(String(path), content === undefined ? '' : String(content));
+        return undefined;
+      },
+      mkdir: async function (path) {
+        host.fileSystem().createDirectories(String(path));
         return undefined;
       },
       rm: async function () {
         return undefined;
+      },
+      access: async function (path) {
+        if (!hostExists(path)) {
+          throw new Error('ENOENT: no such file or directory, access ' + String(path));
+        }
       }
     }
   };
@@ -115,10 +283,118 @@
     }
   };
 
+  const ARGUMENT_SEPARATOR = '';
+
+  function createProcessStream() {
+    const stream = new EventEmitter();
+    stream.readable = true;
+    stream.writable = true;
+    stream.write = function () {
+      return true;
+    };
+    stream.end = function () {
+      return undefined;
+    };
+    stream.destroy = function () {
+      return undefined;
+    };
+    stream.resume = function () {
+      return stream;
+    };
+    stream.pause = function () {
+      return stream;
+    };
+    stream.setEncoding = function () {
+      return stream;
+    };
+    stream.pipe = function (destination) {
+      return destination;
+    };
+    return stream;
+  }
+
+  // stdio[3] and stdio[4] stand in for Chromium's remote-debugging pipe. Because we use a
+  // WebSocket endpoint instead, they carry the discovered ws:// endpoint so that the
+  // host-backed PipeTransport can connect to it.
+  function createBrowserPipe(processId, endpoint, child) {
+    const pipe = createProcessStream();
+    pipe.__playwright4jBrowserPipe = true;
+    pipe.__playwright4jProcessId = processId;
+    pipe.__playwright4jEndpoint = endpoint;
+    pipe.__playwright4jChildProcess = child;
+    return pipe;
+  }
+
+  function closeSpawnedProcess(child, exitCode) {
+    if (!child || child.__playwright4jClosed) {
+      return;
+    }
+    child.__playwright4jClosed = true;
+    child.killed = true;
+    const code = typeof exitCode === 'number' ? exitCode : 0;
+    child.emit('exit', code, null);
+    child.emit('close', code, null);
+  }
+
+  function createSpawnedProcess(processId, endpoint) {
+    const child = new EventEmitter();
+    child.pid = Math.floor(Math.random() * 1000000) + 1;
+    child.killed = false;
+    child.__playwright4jClosed = false;
+    child.__playwright4jProcessId = processId;
+    child.stdin = createProcessStream();
+    child.stdout = createProcessStream();
+    child.stderr = createProcessStream();
+    child.stdio = [
+      child.stdin,
+      child.stdout,
+      child.stderr,
+      createBrowserPipe(processId, endpoint, child),
+      createBrowserPipe(processId, endpoint, child)
+    ];
+    child.kill = function () {
+      if (!child.__playwright4jClosed) {
+        try {
+          host.processLauncher().close(processId);
+        } catch (error) {
+          // Already gone.
+        }
+        closeSpawnedProcess(child, 0);
+      }
+      return true;
+    };
+    child.ref = function () {
+      return child;
+    };
+    child.unref = function () {
+      return child;
+    };
+    Promise.resolve().then(function () {
+      child.emit('spawn');
+    });
+    return child;
+  }
+
   modules.child_process = {
-    spawn: unsupported('child_process.spawn'),
+    spawn: function (command, args, options) {
+      const joinedArguments = (args || []).map(function (value) {
+        return String(value);
+      }).join(ARGUMENT_SEPARATOR);
+      const workingDirectory = options && options.cwd ? String(options.cwd) : global.process.cwd();
+
+      // launchChromium throws on failure; let it propagate so Playwright's launch promise
+      // rejects with a real error instead of hanging.
+      const result = String(host.processLauncher().launchChromium(String(command), joinedArguments, workingDirectory));
+      const separatorIndex = result.indexOf(ARGUMENT_SEPARATOR);
+      const processId = separatorIndex < 0 ? result : result.substring(0, separatorIndex);
+      const endpoint = separatorIndex < 0 ? '' : result.substring(separatorIndex + 1);
+      return createSpawnedProcess(processId, endpoint);
+    },
     execFile: unsupported('child_process.execFile'),
-    execFileSync: unsupported('child_process.execFileSync')
+    execFileSync: unsupported('child_process.execFileSync'),
+    spawnSync: function () {
+      return { status: 0, stdout: global.Buffer.from(''), stderr: global.Buffer.from('') };
+    }
   };
 
   class EventEmitter {
@@ -344,8 +620,17 @@
   };
 
   modules.readline = {
-    createInterface: unsupported('readline.createInterface'),
-    emitKeypressEvents: unsupported('readline.emitKeypressEvents')
+    createInterface: function () {
+      const reader = new EventEmitter();
+      reader.close = function () {
+        reader.emit('close');
+        return undefined;
+      };
+      return reader;
+    },
+    emitKeypressEvents: function () {
+      return undefined;
+    }
   };
 
   modules.tty = {
@@ -630,7 +915,8 @@
     URLSearchParams: global.URLSearchParams
   };
 
-  global.process = {
+  global.process = new EventEmitter();
+  Object.assign(global.process, {
     env: new Proxy({}, {
       get: function (target, name) {
         return host.environment().getEnvironmentValue(String(name));
@@ -656,7 +942,9 @@
       fd: 1,
       isTTY: false,
       write: function (chunk) {
-        return host.driverPipe().writeOut(String(chunk));
+        // process.stdout must never reach the length-prefixed protocol channel, which is
+        // driven exclusively by the host pipe's writeMessage. Route it to stderr.
+        return host.driverPipe().writeErr(String(chunk));
       }
     },
     stderr: {
@@ -667,13 +955,22 @@
       }
     },
     nextTick: function (callback) {
-      return Promise.resolve().then(callback);
+      const args = Array.prototype.slice.call(arguments, 1);
+      return Promise.resolve().then(function () {
+        callback.apply(null, args);
+      });
+    },
+    exit: function () {
+      return undefined;
+    },
+    kill: function () {
+      return true;
     },
     version: 'v20.0.0',
     versions: {
       node: '20.0.0'
     }
-  };
+  });
 
   modules.process = global.process;
 
@@ -913,18 +1210,98 @@
   }
 
   function createHostBackedPipeTransport() {
+    const activeBrowserPipes = [];
+
+    function emitBrowserMessages(transport, joinedMessages) {
+      let emitted = 0;
+      String(joinedMessages || '').split('').forEach(function (message) {
+        if (!message) {
+          return;
+        }
+        emitted++;
+        Promise.resolve().then(function () {
+          if (transport.onmessage) {
+            transport.onmessage(JSON.parse(message));
+          }
+        });
+      });
+      return emitted;
+    }
+
+    // Drains every browser CDP pipe; returns how many raw messages were pulled so the
+    // Java pump can detect progress.
+    global.__playwright4jDrainBrowserPipes = function () {
+      let drained = 0;
+      activeBrowserPipes.slice().forEach(function (transport) {
+        drained += transport.drain();
+      });
+      return drained;
+    };
+
     return class HostBackedPipeTransport {
       constructor(pipeWrite, pipeRead) {
         this.onmessage = undefined;
         this.onclose = undefined;
-        global.__playwright4jProtocolTransport = this;
+        this.browserConnectionId = undefined;
+        this.browserProcessId = undefined;
+        this.browserChildProcess = undefined;
+
+        if (pipeWrite && pipeWrite.__playwright4jBrowserPipe) {
+          // Chromium CDP pipe: bridge it to the WebSocket endpoint Chrome chose.
+          this.browserProcessId = String(pipeWrite.__playwright4jProcessId);
+          this.browserChildProcess = pipeWrite.__playwright4jChildProcess;
+          this.browserConnectionId = host.webSocketClient().open(String(pipeWrite.__playwright4jEndpoint));
+          activeBrowserPipes.push(this);
+        } else {
+          // Driver protocol pipe: talk to the Java client over the length-prefixed pipe.
+          global.__playwright4jProtocolTransport = this;
+        }
       }
 
       send(message) {
+        if (this.browserConnectionId) {
+          const payload = typeof message === 'string' ? message : JSON.stringify(message);
+          const response = host.webSocketClient().sendAndWait(this.browserConnectionId, payload);
+          emitBrowserMessages(this, response);
+          return undefined;
+        }
+
         return host.driverPipe().writeMessage(String(message));
       }
 
+      drain() {
+        if (!this.browserConnectionId) {
+          return 0;
+        }
+        const response = host.webSocketClient().drain(this.browserConnectionId, 10);
+        return emitBrowserMessages(this, response);
+      }
+
       close() {
+        const index = activeBrowserPipes.indexOf(this);
+        if (index >= 0) {
+          activeBrowserPipes.splice(index, 1);
+        }
+
+        if (this.browserConnectionId) {
+          host.webSocketClient().close(this.browserConnectionId);
+          this.browserConnectionId = undefined;
+        }
+
+        if (this.browserProcessId) {
+          try {
+            host.processLauncher().close(this.browserProcessId);
+          } catch (error) {
+            // Already gone.
+          }
+          this.browserProcessId = undefined;
+        }
+
+        if (this.browserChildProcess && !this.browserChildProcess.killed) {
+          closeSpawnedProcess(this.browserChildProcess, 0);
+          this.browserChildProcess = undefined;
+        }
+
         if (this.onclose) {
           this.onclose();
         }
@@ -942,9 +1319,11 @@
     const activeTransports = [];
 
     global.__playwright4jDrainTransports = function () {
+      let drained = 0;
       activeTransports.slice().forEach(function (transport) {
-        transport.drain();
+        drained += transport.drain();
       });
+      return drained;
     };
 
     return class HostBackedWebSocketTransport {
@@ -968,11 +1347,13 @@
       }
 
       emitMessages(joinedMessages) {
-        String(joinedMessages || '').split('\u001e').forEach((message) => {
+        let emitted = 0;
+        String(joinedMessages || '').split('').forEach((message) => {
           if (!message) {
             return;
           }
 
+          emitted++;
           Promise.resolve().then(() => {
             if (this.onmessage) {
               this.onmessage(JSON.parse(message));
@@ -981,6 +1362,7 @@
             }
           });
         });
+        return emitted;
       }
 
       send(message) {
@@ -995,8 +1377,10 @@
 
         if (drainedMessages) {
           traceWebSocket('transport-drain:' + drainedMessages);
-          this.emitMessages(drainedMessages);
+          return this.emitMessages(drainedMessages);
         }
+
+        return 0;
       }
 
       close() {
@@ -1014,7 +1398,7 @@
   }
 
   function installKnownModuleFallbacks(resourceName, exportsObject) {
-    if (resourceName.endsWith('/lib/utils/pipeTransport.js') || resourceName.endsWith('/lib/server/utils/pipeTransport.js')) {
+    if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
 
       return new Proxy(exportsObject, {
