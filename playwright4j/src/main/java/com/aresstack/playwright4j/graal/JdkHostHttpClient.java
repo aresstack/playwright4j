@@ -49,7 +49,10 @@ public final class JdkHostHttpClient implements HostHttpClient {
         }
 
         try {
-            HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<byte[]> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+            Playwright4JDebug.log("[pw4j-http] " + method + " " + url + " -> " + response.statusCode()
+                    + " ct=" + response.headers().firstValue("content-type").orElse("")
+                    + " bodyBytes=" + (response.body() == null ? 0 : response.body().length));
             return new HostHttpResponse(
                     response.statusCode(),
                     reasonPhrase(response.statusCode()),
@@ -86,7 +89,7 @@ public final class JdkHostHttpClient implements HostHttpClient {
         }
     }
 
-    private String[] flattenHeaders(HttpResponse<String> response) {
+    private String flattenHeaders(HttpResponse<?> response) {
         List<String> flattened = new ArrayList<String>();
         for (Map.Entry<String, List<String>> entry : response.headers().map().entrySet()) {
             for (String value : entry.getValue()) {
@@ -94,7 +97,7 @@ public final class JdkHostHttpClient implements HostHttpClient {
                 flattened.add(value);
             }
         }
-        return flattened.toArray(new String[0]);
+        return String.join(ENTRY_SEPARATOR, flattened);
     }
 
     private String reasonPhrase(int statusCode) {

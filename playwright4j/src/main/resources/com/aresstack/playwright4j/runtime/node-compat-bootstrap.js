@@ -752,11 +752,13 @@
 
     const rawHeaders = [];
     const headers = {};
-    const rawHeaderValues = response.rawHeaders();
-    const headerCount = rawHeaderValues ? rawHeaderValues.length : 0;
-    for (let index = 0; index + 1 < headerCount; index += 2) {
-      const name = String(rawHeaderValues[index]);
-      const value = String(rawHeaderValues[index + 1]);
+    const headerValues = String(response.rawHeaders() || '').split('');
+    for (let index = 0; index + 1 < headerValues.length; index += 2) {
+      const name = headerValues[index];
+      const value = headerValues[index + 1];
+      if (!name) {
+        continue;
+      }
       rawHeaders.push(name, value);
       const lowerName = name.toLowerCase();
       if (headers[lowerName] === undefined) {
@@ -817,7 +819,7 @@
           request.emit('response', incomingMessage);
 
           Promise.resolve().then(function () {
-            const body = response.body() || '';
+            const body = global.Buffer.from(String(response.bodyBase64() || ''), 'base64');
 
             if (body.length > 0) {
               incomingMessage.emit('data', body);
@@ -1035,32 +1037,250 @@
 
   modules.process = global.process;
 
-  global.Buffer = {
-    from: function (value) {
-      if (typeof value === 'string') {
-        return new TextEncoder().encode(value);
-      }
-      return value;
-    },
-    byteLength: function (value) {
-      return global.Buffer.from(value).length;
-    },
-    concat: function (values) {
-      return {
-        toString: function () {
-          return values.map(function (value) {
-            return String(value);
-          }).join('');
-        }
-      };
-    },
-    isBuffer: function () {
-      return false;
-    },
-    alloc: function (size) {
-      return new Uint8Array(size);
+  // A Node-compatible Buffer backed by Uint8Array. Playwright's protocol serializer checks
+  // `arg instanceof Buffer` and calls `buffer.toString('base64')`, so binary bodies must be
+  // real Buffer instances carrying real bytes (not a stub).
+  const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+  function base64Encode(bytes) {
+    let output = '';
+    for (let index = 0; index < bytes.length; index += 3) {
+      const byte0 = bytes[index];
+      const byte1 = index + 1 < bytes.length ? bytes[index + 1] : 0;
+      const byte2 = index + 2 < bytes.length ? bytes[index + 2] : 0;
+      output += BASE64_ALPHABET[byte0 >> 2];
+      output += BASE64_ALPHABET[((byte0 & 3) << 4) | (byte1 >> 4)];
+      output += index + 1 < bytes.length ? BASE64_ALPHABET[((byte1 & 15) << 2) | (byte2 >> 6)] : '=';
+      output += index + 2 < bytes.length ? BASE64_ALPHABET[byte2 & 63] : '=';
     }
-  };
+    return output;
+  }
+
+  function base64Decode(text) {
+    const clean = String(text).replace(/[^A-Za-z0-9+/]/g, '');
+    const length = Math.floor(clean.length * 3 / 4);
+    const bytes = new Uint8Array(length);
+    let outputIndex = 0;
+    for (let index = 0; index < clean.length; index += 4) {
+      const enc0 = BASE64_ALPHABET.indexOf(clean[index]);
+      const enc1 = BASE64_ALPHABET.indexOf(clean[index + 1]);
+      const enc2 = BASE64_ALPHABET.indexOf(clean[index + 2]);
+      const enc3 = BASE64_ALPHABET.indexOf(clean[index + 3]);
+      if (outputIndex < length) bytes[outputIndex++] = (enc0 << 2) | (enc1 >> 4);
+      if (outputIndex < length && enc2 >= 0) bytes[outputIndex++] = ((enc1 & 15) << 4) | (enc2 >> 2);
+      if (outputIndex < length && enc3 >= 0) bytes[outputIndex++] = ((enc2 & 3) << 6) | enc3;
+    }
+    return bytes;
+  }
+
+  function hexEncode(bytes) {
+    let output = '';
+    for (let index = 0; index < bytes.length; index++) {
+      output += (bytes[index] >> 4).toString(16) + (bytes[index] & 15).toString(16);
+    }
+    return output;
+  }
+
+  function hexDecode(text) {
+    const clean = String(text);
+    const bytes = new Uint8Array(Math.floor(clean.length / 2));
+    for (let index = 0; index < bytes.length; index++) {
+      bytes[index] = parseInt(clean.substr(index * 2, 2), 16);
+    }
+    return bytes;
+  }
+
+  function latin1Encode(text) {
+    const bytes = new Uint8Array(text.length);
+    for (let index = 0; index < text.length; index++) {
+      bytes[index] = text.charCodeAt(index) & 255;
+    }
+    return bytes;
+  }
+
+  function latin1Decode(bytes) {
+    let output = '';
+    for (let index = 0; index < bytes.length; index++) {
+      output += String.fromCharCode(bytes[index]);
+    }
+    return output;
+  }
+
+  // GraalJS does not always expose TextEncoder/TextDecoder, so encode/decode UTF-8 by hand.
+  function utf8Encode(text) {
+    const string = String(text);
+    const bytes = [];
+    for (let index = 0; index < string.length; index++) {
+      let codePoint = string.charCodeAt(index);
+      if (codePoint >= 0xD800 && codePoint <= 0xDBFF && index + 1 < string.length) {
+        const low = string.charCodeAt(index + 1);
+        if (low >= 0xDC00 && low <= 0xDFFF) {
+          codePoint = 0x10000 + ((codePoint - 0xD800) << 10) + (low - 0xDC00);
+          index++;
+        }
+      }
+      if (codePoint < 0x80) {
+        bytes.push(codePoint);
+      } else if (codePoint < 0x800) {
+        bytes.push(0xC0 | (codePoint >> 6), 0x80 | (codePoint & 0x3F));
+      } else if (codePoint < 0x10000) {
+        bytes.push(0xE0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3F), 0x80 | (codePoint & 0x3F));
+      } else {
+        bytes.push(
+          0xF0 | (codePoint >> 18),
+          0x80 | ((codePoint >> 12) & 0x3F),
+          0x80 | ((codePoint >> 6) & 0x3F),
+          0x80 | (codePoint & 0x3F));
+      }
+    }
+    return Uint8Array.from(bytes);
+  }
+
+  function utf8Decode(bytes) {
+    let output = '';
+    let index = 0;
+    while (index < bytes.length) {
+      const byte0 = bytes[index++];
+      if (byte0 < 0x80) {
+        output += String.fromCharCode(byte0);
+      } else if (byte0 >= 0xC0 && byte0 < 0xE0) {
+        const byte1 = bytes[index++] & 0x3F;
+        output += String.fromCharCode(((byte0 & 0x1F) << 6) | byte1);
+      } else if (byte0 >= 0xE0 && byte0 < 0xF0) {
+        const byte1 = bytes[index++] & 0x3F;
+        const byte2 = bytes[index++] & 0x3F;
+        output += String.fromCharCode(((byte0 & 0x0F) << 12) | (byte1 << 6) | byte2);
+      } else {
+        const byte1 = bytes[index++] & 0x3F;
+        const byte2 = bytes[index++] & 0x3F;
+        const byte3 = bytes[index++] & 0x3F;
+        let codePoint = ((byte0 & 0x07) << 18) | (byte1 << 12) | (byte2 << 6) | byte3;
+        codePoint -= 0x10000;
+        output += String.fromCharCode(0xD800 + (codePoint >> 10), 0xDC00 + (codePoint & 0x3FF));
+      }
+    }
+    return output;
+  }
+
+  const utf8Encoder = { encode: utf8Encode };
+
+  class Buffer extends Uint8Array {
+    static from(value, encoding) {
+      if (value instanceof Buffer) {
+        const copy = new Buffer(value.length);
+        copy.set(value);
+        return copy;
+      }
+      if (value instanceof Uint8Array || Array.isArray(value)) {
+        const copy = new Buffer(value.length);
+        copy.set(value);
+        return copy;
+      }
+      if (typeof value === 'string') {
+        const normalized = (encoding || 'utf8').toLowerCase();
+        let bytes;
+        if (normalized === 'base64') {
+          bytes = base64Decode(value);
+        } else if (normalized === 'hex') {
+          bytes = hexDecode(value);
+        } else if (normalized === 'latin1' || normalized === 'binary' || normalized === 'ascii') {
+          bytes = latin1Encode(value);
+        } else {
+          bytes = utf8Encoder.encode(value);
+        }
+        const copy = new Buffer(bytes.length);
+        copy.set(bytes);
+        return copy;
+      }
+      if (typeof value === 'number') {
+        return new Buffer(value);
+      }
+      if (value && typeof value.length === 'number') {
+        const copy = new Buffer(value.length);
+        for (let index = 0; index < value.length; index++) {
+          copy[index] = value[index] & 255;
+        }
+        return copy;
+      }
+      return new Buffer(0);
+    }
+
+    static alloc(size, fill) {
+      const buffer = new Buffer(size);
+      if (fill !== undefined) {
+        buffer.fill(typeof fill === 'number' ? fill : 0);
+      }
+      return buffer;
+    }
+
+    static concat(list, totalLength) {
+      let total = totalLength;
+      if (total === undefined) {
+        total = 0;
+        for (let index = 0; index < list.length; index++) {
+          total += list[index] ? list[index].length : 0;
+        }
+      }
+      const result = new Buffer(total);
+      let offset = 0;
+      for (let index = 0; index < list.length; index++) {
+        const chunk = list[index];
+        if (!chunk || !chunk.length) {
+          continue;
+        }
+        const slice = offset + chunk.length > total ? chunk.subarray(0, total - offset) : chunk;
+        result.set(slice, offset);
+        offset += slice.length;
+      }
+      return result;
+    }
+
+    static isBuffer(value) {
+      return value instanceof Buffer;
+    }
+
+    static byteLength(value, encoding) {
+      if (typeof value === 'string') {
+        return Buffer.from(value, encoding).length;
+      }
+      return value && typeof value.length === 'number' ? value.length : 0;
+    }
+
+    toString(encoding, start, end) {
+      const view = (start || end !== undefined)
+        ? this.subarray(start || 0, end === undefined ? this.length : end)
+        : this;
+      const normalized = (encoding || 'utf8').toLowerCase();
+      if (normalized === 'base64') {
+        return base64Encode(view);
+      }
+      if (normalized === 'hex') {
+        return hexEncode(view);
+      }
+      if (normalized === 'latin1' || normalized === 'binary' || normalized === 'ascii') {
+        return latin1Decode(view);
+      }
+      return utf8Decode(view);
+    }
+
+    toJSON() {
+      return { type: 'Buffer', data: Array.prototype.slice.call(this) };
+    }
+
+    equals(other) {
+      if (!other || other.length !== this.length) {
+        return false;
+      }
+      for (let index = 0; index < this.length; index++) {
+        if (this[index] !== other[index]) {
+          return false;
+        }
+      }
+      return true;
+    }
+  }
+
+  global.Buffer = Buffer;
 
   modules.buffer = {
     Buffer: global.Buffer

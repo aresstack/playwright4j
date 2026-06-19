@@ -45,6 +45,13 @@ test {
 
 tasks.named('processUpstreamTestResources') {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // The upstream Server serves files via getResourceAsStream("resources" + path), i.e. it
+    // expects test assets under a `resources/` directory on the classpath. Nest them there.
+    eachFile { details ->
+        details.relativePath = new RelativePath(true,
+                (['resources'] + (details.relativePath.segments as List)) as String[])
+    }
+    includeEmptyDirs = false
 }
 
 tasks.register('upstreamTest', Test) {
