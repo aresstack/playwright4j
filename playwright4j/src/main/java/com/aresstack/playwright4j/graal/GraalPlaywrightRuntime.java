@@ -106,6 +106,7 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
         int drained = 0;
         drained += executeGlobalIntFunctionIfPresent("__playwright4jDrainBrowserPipes");
         drained += executeGlobalIntFunctionIfPresent("__playwright4jDrainTransports");
+        drained += executeGlobalIntFunctionIfPresent("__playwright4jDrainHttp");
         return drained;
     }
 

@@ -11,6 +11,9 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class JdkHostHttpClient implements HostHttpClient {
 
@@ -25,7 +28,12 @@ public final class JdkHostHttpClient implements HostHttpClient {
             "connection", "content-length", "host", "upgrade",
             "transfer-encoding", "expect", "date");
 
+    // Safety net so an in-flight request the guest never polls/cancels cannot leak forever.
+    private static final Duration MAX_REQUEST_DURATION = Duration.ofSeconds(120);
+
     private final HttpClient client;
+    private final Map<String, CompletableFuture<HostHttpResponse>> pendingRequests =
+            new ConcurrentHashMap<String, CompletableFuture<HostHttpResponse>>();
 
     public JdkHostHttpClient() {
         this.client = HttpClient.newBuilder()
@@ -36,8 +44,68 @@ public final class JdkHostHttpClient implements HostHttpClient {
     @Override
     @org.graalvm.polyglot.HostAccess.Export
     public HostHttpResponse request(String method, String url, String headers, String bodyBase64) {
+        try {
+            HttpResponse<byte[]> response = client.send(buildRequest(method, url, headers, bodyBase64),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            return toResponse(response);
+        } catch (IOException exception) {
+            return mapNetworkError(exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return HostHttpResponse.error("Request interrupted", "ECONNRESET");
+        }
+    }
+
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
+    public String startRequest(String method, String url, String headers, String bodyBase64) {
+        String requestId = UUID.randomUUID().toString();
+        CompletableFuture<HostHttpResponse> future;
+        try {
+            future = client.sendAsync(buildRequest(method, url, headers, bodyBase64),
+                            HttpResponse.BodyHandlers.ofByteArray())
+                    .handle((response, throwable) -> {
+                        if (throwable != null) {
+                            return mapThrowable(throwable);
+                        }
+                        return toResponse(response);
+                    });
+        } catch (RuntimeException exception) {
+            // e.g. IllegalArgumentException for a malformed URI: surface as a network error.
+            future = CompletableFuture.completedFuture(
+                    HostHttpResponse.error(exception.getMessage() == null ? "network error" : exception.getMessage(), "ECONNRESET"));
+        }
+        pendingRequests.put(requestId, future);
+        return requestId;
+    }
+
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
+    public HostHttpResponse pollRequest(String requestId) {
+        CompletableFuture<HostHttpResponse> future = pendingRequests.get(requestId);
+        if (future == null || !future.isDone()) {
+            return null;
+        }
+        pendingRequests.remove(requestId);
+        try {
+            return future.get();
+        } catch (Exception exception) {
+            return HostHttpResponse.error(exception.getMessage() == null ? "network error" : exception.getMessage(), "ECONNRESET");
+        }
+    }
+
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
+    public void cancelRequest(String requestId) {
+        CompletableFuture<HostHttpResponse> future = pendingRequests.remove(requestId);
+        if (future != null) {
+            future.cancel(true);
+        }
+    }
+
+    private HttpRequest buildRequest(String method, String url, String headers, String bodyBase64) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(30));
+                .timeout(MAX_REQUEST_DURATION);
 
         applyHeaders(builder, headers);
 
@@ -50,25 +118,30 @@ public final class JdkHostHttpClient implements HostHttpClient {
         } else {
             builder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
         }
+        return builder.build();
+    }
 
-        try {
-            HttpResponse<byte[]> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
-            Playwright4JDebug.log("[pw4j-http] " + method + " " + url + " -> " + response.statusCode()
-                    + " ct=" + response.headers().firstValue("content-type").orElse("")
-                    + " bodyBytes=" + (response.body() == null ? 0 : response.body().length));
-            return new HostHttpResponse(
-                    response.statusCode(),
-                    reasonPhrase(response.statusCode()),
-                    response.body(),
-                    flattenHeaders(response));
-        } catch (IOException exception) {
-            Playwright4JDebug.log("[pw4j-http] ERROR " + method + " " + url + " -> "
-                    + exception.getClass().getName() + ": " + exception.getMessage());
-            return mapNetworkError(exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            return HostHttpResponse.error("Request interrupted", "ECONNRESET");
+    private HostHttpResponse toResponse(HttpResponse<byte[]> response) {
+        Playwright4JDebug.log("[pw4j-http] " + response.uri() + " -> " + response.statusCode()
+                + " bodyBytes=" + (response.body() == null ? 0 : response.body().length));
+        return new HostHttpResponse(
+                response.statusCode(),
+                reasonPhrase(response.statusCode()),
+                response.body(),
+                flattenHeaders(response));
+    }
+
+    private HostHttpResponse mapThrowable(Throwable throwable) {
+        Throwable cause = throwable;
+        while (cause != null && !(cause instanceof IOException) && cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
         }
+        if (cause instanceof IOException) {
+            return mapNetworkError((IOException) cause);
+        }
+        String message = throwable.getMessage() == null ? "network error" : throwable.getMessage();
+        Playwright4JDebug.log("[pw4j-http] ERROR " + throwable.getClass().getName() + ": " + message);
+        return HostHttpResponse.error(message, "ECONNRESET");
     }
 
     // Translates a Java HTTP failure into the Node-style error the bundled fetch expects, so

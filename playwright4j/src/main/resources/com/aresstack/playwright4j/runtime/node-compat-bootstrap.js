@@ -792,6 +792,65 @@
     return global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
   }
 
+  // In-flight async HTTP requests, polled by the Java pump so the GraalJS thread is never
+  // blocked on I/O and Playwright's progress timeouts can fire mid-request.
+  const pendingHttpRequests = [];
+
+  function deliverHttpResponse(entry, response) {
+    const request = entry.request;
+    const errorMessage = response.errorMessage();
+    if (errorMessage) {
+      const networkError = new Error(errorMessage);
+      const errorCode = response.errorCode();
+      if (errorCode) {
+        networkError.code = errorCode;
+      }
+      request.emit('error', networkError);
+      return;
+    }
+
+    const incomingMessage = buildIncomingMessage(response);
+    if (entry.callback) {
+      entry.callback(incomingMessage);
+    }
+    request.emit('response', incomingMessage);
+
+    // Let the (async) response handler register its body listeners before the body flows.
+    Promise.resolve().then(function () {
+      const body = global.Buffer.from(String(response.bodyBase64() || ''), 'base64');
+      if (body.length > 0) {
+        incomingMessage.emit('data', body);
+      }
+      incomingMessage.complete = true;
+      incomingMessage.emit('end');
+      incomingMessage.emit('close');
+      request.emit('close');
+    });
+  }
+
+  global.__playwright4jDrainHttp = function () {
+    let delivered = 0;
+    for (let index = pendingHttpRequests.length - 1; index >= 0; index--) {
+      const entry = pendingHttpRequests[index];
+      const response = host.httpClient().pollRequest(entry.requestId);
+      if (response === null || response === undefined) {
+        continue;
+      }
+      pendingHttpRequests.splice(index, 1);
+      delivered++;
+      deliverHttpResponse(entry, response);
+    }
+    return delivered;
+  };
+
+  function removePendingHttpRequest(request) {
+    for (let index = pendingHttpRequests.length - 1; index >= 0; index--) {
+      if (pendingHttpRequests[index].request === request) {
+        pendingHttpRequests.splice(index, 1);
+      }
+    }
+  }
+
   function createHttpRequest(defaultProtocol, first, second, third) {
     // Node signatures: request(url[, options][, cb]) or request(options[, cb]).
     let urlString = null;
@@ -871,56 +930,46 @@
 
       request.emit('finish');
 
-      Promise.resolve().then(function () {
-        try {
-          const method = String(options.method || 'GET').toUpperCase();
-          const url = urlString !== null ? urlString : requestOptionsToUrl(options);
-          // Body is sent bytes-first (Base64 across the host boundary) so binary, form and
-          // multipart payloads survive intact.
-          const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
-          const response = host.httpClient().request(method, url, flattenRequestHeaders(options), bodyBase64);
-
-          const errorMessage = response.errorMessage();
-          if (errorMessage) {
-            const networkError = new Error(errorMessage);
-            const errorCode = response.errorCode();
-            if (errorCode) {
-              networkError.code = errorCode;
-            }
-            request.emit('error', networkError);
-            return;
-          }
-
-          const incomingMessage = buildIncomingMessage(response);
-
-          if (callback) {
-            callback(incomingMessage);
-          }
-          request.emit('response', incomingMessage);
-
-          Promise.resolve().then(function () {
-            const body = global.Buffer.from(String(response.bodyBase64() || ''), 'base64');
-
-            if (body.length > 0) {
-              incomingMessage.emit('data', body);
-            }
-
-            incomingMessage.complete = true;
-            incomingMessage.emit('end');
-            incomingMessage.emit('close');
-            request.emit('close');
-          });
-        } catch (error) {
+      let requestId;
+      try {
+        const method = String(options.method || 'GET').toUpperCase();
+        const url = urlString !== null ? urlString : requestOptionsToUrl(options);
+        // Body is sent bytes-first (Base64 across the host boundary) so binary, form and
+        // multipart payloads survive intact.
+        const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
+        // Non-blocking: the response is delivered later via __playwright4jDrainHttp, so the
+        // JS thread stays free and Playwright's timeout/abort can take effect mid-request.
+        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64);
+      } catch (error) {
+        Promise.resolve().then(function () {
           request.emit('error', error);
-        }
-      });
+        });
+        return;
+      }
+
+      request.__playwright4jRequestId = requestId;
+      pendingHttpRequests.push({ requestId: requestId, request: request, callback: callback });
     };
 
+    function cancelUnderlyingRequest() {
+      if (request.__playwright4jRequestId) {
+        try {
+          host.httpClient().cancelRequest(request.__playwright4jRequestId);
+        } catch (error) {
+          // Already finished.
+        }
+        request.__playwright4jRequestId = undefined;
+      }
+      removePendingHttpRequest(request);
+    }
+
     request.abort = function () {
+      cancelUnderlyingRequest();
       request.emit('abort');
     };
 
     request.destroy = function (error) {
+      cancelUnderlyingRequest();
       if (error) {
         request.emit('error', error);
       }
