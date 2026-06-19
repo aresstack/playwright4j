@@ -31,7 +31,6 @@ public final class GraalDriverMain {
                 new JdkHostWebSocketClient(),
                 new StandardIoDriverPipe(System.out, System.err),
                 new ResolvedHostBrowserConfiguration(new LocalChromiumExecutableProvider(browserSettings, environment)),
-                new JdkHostProcessLauncher(),
                 new RecordingMissingHostFunctionReporter());
 
         try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {

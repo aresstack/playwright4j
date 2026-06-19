@@ -163,6 +163,12 @@
     }
   };
 
+  modules.child_process = {
+    spawn: unsupported('child_process.spawn'),
+    execFile: unsupported('child_process.execFile'),
+    execFileSync: unsupported('child_process.execFileSync')
+  };
+
   class EventEmitter {
     constructor() {
       this.listenersByName = {};
@@ -224,84 +230,6 @@
 
   modules.events = EventEmitter;
   modules.events.EventEmitter = EventEmitter;
-
-  function createProcessStream() {
-    const stream = new EventEmitter();
-    stream.readable = true;
-    stream.writable = true;
-    stream.write = function () {
-      return true;
-    };
-    stream.end = function () {
-      return undefined;
-    };
-    stream.destroy = function () {
-      return undefined;
-    };
-    stream.resume = function () {
-      return stream;
-    };
-    stream.pause = function () {
-      return stream;
-    };
-    stream.setEncoding = function () {
-      return stream;
-    };
-    return stream;
-  }
-
-  function createBrowserPipe(processId, endpoint) {
-    const pipe = createProcessStream();
-    pipe.__playwright4jBrowserPipe = true;
-    pipe.__playwright4jProcessId = processId;
-    pipe.__playwright4jEndpoint = endpoint;
-    return pipe;
-  }
-
-  function createSpawnedProcess(processId, endpoint) {
-    const child = new EventEmitter();
-    child.pid = Math.floor(Math.random() * 1000000) + 1;
-    child.killed = false;
-    child.stdin = createProcessStream();
-    child.stdout = createProcessStream();
-    child.stderr = createProcessStream();
-    child.stdio = [child.stdin, child.stdout, child.stderr, createBrowserPipe(processId, endpoint), createBrowserPipe(processId, endpoint)];
-    child.kill = function () {
-      if (!child.killed) {
-        child.killed = true;
-        host.processLauncher().close(processId);
-        child.emit('exit', 0, null);
-        child.emit('close', 0, null);
-      }
-      return true;
-    };
-    child.unref = function () {
-      return undefined;
-    };
-    child.ref = function () {
-      return undefined;
-    };
-    Promise.resolve().then(function () {
-      child.emit('spawn');
-    });
-    return child;
-  }
-
-  modules.child_process = {
-    spawn: function (command, args, options) {
-      const result = String(host.processLauncher().launchChromium(
-        String(command),
-        (args || []).map(function (value) { return String(value); }).join('\u001e'),
-        options && options.cwd ? String(options.cwd) : global.process.cwd()
-      ));
-      const separatorIndex = result.indexOf('\u001e');
-      const processId = separatorIndex < 0 ? result : result.substring(0, separatorIndex);
-      const endpoint = separatorIndex < 0 ? '' : result.substring(separatorIndex + 1);
-      return createSpawnedProcess(processId, endpoint);
-    },
-    execFile: unsupported('child_process.execFile'),
-    execFileSync: unsupported('child_process.execFileSync')
-  };
 
   if (typeof global.AbortController !== 'function') {
     global.AbortController = class AbortController {
@@ -464,16 +392,8 @@
   };
 
   modules.readline = {
-    createInterface: function () {
-      const reader = new EventEmitter();
-      reader.close = function () {
-        reader.emit('close');
-      };
-      return reader;
-    },
-    emitKeypressEvents: function () {
-      return undefined;
-    }
+    createInterface: unsupported('readline.createInterface'),
+    emitKeypressEvents: unsupported('readline.emitKeypressEvents')
   };
 
   modules.tty = {
@@ -758,8 +678,7 @@
     URLSearchParams: global.URLSearchParams
   };
 
-  global.process = new EventEmitter();
-  Object.assign(global.process, {
+  global.process = {
     env: new Proxy({}, {
       get: function (target, name) {
         return host.environment().getEnvironmentValue(String(name));
@@ -802,7 +721,7 @@
     versions: {
       node: '20.0.0'
     }
-  });
+  };
 
   modules.process = global.process;
 
@@ -1042,67 +961,18 @@
   }
 
   function createHostBackedPipeTransport() {
-    const activePipeTransports = [];
-
-    function emitTransportMessages(transport, joinedMessages) {
-      String(joinedMessages || '').split('\u001e').forEach(function (message) {
-        if (!message) {
-          return;
-        }
-
-        Promise.resolve().then(function () {
-          if (transport.onmessage) {
-            transport.onmessage(JSON.parse(message));
-          }
-        });
-      });
-    }
-
     return class HostBackedPipeTransport {
       constructor(pipeWrite, pipeRead) {
         this.onmessage = undefined;
         this.onclose = undefined;
-        this.browserConnectionId = undefined;
-        this.browserProcessId = undefined;
-
-        if (pipeWrite && pipeWrite.__playwright4jBrowserPipe) {
-          this.browserProcessId = String(pipeWrite['__playwright4jProcessId']);
-          this.browserConnectionId = host.webSocketClient().open(String(pipeWrite.__playwright4jEndpoint));
-          activePipeTransports.push(this);
-        } else {
-          global.__playwright4jProtocolTransport = this;
-        }
+        global.__playwright4jProtocolTransport = this;
       }
 
       send(message) {
-        if (this.browserConnectionId) {
-          const payload = typeof message === 'string' ? message : JSON.stringify(message);
-          const response = host.webSocketClient().sendAndWait(this.browserConnectionId, payload);
-          emitTransportMessages(this, response);
-          return undefined;
-        }
-
         return host.driverPipe().writeMessage(String(message));
       }
 
-      drain() {
-        if (!this.browserConnectionId) {
-          return;
-        }
-
-        const response = host.webSocketClient().drain(this.browserConnectionId, 10);
-        emitTransportMessages(this, response);
-      }
-
       close() {
-        if (this.browserConnectionId) {
-          host.webSocketClient().close(this.browserConnectionId);
-        }
-
-        if (this.browserProcessId) {
-          host.processLauncher().close(this.browserProcessId);
-        }
-
         if (this.onclose) {
           this.onclose();
         }
