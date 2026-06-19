@@ -823,6 +823,20 @@
       throw new Error('Protocol "' + requestProtocol + '" not supported. Expected "http:"');
     }
 
+    // Node validates header values synchronously and throws on invalid characters (anything
+    // outside HTAB / printable ASCII / ISO-8859-1), e.g. multi-byte UTF-16 characters.
+    if (options.headers && typeof options.headers === 'object') {
+      Object.keys(options.headers).forEach(function (name) {
+        const value = options.headers[name];
+        if (value === undefined || value === null) {
+          return;
+        }
+        if (/[^\t\x20-\x7e\x80-\xff]/.test(String(value))) {
+          throw new Error('Invalid character in header content ["' + name + '"]');
+        }
+      });
+    }
+
     const request = new EventEmitter();
     const bodyChunks = [];
 

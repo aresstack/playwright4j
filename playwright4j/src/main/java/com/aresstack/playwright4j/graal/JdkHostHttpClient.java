@@ -21,10 +21,8 @@ public final class JdkHostHttpClient implements HostHttpClient {
     private static final Map<Integer, String> REASON_PHRASES = buildReasonPhrases();
 
     // Headers java.net.http forbids callers from setting; skipping them avoids exceptions.
-    // accept-encoding is skipped on purpose so responses arrive uncompressed (the runtime's
-    // zlib shim does not decompress).
     private static final List<String> RESTRICTED_HEADERS = List.of(
-            "connection", "content-length", "host", "upgrade", "accept-encoding",
+            "connection", "content-length", "host", "upgrade",
             "transfer-encoding", "expect", "date");
 
     private final HttpClient client;
