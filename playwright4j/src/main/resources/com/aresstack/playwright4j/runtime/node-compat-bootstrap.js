@@ -1493,21 +1493,6 @@
   function createHostBackedPipeTransport() {
     const activeBrowserPipes = [];
 
-    function emitBrowserMessages(transport, joinedMessages) {
-      let emitted = 0;
-      String(joinedMessages || '').split('').forEach(function (message) {
-        if (!message) {
-          return;
-        }
-        emitted++;
-        Promise.resolve().then(function () {
-          if (transport.onmessage) {
-            transport.onmessage(JSON.parse(message));
-          }
-        });
-      });
-      return emitted;
-    }
 
     // Drains every browser CDP pipe; returns how many raw messages were pulled so the
     // Java pump can detect progress.
@@ -1527,6 +1512,13 @@
         this.browserProcessId = undefined;
         this.browserChildProcess = undefined;
 
+        // Buffer of raw CDP messages pulled from the host but not yet delivered. They are
+        // delivered one per drain() call so the guest fully drains its microtask queue
+        // between messages (mirroring Node's pipe reader). Batch-delivering them would run
+        // listener-registration .then() continuations too late and drop early events such as
+        // the main-world Runtime.executionContextCreated.
+        this._inbox = [];
+
         if (pipeWrite && pipeWrite.__playwright4jBrowserPipe) {
           // Chromium CDP pipe: bridge it to the WebSocket endpoint Chrome chose.
           this.browserProcessId = String(pipeWrite.__playwright4jProcessId);
@@ -1542,8 +1534,8 @@
       send(message) {
         if (this.browserConnectionId) {
           const payload = typeof message === 'string' ? message : JSON.stringify(message);
-          const response = host.webSocketClient().sendAndWait(this.browserConnectionId, payload);
-          emitBrowserMessages(this, response);
+          // Fire-and-forget: the response arrives via drain(), like any other CDP message.
+          host.webSocketClient().send(this.browserConnectionId, payload);
           // Closing Chromium tears down the CDP connection; Chrome will not answer further.
           // Surface the disconnect (onclose) so the server-side Browser.close() completes and
           // the driver replies to the client instead of waiting forever.
@@ -1560,8 +1552,23 @@
         if (!this.browserConnectionId) {
           return 0;
         }
-        const response = host.webSocketClient().drain(this.browserConnectionId, 10);
-        return emitBrowserMessages(this, response);
+        if (this._inbox.length === 0) {
+          String(host.webSocketClient().drain(this.browserConnectionId, 5) || '').split('').forEach((message) => {
+            if (message) {
+              this._inbox.push(message);
+            }
+          });
+        }
+        if (this._inbox.length === 0) {
+          return 0;
+        }
+        // Deliver exactly one message; the Java pump calls drain() again, and the microtask
+        // queue fully drains between calls (each call is its own context evaluation).
+        const message = this._inbox.shift();
+        if (this.onmessage) {
+          this.onmessage(JSON.parse(message));
+        }
+        return 1;
       }
 
       close() {

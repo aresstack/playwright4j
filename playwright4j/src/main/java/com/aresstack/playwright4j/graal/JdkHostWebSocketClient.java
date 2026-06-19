@@ -97,6 +97,14 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
 
     @Override
     @org.graalvm.polyglot.HostAccess.Export
+    public void send(String connectionId, String message) {
+        Connection connection = connection(connectionId);
+        Playwright4JDebug.log("[pw4j-cdp] SEND " + truncate(message));
+        connection.webSocket.sendText(message, true).join();
+    }
+
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
     public String drain(String connectionId, int milliseconds) {
         Connection connection = connection(connectionId);
         List<String> messages = new ArrayList<>();
