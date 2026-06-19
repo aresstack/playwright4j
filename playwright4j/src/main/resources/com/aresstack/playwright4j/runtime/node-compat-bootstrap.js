@@ -761,7 +761,13 @@
       }
       rawHeaders.push(name, value);
       const lowerName = name.toLowerCase();
-      if (headers[lowerName] === undefined) {
+      if (lowerName === 'set-cookie') {
+        // Node keeps set-cookie as an array of individual cookies; Playwright iterates it.
+        if (headers[lowerName] === undefined) {
+          headers[lowerName] = [];
+        }
+        headers[lowerName].push(value);
+      } else if (headers[lowerName] === undefined) {
         headers[lowerName] = value;
       } else {
         headers[lowerName] = headers[lowerName] + ', ' + value;
@@ -796,6 +802,56 @@
   // blocked on I/O and Playwright's progress timeouts can fire mid-request.
   const pendingHttpRequests = [];
 
+  // Mirrors a Node IncomingMessage: a paused readable that only flushes its (already fully
+  // buffered) body once a consumer subscribes ('data'/'end'/'readable' or resume()). This
+  // matters because the response handler may await (e.g. addCookies) before registering its
+  // body listeners; flushing eagerly would emit 'end' to nobody and the fetch would hang.
+  function attachLazyBody(incomingMessage, body, request) {
+    let flushed = false;
+    function flush() {
+      if (flushed) {
+        return;
+      }
+      flushed = true;
+      Promise.resolve().then(function () {
+        if (body.length > 0) {
+          incomingMessage.emit('data', body);
+        }
+        incomingMessage.complete = true;
+        incomingMessage.emit('end');
+        incomingMessage.emit('close');
+        request.emit('close');
+      });
+    }
+
+    const baseOn = incomingMessage.on.bind(incomingMessage);
+    const baseOnce = incomingMessage.once.bind(incomingMessage);
+    function maybeFlush(event) {
+      if (event === 'data' || event === 'end' || event === 'readable') {
+        flush();
+      }
+    }
+    incomingMessage.on = function (event, listener) {
+      const result = baseOn(event, listener);
+      maybeFlush(event);
+      return result;
+    };
+    incomingMessage.addListener = incomingMessage.on;
+    incomingMessage.once = function (event, listener) {
+      const result = baseOnce(event, listener);
+      maybeFlush(event);
+      return result;
+    };
+    incomingMessage.resume = function () {
+      flush();
+      return incomingMessage;
+    };
+    incomingMessage.read = function () {
+      flush();
+      return null;
+    };
+  }
+
   function deliverHttpResponse(entry, response) {
     const request = entry.request;
     const errorMessage = response.errorMessage();
@@ -810,22 +866,13 @@
     }
 
     const incomingMessage = buildIncomingMessage(response);
+    const body = global.Buffer.from(String(response.bodyBase64() || ''), 'base64');
+    attachLazyBody(incomingMessage, body, request);
+
     if (entry.callback) {
       entry.callback(incomingMessage);
     }
     request.emit('response', incomingMessage);
-
-    // Let the (async) response handler register its body listeners before the body flows.
-    Promise.resolve().then(function () {
-      const body = global.Buffer.from(String(response.bodyBase64() || ''), 'base64');
-      if (body.length > 0) {
-        incomingMessage.emit('data', body);
-      }
-      incomingMessage.complete = true;
-      incomingMessage.emit('end');
-      incomingMessage.emit('close');
-      request.emit('close');
-    });
   }
 
   global.__playwright4jDrainHttp = function () {
