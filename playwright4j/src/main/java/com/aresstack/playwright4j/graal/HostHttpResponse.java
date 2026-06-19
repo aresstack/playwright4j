@@ -11,12 +11,33 @@ public final class HostHttpResponse {
     private final String statusText;
     private final String bodyBase64;
     private final String rawHeaders;
+    private final String errorMessage;
+    private final String errorCode;
 
     public HostHttpResponse(int statusCode, String statusText, byte[] body, String rawHeaders) {
         this.statusCode = statusCode;
         this.statusText = statusText;
         this.bodyBase64 = Base64.getEncoder().encodeToString(body == null ? new byte[0] : body);
         this.rawHeaders = rawHeaders;
+        this.errorMessage = null;
+        this.errorCode = null;
+    }
+
+    private HostHttpResponse(String errorMessage, String errorCode) {
+        this.statusCode = 0;
+        this.statusText = "";
+        this.bodyBase64 = "";
+        this.rawHeaders = "";
+        this.errorMessage = errorMessage;
+        this.errorCode = errorCode;
+    }
+
+    /**
+     * A failed request that the JS runtime should surface as a Node-style {@code error} event
+     * (so Playwright rejects with the right message / retries on ECONNRESET).
+     */
+    public static HostHttpResponse error(String errorMessage, String errorCode) {
+        return new HostHttpResponse(errorMessage, errorCode);
     }
 
     @HostAccess.Export
@@ -27,6 +48,22 @@ public final class HostHttpResponse {
     @HostAccess.Export
     public String statusText() {
         return statusText;
+    }
+
+    /**
+     * Node-style error message when the request failed, otherwise an empty string.
+     */
+    @HostAccess.Export
+    public String errorMessage() {
+        return errorMessage == null ? "" : errorMessage;
+    }
+
+    /**
+     * Node-style error code (e.g. ECONNRESET) when the request failed, otherwise an empty string.
+     */
+    @HostAccess.Export
+    public String errorCode() {
+        return errorCode == null ? "" : errorCode;
     }
 
     /**

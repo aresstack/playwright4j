@@ -816,6 +816,13 @@
       options.protocol = defaultProtocol;
     }
 
+    // Mirror Node: http/https only accept http(s) URLs. Reject others (e.g. data:, file:)
+    // synchronously so Playwright rejects with "Protocol \"X:\" not supported".
+    const requestProtocol = (first instanceof global.URL ? first.protocol : options.protocol) || defaultProtocol;
+    if (requestProtocol !== 'http:' && requestProtocol !== 'https:') {
+      throw new Error('Protocol "' + requestProtocol + '" not supported. Expected "http:"');
+    }
+
     const request = new EventEmitter();
     const bodyChunks = [];
 
@@ -858,6 +865,18 @@
           // multipart payloads survive intact.
           const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
           const response = host.httpClient().request(method, url, flattenRequestHeaders(options), bodyBase64);
+
+          const errorMessage = response.errorMessage();
+          if (errorMessage) {
+            const networkError = new Error(errorMessage);
+            const errorCode = response.errorCode();
+            if (errorCode) {
+              networkError.code = errorCode;
+            }
+            request.emit('error', networkError);
+            return;
+          }
+
           const incomingMessage = buildIncomingMessage(response);
 
           if (callback) {
@@ -1105,16 +1124,41 @@
 
         const match = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/);
 
-        if (!match) {
-          throw new TypeError('Invalid URL: ' + text);
+        if (match) {
+          this.protocol = match[1];
+          this.hostname = match[2];
+          this.port = match[3] || '';
+          this.pathname = match[4] || '/';
+          this.hash = match[6] || '';
+          this._searchParams = new global.URLSearchParams(match[5] || '');
+          return;
         }
 
-        this.protocol = match[1];
-        this.hostname = match[2];
-        this.port = match[3] || '';
-        this.pathname = match[4] || '/';
-        this.hash = match[6] || '';
-        this._searchParams = new global.URLSearchParams(match[5] || '');
+        // Scheme-only / opaque URLs (data:, file:, mailto:, ...). We do not fully parse the
+        // authority, but expose the protocol so callers can route/reject correctly.
+        const schemeMatch = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)([\s\S]*)$/);
+        if (!schemeMatch) {
+          throw new TypeError('Invalid URL: ' + text);
+        }
+        this.protocol = schemeMatch[1];
+        this.hostname = '';
+        this.port = '';
+        let remainder = schemeMatch[2];
+        const hashIndex = remainder.indexOf('#');
+        if (hashIndex >= 0) {
+          this.hash = remainder.substring(hashIndex);
+          remainder = remainder.substring(0, hashIndex);
+        } else {
+          this.hash = '';
+        }
+        let query = '';
+        const queryIndex = remainder.indexOf('?');
+        if (queryIndex >= 0) {
+          query = remainder.substring(queryIndex + 1);
+          remainder = remainder.substring(0, queryIndex);
+        }
+        this.pathname = remainder;
+        this._searchParams = new global.URLSearchParams(query);
       }
 
       get host() {

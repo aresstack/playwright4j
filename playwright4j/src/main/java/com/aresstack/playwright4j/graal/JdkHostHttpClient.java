@@ -64,11 +64,41 @@ public final class JdkHostHttpClient implements HostHttpClient {
                     response.body(),
                     flattenHeaders(response));
         } catch (IOException exception) {
-            throw new IllegalStateException("HTTP request failed: " + method + " " + url, exception);
+            Playwright4JDebug.log("[pw4j-http] ERROR " + method + " " + url + " -> "
+                    + exception.getClass().getName() + ": " + exception.getMessage());
+            return mapNetworkError(exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while performing HTTP request: " + method + " " + url, exception);
+            return HostHttpResponse.error("Request interrupted", "ECONNRESET");
         }
+    }
+
+    // Translates a Java HTTP failure into the Node-style error the bundled fetch expects, so
+    // Playwright rejects with a meaningful message and retries on ECONNRESET.
+    private HostHttpResponse mapNetworkError(IOException exception) {
+        String message = exception.getMessage() == null ? "" : exception.getMessage();
+        String lower = message.toLowerCase(Locale.ROOT);
+
+        if (exception instanceof java.net.http.HttpTimeoutException) {
+            return HostHttpResponse.error("timeout", "ETIMEDOUT");
+        }
+        if (exception instanceof java.net.ConnectException || lower.contains("connection refused")) {
+            return HostHttpResponse.error("connect ECONNREFUSED", "ECONNREFUSED");
+        }
+        if (exception instanceof java.net.UnknownHostException || lower.contains("unknown host") || lower.contains("no such host")) {
+            return HostHttpResponse.error("getaddrinfo ENOTFOUND", "ENOTFOUND");
+        }
+        // Server closed the connection before sending a response: Node reports "socket hang up".
+        if (lower.contains("no bytes") || lower.contains("goaway") || lower.contains("connection reset")
+                || lower.contains("connection was closed") || lower.contains("eof")) {
+            return HostHttpResponse.error("socket hang up", "ECONNRESET");
+        }
+        // Response truncated mid-body: Node reports the request was "aborted".
+        if (lower.contains("fixed content-length") || lower.contains("bytes received")
+                || lower.contains("premature") || lower.contains("cancelled")) {
+            return HostHttpResponse.error("aborted", "ECONNRESET");
+        }
+        return HostHttpResponse.error(message.isEmpty() ? "network error" : message, "ECONNRESET");
     }
 
     private void applyHeaders(HttpRequest.Builder builder, String headers) {
