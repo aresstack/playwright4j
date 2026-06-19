@@ -719,6 +719,64 @@
     return protocol + '//' + hostname + port + path;
   }
 
+  function flattenRequestHeaders(options) {
+    const headers = options && options.headers;
+    if (!headers || typeof headers !== 'object') {
+      return '';
+    }
+    const entries = [];
+    Object.keys(headers).forEach(function (name) {
+      const value = headers[name];
+      if (value === undefined || value === null) {
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(function (item) {
+          entries.push(name);
+          entries.push(String(item));
+        });
+      } else {
+        entries.push(name);
+        entries.push(String(value));
+      }
+    });
+    return entries.join('');
+  }
+
+  function buildIncomingMessage(response) {
+    const incomingMessage = new EventEmitter();
+    incomingMessage.statusCode = response.statusCode();
+    incomingMessage.statusMessage = response.statusText();
+    incomingMessage.httpVersion = '1.1';
+    incomingMessage.complete = false;
+
+    const rawHeaders = [];
+    const headers = {};
+    const rawHeaderValues = response.rawHeaders();
+    const headerCount = rawHeaderValues ? rawHeaderValues.length : 0;
+    for (let index = 0; index + 1 < headerCount; index += 2) {
+      const name = String(rawHeaderValues[index]);
+      const value = String(rawHeaderValues[index + 1]);
+      rawHeaders.push(name, value);
+      const lowerName = name.toLowerCase();
+      if (headers[lowerName] === undefined) {
+        headers[lowerName] = value;
+      } else {
+        headers[lowerName] = headers[lowerName] + ', ' + value;
+      }
+    }
+
+    incomingMessage.headers = headers;
+    incomingMessage.rawHeaders = rawHeaders;
+    incomingMessage.setEncoding = function () {
+      return incomingMessage;
+    };
+    incomingMessage.resume = function () {
+      return incomingMessage;
+    };
+    return incomingMessage;
+  }
+
   function createHttpRequest(defaultProtocol, first, second, third) {
     let options = first || {};
     let callback = typeof second === 'function' ? second : third;
@@ -746,17 +804,17 @@
       Promise.resolve().then(function () {
         try {
           const method = String(options.method || 'GET').toUpperCase();
-          const response = host.httpClient().request(method, requestOptionsToUrl(options), chunks.join(''));
-          const incomingMessage = new EventEmitter();
-          incomingMessage.statusCode = response.statusCode();
-          incomingMessage.headers = {};
-          incomingMessage.setEncoding = function () {
-            return incomingMessage;
-          };
+          const response = host.httpClient().request(
+            method,
+            requestOptionsToUrl(options),
+            flattenRequestHeaders(options),
+            chunks.join(''));
+          const incomingMessage = buildIncomingMessage(response);
 
           if (callback) {
             callback(incomingMessage);
           }
+          request.emit('response', incomingMessage);
 
           Promise.resolve().then(function () {
             const body = response.body() || '';
@@ -765,7 +823,10 @@
               incomingMessage.emit('data', body);
             }
 
+            incomingMessage.complete = true;
             incomingMessage.emit('end');
+            incomingMessage.emit('close');
+            request.emit('close');
           });
         } catch (error) {
           request.emit('error', error);
@@ -1263,6 +1324,12 @@
           const payload = typeof message === 'string' ? message : JSON.stringify(message);
           const response = host.webSocketClient().sendAndWait(this.browserConnectionId, payload);
           emitBrowserMessages(this, response);
+          // Closing Chromium tears down the CDP connection; Chrome will not answer further.
+          // Surface the disconnect (onclose) so the server-side Browser.close() completes and
+          // the driver replies to the client instead of waiting forever.
+          if (payload.indexOf('"method":"Browser.close"') >= 0) {
+            this.close();
+          }
           return undefined;
         }
 
@@ -1278,13 +1345,25 @@
       }
 
       close() {
+        if (this.__playwright4jClosing) {
+          return;
+        }
+        this.__playwright4jClosing = true;
+
         const index = activeBrowserPipes.indexOf(this);
         if (index >= 0) {
           activeBrowserPipes.splice(index, 1);
         }
 
+        // Each external teardown step may fail (the socket/process can already be gone after
+        // Browser.close). None of them must prevent onclose from firing, otherwise the
+        // server-side close never completes and the client hangs.
         if (this.browserConnectionId) {
-          host.webSocketClient().close(this.browserConnectionId);
+          try {
+            host.webSocketClient().close(this.browserConnectionId);
+          } catch (error) {
+            // Connection already closed by the browser.
+          }
           this.browserConnectionId = undefined;
         }
 
@@ -1292,15 +1371,15 @@
           try {
             host.processLauncher().close(this.browserProcessId);
           } catch (error) {
-            // Already gone.
+            // Process already gone.
           }
           this.browserProcessId = undefined;
         }
 
         if (this.browserChildProcess && !this.browserChildProcess.killed) {
           closeSpawnedProcess(this.browserChildProcess, 0);
-          this.browserChildProcess = undefined;
         }
+        this.browserChildProcess = undefined;
 
         if (this.onclose) {
           this.onclose();

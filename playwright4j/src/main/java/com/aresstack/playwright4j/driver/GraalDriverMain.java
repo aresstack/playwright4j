@@ -43,6 +43,11 @@ public final class GraalDriverMain {
         } finally {
             processLauncher.closeAll();
         }
+
+        // The client closed our stdin: terminate promptly so the parent process is not kept
+        // alive by lingering non-daemon threads (e.g. java.net.http selector threads).
+        System.out.flush();
+        System.exit(0);
     }
 
     private static String[] processArguments(PlaywrightDriverBundleSource driverBundleSource, String[] args) {

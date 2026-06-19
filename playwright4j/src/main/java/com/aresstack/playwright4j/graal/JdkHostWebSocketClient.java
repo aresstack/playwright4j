@@ -120,8 +120,15 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     public void close(String connectionId) {
         Connection connection = connections.remove(connectionId);
 
-        if (connection != null) {
-            connection.webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "playwright4j").join();
+        if (connection != null && connection.webSocket != null) {
+            try {
+                connection.webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "playwright4j")
+                        .orTimeout(2, TimeUnit.SECONDS)
+                        .exceptionally(throwable -> null)
+                        .join();
+            } catch (Exception ignored) {
+                // The browser may have already torn down the socket; nothing to do.
+            }
         }
     }
 
