@@ -557,7 +557,7 @@
   modules.ws.WebSocket = HostBackedWebSocket;
 
   function traceRuntime(message) {
-    if (host.environment().getEnvironmentValue('PLAYWRIGHT4J_TRACE_RUNTIME') === 'true') {
+    if (true || host.environment().getEnvironmentValue('PLAYWRIGHT4J_TRACE_RUNTIME') === 'true') {
       host.driverPipe().writeErr('[playwright4j] ' + message + '\n');
     }
   }

@@ -77,7 +77,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     }
 
     private static void drainBriefly(Connection connection, List<String> messages) {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(50);
 
         while (System.nanoTime() < deadline) {
             String response = connection.poll(deadline);
