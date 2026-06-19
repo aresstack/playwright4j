@@ -779,12 +779,37 @@
     return incomingMessage;
   }
 
-  function createHttpRequest(defaultProtocol, first, second, third) {
-    let options = first || {};
-    let callback = typeof second === 'function' ? second : third;
+  function toBodyBuffer(chunk, encoding) {
+    if (chunk === undefined || chunk === null) {
+      return null;
+    }
+    if (global.Buffer.isBuffer(chunk)) {
+      return chunk;
+    }
+    if (chunk instanceof Uint8Array) {
+      return global.Buffer.from(chunk);
+    }
+    return global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+  }
 
-    if (second && typeof second === 'object') {
-      options = Object.assign({}, first || {}, second);
+  function createHttpRequest(defaultProtocol, first, second, third) {
+    // Node signatures: request(url[, options][, cb]) or request(options[, cb]).
+    let urlString = null;
+    let options;
+    let callback;
+
+    if (typeof first === 'string' || first instanceof global.URL) {
+      urlString = typeof first === 'string' ? first : first.toString();
+      if (second && typeof second === 'object') {
+        options = second;
+        callback = typeof third === 'function' ? third : undefined;
+      } else {
+        options = {};
+        callback = typeof second === 'function' ? second : undefined;
+      }
+    } else {
+      options = first || {};
+      callback = typeof second === 'function' ? second : third;
     }
 
     if (!options.protocol) {
@@ -792,25 +817,47 @@
     }
 
     const request = new EventEmitter();
-    const chunks = [];
+    const bodyChunks = [];
 
-    request.write = function (chunk) {
-      chunks.push(String(chunk));
+    request.write = function (chunk, encoding) {
+      const buffer = toBodyBuffer(chunk, encoding);
+      if (buffer && buffer.length > 0) {
+        bodyChunks.push(buffer);
+      }
+      return true;
     };
 
-    request.end = function (chunk) {
-      if (chunk !== undefined) {
-        chunks.push(String(chunk));
+    request.setHeader = function (name, value) {
+      options.headers = options.headers || {};
+      options.headers[name] = value;
+    };
+
+    request.getHeader = function (name) {
+      return options.headers ? options.headers[name] : undefined;
+    };
+
+    request.removeHeader = function (name) {
+      if (options.headers) {
+        delete options.headers[name];
       }
+    };
+
+    request.end = function (chunk, encoding) {
+      const finalBuffer = toBodyBuffer(chunk, encoding);
+      if (finalBuffer && finalBuffer.length > 0) {
+        bodyChunks.push(finalBuffer);
+      }
+
+      request.emit('finish');
 
       Promise.resolve().then(function () {
         try {
           const method = String(options.method || 'GET').toUpperCase();
-          const response = host.httpClient().request(
-            method,
-            requestOptionsToUrl(options),
-            flattenRequestHeaders(options),
-            chunks.join(''));
+          const url = urlString !== null ? urlString : requestOptionsToUrl(options);
+          // Body is sent bytes-first (Base64 across the host boundary) so binary, form and
+          // multipart payloads survive intact.
+          const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
+          const response = host.httpClient().request(method, url, flattenRequestHeaders(options), bodyBase64);
           const incomingMessage = buildIncomingMessage(response);
 
           if (callback) {
@@ -888,6 +935,120 @@
     lookup: unsupported('dns.lookup'),
     resolve: unsupported('dns.resolve')
   };
+  if (typeof global.URLSearchParams !== 'function') {
+    global.URLSearchParams = class URLSearchParams {
+      constructor(init) {
+        this._list = [];
+        if (init === undefined || init === null || init === '') {
+          return;
+        }
+        if (init instanceof global.URLSearchParams) {
+          init._list.forEach((pair) => this._list.push([pair[0], pair[1]]));
+        } else if (Array.isArray(init)) {
+          init.forEach((pair) => this._list.push([String(pair[0]), String(pair[1])]));
+        } else if (typeof init === 'string') {
+          const text = init.charAt(0) === '?' ? init.substring(1) : init;
+          if (text) {
+            text.split('&').forEach((pair) => {
+              if (!pair) {
+                return;
+              }
+              const equals = pair.indexOf('=');
+              const rawName = equals < 0 ? pair : pair.substring(0, equals);
+              const rawValue = equals < 0 ? '' : pair.substring(equals + 1);
+              this._list.push([decodeFormComponent(rawName), decodeFormComponent(rawValue)]);
+            });
+          }
+        } else if (typeof init === 'object') {
+          Object.keys(init).forEach((key) => this._list.push([key, String(init[key])]));
+        }
+      }
+
+      append(name, value) {
+        this._list.push([String(name), String(value)]);
+      }
+
+      set(name, value) {
+        name = String(name);
+        value = String(value);
+        let replaced = false;
+        const next = [];
+        for (let index = 0; index < this._list.length; index++) {
+          const pair = this._list[index];
+          if (pair[0] !== name) {
+            next.push(pair);
+          } else if (!replaced) {
+            next.push([name, value]);
+            replaced = true;
+          }
+        }
+        if (!replaced) {
+          next.push([name, value]);
+        }
+        this._list = next;
+      }
+
+      get(name) {
+        name = String(name);
+        const pair = this._list.find((entry) => entry[0] === name);
+        return pair ? pair[1] : null;
+      }
+
+      getAll(name) {
+        name = String(name);
+        return this._list.filter((entry) => entry[0] === name).map((entry) => entry[1]);
+      }
+
+      has(name) {
+        name = String(name);
+        return this._list.some((entry) => entry[0] === name);
+      }
+
+      delete(name) {
+        name = String(name);
+        this._list = this._list.filter((entry) => entry[0] !== name);
+      }
+
+      forEach(callback, thisArg) {
+        this._list.slice().forEach((pair) => callback.call(thisArg, pair[1], pair[0], this));
+      }
+
+      keys() {
+        return this._list.map((pair) => pair[0])[Symbol.iterator]();
+      }
+
+      values() {
+        return this._list.map((pair) => pair[1])[Symbol.iterator]();
+      }
+
+      entries() {
+        return this._list.map((pair) => [pair[0], pair[1]])[Symbol.iterator]();
+      }
+
+      [Symbol.iterator]() {
+        return this.entries();
+      }
+
+      toString() {
+        return this._list
+          .map((pair) => encodeFormComponent(pair[0]) + '=' + encodeFormComponent(pair[1]))
+          .join('&');
+      }
+    };
+  }
+
+  function encodeFormComponent(value) {
+    return encodeURIComponent(String(value)).replace(/%20/g, '+');
+  }
+
+  function decodeFormComponent(value) {
+    try {
+      return decodeURIComponent(String(value).replace(/\+/g, ' '));
+    } catch (error) {
+      return String(value);
+    }
+  }
+
   if (typeof global.URL !== 'function') {
     // Removes "." and ".." segments from an absolute path, per RFC 3986.
     const normalizeUrlPath = function (path) {
@@ -948,28 +1109,51 @@
           throw new TypeError('Invalid URL: ' + text);
         }
 
-        this.href = text;
         this.protocol = match[1];
         this.hostname = match[2];
         this.port = match[3] || '';
-        this.host = this.port ? this.hostname + ':' + this.port : this.hostname;
-        this.origin = this.protocol + '//' + this.host;
         this.pathname = match[4] || '/';
-        this.search = match[5] || '';
         this.hash = match[6] || '';
+        this._searchParams = new global.URLSearchParams(match[5] || '');
+      }
+
+      get host() {
+        return this.port ? this.hostname + ':' + this.port : this.hostname;
+      }
+
+      get origin() {
+        return this.protocol + '//' + this.host;
+      }
+
+      get search() {
+        const serialized = this._searchParams.toString();
+        return serialized ? '?' + serialized : '';
+      }
+
+      set search(value) {
+        this._searchParams = new global.URLSearchParams(String(value));
+      }
+
+      get searchParams() {
+        return this._searchParams;
+      }
+
+      get href() {
+        return this.protocol + '//' + this.host + (this.pathname || '/') + this.search + (this.hash || '');
+      }
+
+      set href(value) {
+        const parsed = new global.URL(String(value));
+        this.protocol = parsed.protocol;
+        this.hostname = parsed.hostname;
+        this.port = parsed.port;
+        this.pathname = parsed.pathname;
+        this.hash = parsed.hash;
+        this._searchParams = parsed._searchParams;
       }
 
       toString() {
-        return this.protocol + '//' + this.host + (this.pathname || '/') + (this.search || '') + (this.hash || '');
-      }
-    };
-  }
-
-  if (typeof global.URLSearchParams !== 'function') {
-    global.URLSearchParams = class URLSearchParams {
-      constructor() {}
-      toString() {
-        return '';
+        return this.href;
       }
     };
   }

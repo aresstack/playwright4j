@@ -7,6 +7,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -36,16 +37,20 @@ public final class JdkHostHttpClient implements HostHttpClient {
 
     @Override
     @org.graalvm.polyglot.HostAccess.Export
-    public HostHttpResponse request(String method, String url, String headers, String body) {
+    public HostHttpResponse request(String method, String url, String headers, String bodyBase64) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(30));
 
         applyHeaders(builder, headers);
 
-        if (body == null || body.isEmpty()) {
+        // The body arrives Base64-encoded so binary/form/multipart payloads survive intact.
+        byte[] body = bodyBase64 == null || bodyBase64.isEmpty()
+                ? new byte[0]
+                : Base64.getDecoder().decode(bodyBase64);
+        if (body.length == 0) {
             builder.method(method, HttpRequest.BodyPublishers.noBody());
         } else {
-            builder.method(method, HttpRequest.BodyPublishers.ofString(body));
+            builder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
         }
 
         try {
