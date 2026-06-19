@@ -58,9 +58,7 @@ public final class GraalDriverMain {
 
         while (true) {
             try {
-                String message = readLengthPrefixedMessage(input);
-                System.err.println("[pw4j-protocol] IN " + (message.length() <= 300 ? message : message.substring(0, 300) + "..."));
-                runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(message);
+                runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(readLengthPrefixedMessage(input));
                 runtime.drainTransports();
             } catch (EOFException exception) {
                 return;

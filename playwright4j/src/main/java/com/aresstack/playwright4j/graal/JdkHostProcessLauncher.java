@@ -30,8 +30,6 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         try {
             List<String> browserArguments = browserArguments(arguments);
             Path userDataDirectory = userDataDirectory(browserArguments);
-            System.err.println("[pw4j-launcher] command=" + command);
-            System.err.println("[pw4j-launcher] userDataDir=" + userDataDirectory);
             Process process = startProcess(command, browserArguments, workingDirectory);
             String processId = UUID.randomUUID().toString();
             processes.put(processId, process);
@@ -119,16 +117,13 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             if (Files.isRegularFile(activePortFile)) {
                 List<String> lines = Files.readAllLines(activePortFile, StandardCharsets.UTF_8);
                 if (lines.size() >= 2) {
-                    String endpoint = "ws://127.0.0.1:" + lines.get(0).trim() + lines.get(1).trim();
-                    System.err.println("[pw4j-launcher] endpoint=" + endpoint);
-                    return endpoint;
+                    return "ws://127.0.0.1:" + lines.get(0).trim() + lines.get(1).trim();
                 }
             }
 
             sleepBriefly();
         }
 
-        System.err.println("[pw4j-launcher] timeout activePortFile=" + activePortFile);
         throw new IllegalStateException("Timed out waiting for Chromium DevTools endpoint at " + activePortFile);
     }
 

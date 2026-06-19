@@ -53,7 +53,6 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     public String sendAndWait(String connectionId, String message) {
         Connection connection = connection(connectionId);
         String requestId = messageId(message);
-        System.err.println("[pw4j-cdp] SEND " + truncate(message));
         connection.webSocket.sendText(message, true).join();
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
@@ -66,7 +65,6 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
                 break;
             }
 
-            System.err.println("[pw4j-cdp] RECV " + truncate(response));
             messages.add(response);
 
             if (requestId == null || requestId.equals(messageId(response))) {
@@ -130,13 +128,6 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         }
 
         return connection;
-    }
-
-    private static String truncate(String message) {
-        if (message == null) {
-            return "";
-        }
-        return message.length() <= 400 ? message : message.substring(0, 400) + "...";
     }
 
     private static String messageId(String message) {
