@@ -12,16 +12,12 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class GraalDriverMain {
 
     private GraalDriverMain() {
     }
-
-    private static final long PUMP_HARD_DEADLINE_MILLIS = 60_000L;
-    private static final long PUMP_QUIET_WINDOW_MILLIS = 40L;
 
     public static void main(String[] args) throws IOException {
         Map<String, String> environment = new LinkedHashMap<String, String>(System.getenv());
@@ -77,6 +73,10 @@ public final class GraalDriverMain {
         reader.setDaemon(true);
         reader.start();
 
+        // One uniform loop: deliver a pending protocol message if there is one, otherwise run a
+        // single timer/transport tick. Crucially the inbox is checked every iteration, so an
+        // incoming dispose/close can abort a still-pending asynchronous operation (e.g. an
+        // in-flight fetch) promptly instead of waiting for it to settle.
         while (true) {
             String message = inbox.poll();
             if (message != null) {
@@ -84,12 +84,11 @@ public final class GraalDriverMain {
                     Playwright4JDebug.log("[pw4j-protocol] IN " + (message.length() <= 300 ? message : message.substring(0, 300) + "..."));
                 }
                 runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(message);
-                pumpUntilIdle(runtime);
                 continue;
             }
 
-            // No protocol message pending: keep the browser event loop alive so Chrome's
-            // asynchronous CDP events are delivered to Playwright and on to the client.
+            // No protocol message pending: keep the event loop alive so asynchronous work
+            // (CDP events, async HTTP responses, due timers) is delivered to Playwright.
             int fired = runtime.runDueTimers();
             int drained = runtime.drainTransports();
             if (fired == 0 && drained == 0) {
@@ -117,67 +116,6 @@ public final class GraalDriverMain {
                 inputClosed.set(true);
                 return;
             }
-        }
-    }
-
-    /**
-     * Drives the single-threaded GraalJS event loop until the work triggered by the last
-     * delivered protocol message has settled: it repeatedly fires due timers and drains the
-     * browser CDP transports. This is what lets an asynchronous {@code launch()} (or any
-     * command that waits on browser events) complete, instead of stalling because no further
-     * input arrives. The loop is strictly bounded so it always terminates.
-     */
-    private static void pumpUntilIdle(GraalPlaywrightRuntime runtime) {
-        long hardDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PUMP_HARD_DEADLINE_MILLIS);
-        long quietDeadline = -1L;
-        long totalFired = 0;
-        long totalDrained = 0;
-        long iterations = 0;
-
-        while (true) {
-            iterations++;
-            int fired = runtime.runDueTimers();
-            int drained = runtime.drainTransports();
-            totalFired += fired;
-            totalDrained += drained;
-
-            if (fired > 0 || drained > 0) {
-                quietDeadline = -1L;
-                if (System.nanoTime() > hardDeadline) {
-                    logPumpSummary("hard-deadline-active", iterations, totalFired, totalDrained);
-                    return;
-                }
-                continue;
-            }
-
-            // Something is still waiting on a future timer (e.g. a Playwright progress
-            // timeout). Keep ticking so that timer can fire and resolve or reject the work.
-            if (runtime.hasPendingTimers()) {
-                if (System.nanoTime() > hardDeadline) {
-                    logPumpSummary("hard-deadline-pending-timers", iterations, totalFired, totalDrained);
-                    return;
-                }
-                sleepQuietly(5L);
-                continue;
-            }
-
-            // No browser activity and no scheduled timers: settle after a short quiet window.
-            long now = System.nanoTime();
-            if (quietDeadline < 0L) {
-                quietDeadline = now + TimeUnit.MILLISECONDS.toNanos(PUMP_QUIET_WINDOW_MILLIS);
-            }
-            if (now >= quietDeadline || now > hardDeadline) {
-                logPumpSummary("idle", iterations, totalFired, totalDrained);
-                return;
-            }
-            sleepQuietly(2L);
-        }
-    }
-
-    private static void logPumpSummary(String reason, long iterations, long totalFired, long totalDrained) {
-        if (Playwright4JDebug.enabled()) {
-            Playwright4JDebug.log("[pw4j-pump] exit reason=" + reason + " iterations=" + iterations
-                    + " timersFired=" + totalFired + " messagesDrained=" + totalDrained);
         }
     }
 
