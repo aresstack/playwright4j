@@ -10,7 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class GraalDriverMain {
 
@@ -58,23 +61,62 @@ public final class GraalDriverMain {
         return processArguments;
     }
 
-    private static void pumpInput(GraalPlaywrightRuntime runtime) throws IOException {
-        DataInputStream input = new DataInputStream(new BufferedInputStream(System.in));
+    private static void pumpInput(GraalPlaywrightRuntime runtime) {
+        // A dedicated thread performs the blocking stdin reads so the (single) GraalJS thread
+        // can keep draining the browser CDP transports between protocol messages. Without this,
+        // asynchronous CDP events (console, lifecycle, dialogs, popups, ...) that arrive while
+        // the Java client merely waits would never be delivered, and the client would hang.
+        BlockingQueue<String> inbox = new LinkedBlockingQueue<String>();
+        AtomicBoolean inputClosed = new AtomicBoolean(false);
+        Thread reader = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                readMessagesInto(inbox, inputClosed);
+            }
+        }, "playwright4j-driver-stdin");
+        reader.setDaemon(true);
+        reader.start();
 
         while (true) {
-            String message;
+            String message = inbox.poll();
+            if (message != null) {
+                if (Playwright4JDebug.enabled()) {
+                    Playwright4JDebug.log("[pw4j-protocol] IN " + (message.length() <= 300 ? message : message.substring(0, 300) + "..."));
+                }
+                runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(message);
+                pumpUntilIdle(runtime);
+                continue;
+            }
+
+            // No protocol message pending: keep the browser event loop alive so Chrome's
+            // asynchronous CDP events are delivered to Playwright and on to the client.
+            int fired = runtime.runDueTimers();
+            int drained = runtime.drainTransports();
+            if (fired == 0 && drained == 0) {
+                if (inputClosed.get() && inbox.isEmpty()) {
+                    return;
+                }
+                sleepQuietly(5L);
+            }
+        }
+    }
+
+    private static void readMessagesInto(BlockingQueue<String> inbox, AtomicBoolean inputClosed) {
+        DataInputStream input = new DataInputStream(new BufferedInputStream(System.in));
+        while (true) {
             try {
-                message = readLengthPrefixedMessage(input);
+                inbox.put(readLengthPrefixedMessage(input));
             } catch (EOFException exception) {
+                inputClosed.set(true);
+                return;
+            } catch (IOException exception) {
+                inputClosed.set(true);
+                return;
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                inputClosed.set(true);
                 return;
             }
-
-            if (Playwright4JDebug.enabled()) {
-                Playwright4JDebug.log("[pw4j-protocol] IN " + (message.length() <= 300 ? message : message.substring(0, 300) + "..."));
-            }
-
-            runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(message);
-            pumpUntilIdle(runtime);
         }
     }
 

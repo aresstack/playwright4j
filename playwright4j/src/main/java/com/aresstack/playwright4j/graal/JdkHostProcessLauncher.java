@@ -73,7 +73,10 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     public void close(String processId) {
         Process process = processes.remove(processId);
         if (process != null) {
-            process.destroy();
+            // Destroy the whole tree: Chromium spawns renderer/gpu child processes that must
+            // be terminated too, otherwise they leak (Process.destroy only targets the parent).
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
         }
     }
 
