@@ -889,11 +889,59 @@
     resolve: unsupported('dns.resolve')
   };
   if (typeof global.URL !== 'function') {
+    // Removes "." and ".." segments from an absolute path, per RFC 3986.
+    const normalizeUrlPath = function (path) {
+      const isAbsolute = path.charAt(0) === '/';
+      const segments = path.split('/');
+      const output = [];
+      for (let index = 0; index < segments.length; index++) {
+        const segment = segments[index];
+        if (segment === '.') {
+          continue;
+        }
+        if (segment === '..') {
+          if (output.length > 0 && output[output.length - 1] !== '..') {
+            output.pop();
+          } else if (!isAbsolute) {
+            output.push('..');
+          }
+          continue;
+        }
+        output.push(segment);
+      }
+      let result = output.join('/');
+      if (isAbsolute && result.charAt(0) !== '/') {
+        result = '/' + result;
+      }
+      return result;
+    };
+
     global.URL = class URL {
       constructor(value, base) {
-        const text = base && !String(value).match(/^[a-zA-Z][a-zA-Z0-9+.-]*:/)
-          ? String(base).replace(/\/?$/, '/') + String(value).replace(/^\//, '')
-          : String(value);
+        let text = String(value);
+        const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text);
+
+        if (!hasScheme && base !== undefined && base !== null) {
+          const baseUrl = base instanceof URL ? base : new URL(String(base));
+          if (text.indexOf('//') === 0) {
+            // Protocol-relative reference.
+            text = baseUrl.protocol + text;
+          } else if (text.charAt(0) === '/') {
+            // Absolute-path reference: replaces the whole base path.
+            text = baseUrl.origin + text;
+          } else if (text.charAt(0) === '?') {
+            text = baseUrl.origin + baseUrl.pathname + text;
+          } else if (text.charAt(0) === '#') {
+            text = baseUrl.origin + baseUrl.pathname + baseUrl.search + text;
+          } else if (text.length === 0) {
+            text = baseUrl.origin + baseUrl.pathname + baseUrl.search;
+          } else {
+            // Relative-path reference: resolve against the base directory.
+            const baseDirectory = baseUrl.pathname.replace(/[^/]*$/, '');
+            text = baseUrl.origin + normalizeUrlPath(baseDirectory + text);
+          }
+        }
+
         const match = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/);
 
         if (!match) {
