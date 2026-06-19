@@ -92,18 +92,6 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
         return context.getBindings(LANGUAGE_ID).getMember(name);
     }
 
-    public void drainTransports() {
-        executeGlobalFunctionIfPresent("__playwright4jDrainBrowserPipes");
-        executeGlobalFunctionIfPresent("__playwright4jDrainTransports");
-    }
-
-    private void executeGlobalFunctionIfPresent(String name) {
-        Value value = readGlobal(name);
-        if (value != null && value.canExecute()) {
-            value.execute();
-        }
-    }
-
     private void evaluateRuntimeResource(String resourceName) {
         evaluate(resourceName, readRuntimeResource(resourceName));
     }

@@ -59,7 +59,6 @@ public final class GraalDriverMain {
         while (true) {
             try {
                 runtime.readGlobal("__playwright4jDriverPipeDeliver").execute(readLengthPrefixedMessage(input));
-                runtime.drainTransports();
             } catch (EOFException exception) {
                 return;
             }

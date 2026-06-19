@@ -1,16 +1,11 @@
 package com.aresstack.playwright4j.graal;
 
 import java.io.IOException;
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -31,7 +26,6 @@ public final class JdkHostHttpClient implements HostHttpClient {
     @Override
     @org.graalvm.polyglot.HostAccess.Export
     public HostHttpResponse request(String method, String url, String body) {
-        trace("request start " + method + " " + url);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(10));
 
@@ -43,24 +37,12 @@ public final class JdkHostHttpClient implements HostHttpClient {
 
         try {
             HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            trace("request done " + response.statusCode() + " " + url);
             return new HostHttpResponse(response.statusCode(), response.body());
         } catch (IOException exception) {
             throw new IllegalStateException("HTTP request failed: " + method + " " + url, exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while performing HTTP request: " + method + " " + url, exception);
-        }
-    }
-
-    private static void trace(String message) {
-        try {
-            Files.write(
-                    Paths.get("C:/Projects/aresstack/playwright4j/playwright4j-http-trace.log"),
-                    (System.currentTimeMillis() + " " + message + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND);
-        } catch (IOException ignored) {
         }
     }
 
