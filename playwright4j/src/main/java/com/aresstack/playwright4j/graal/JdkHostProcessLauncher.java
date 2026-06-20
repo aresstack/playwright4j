@@ -27,6 +27,8 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     private static final String REMOTE_DEBUGGING_PIPE = "--remote-debugging-pipe";
     private static final String REMOTE_DEBUGGING_PORT = "--remote-debugging-port=0";
     private static final long DEVTOOLS_PORT_TIMEOUT_SECONDS = 30L;
+    private static final java.util.regex.Pattern DEVTOOLS_STDERR_PATTERN =
+            java.util.regex.Pattern.compile("DevTools listening on (ws://\\S+)");
     private static final int STDERR_RING_BUFFER_LINES = 80;
 
     private final Map<String, Process> processes = new ConcurrentHashMap<String, Process>();
@@ -92,19 +94,23 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         }
 
         String[] rawArguments = arguments.split(ARGUMENT_SEPARATOR, -1);
+        // A caller may pass an explicit --remote-debugging-port (e.g. to connectOverCDP on a
+        // known port). Respect it: drop the pipe and never add a competing port=0 flag.
+        boolean callerSetPort = containsRemoteDebuggingPort(java.util.Arrays.asList(rawArguments));
         List<String> result = new ArrayList<String>();
-        boolean replacedRemoteDebuggingPipe = false;
 
         for (String argument : rawArguments) {
             if (REMOTE_DEBUGGING_PIPE.equals(argument)) {
-                result.add(REMOTE_DEBUGGING_PORT);
-                replacedRemoteDebuggingPipe = true;
+                // Chromium speaks CDP over the chosen port + DevToolsActivePort, not the pipe.
+                if (!callerSetPort) {
+                    result.add(REMOTE_DEBUGGING_PORT);
+                }
                 continue;
             }
             result.add(argument);
         }
 
-        if (!replacedRemoteDebuggingPipe && !containsRemoteDebuggingPort(result)) {
+        if (!containsRemoteDebuggingPort(result)) {
             result.add(REMOTE_DEBUGGING_PORT);
         }
 
@@ -145,7 +151,12 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
                                 + describeFailure(commandLine, userDataDirectory, activePortFile, stderrBuffer));
             }
 
+            // Auto-assigned ports (port=0) are reported via DevToolsActivePort; an explicit
+            // --remote-debugging-port=<n> is only announced on Chromium's stderr. Accept either.
             String endpoint = tryReadEndpoint(activePortFile);
+            if (endpoint == null) {
+                endpoint = tryReadEndpointFromStderr(stderrBuffer);
+            }
             if (endpoint != null) {
                 return endpoint;
             }
@@ -157,6 +168,11 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         throw new IllegalStateException(
                 "Timed out after " + DEVTOOLS_PORT_TIMEOUT_SECONDS + "s waiting for the Chromium DevTools endpoint."
                         + describeFailure(commandLine, userDataDirectory, activePortFile, stderrBuffer));
+    }
+
+    private String tryReadEndpointFromStderr(OutputRingBuffer stderrBuffer) {
+        java.util.regex.Matcher matcher = DEVTOOLS_STDERR_PATTERN.matcher(stderrBuffer.snapshot());
+        return matcher.find() ? matcher.group(1).trim() : null;
     }
 
     private String tryReadEndpoint(Path activePortFile) {

@@ -371,6 +371,12 @@
     };
     Promise.resolve().then(function () {
       child.emit('spawn');
+      // Playwright's waitForReadyState waits for Chromium's "DevTools listening on ..." line
+      // on stderr when an explicit --remote-debugging-port is supplied. Our launcher already
+      // discovered the endpoint, so surface it as that line once the consumer is listening.
+      if (endpoint) {
+        child.stderr.emit('data', 'DevTools listening on ' + endpoint + '\n');
+      }
     });
     return child;
   }
@@ -655,8 +661,29 @@
   };
 
   modules.readline = {
-    createInterface: function () {
+    createInterface: function (options) {
       const reader = new EventEmitter();
+      const input = options && options.input;
+      let pending = '';
+      if (input && typeof input.on === 'function') {
+        input.on('data', function (chunk) {
+          pending += String(chunk);
+          let newlineIndex = pending.indexOf('\n');
+          while (newlineIndex >= 0) {
+            const line = pending.substring(0, newlineIndex).replace(/\r$/, '');
+            pending = pending.substring(newlineIndex + 1);
+            reader.emit('line', line);
+            newlineIndex = pending.indexOf('\n');
+          }
+        });
+        input.on('end', function () {
+          if (pending.length > 0) {
+            reader.emit('line', pending.replace(/\r$/, ''));
+            pending = '';
+          }
+          reader.emit('close');
+        });
+      }
       reader.close = function () {
         reader.emit('close');
         return undefined;
@@ -2075,6 +2102,10 @@
         this.headers = [];
         this.onmessage = undefined;
         this.onclose = undefined;
+        // One message per drain so the guest fully drains microtasks between CDP messages
+        // (correct event ordering), and non-blocking send (responses arrive via drain),
+        // mirroring the browser pipe transport.
+        this._inbox = [];
       }
 
       static async connect(progress, url) {
@@ -2088,44 +2119,34 @@
         return transport;
       }
 
-      emitMessages(joinedMessages) {
-        let emitted = 0;
-        String(joinedMessages || '').split('').forEach((message) => {
-          if (!message) {
-            return;
-          }
-
-          emitted++;
-          Promise.resolve().then(() => {
-            if (this.onmessage) {
-              this.onmessage(JSON.parse(message));
-            } else {
-              traceWebSocket('transport-message-dropped:no-onmessage');
-            }
-          });
-        });
-        return emitted;
-      }
-
       send(message) {
         traceWebSocket('transport-send:' + JSON.stringify(message));
-        const response = host.webSocketClient().sendAndWait(this.connectionId, JSON.stringify(message));
-        traceWebSocket('transport-message:' + response);
-        this.emitMessages(response);
+        host.webSocketClient().send(this.connectionId, JSON.stringify(message));
       }
 
       drain() {
-        const drainedMessages = host.webSocketClient().drain(this.connectionId, 10);
-
-        if (drainedMessages) {
-          traceWebSocket('transport-drain:' + drainedMessages);
-          return this.emitMessages(drainedMessages);
+        if (this._inbox.length === 0) {
+          String(host.webSocketClient().drain(this.connectionId, 5) || '').split('').forEach((message) => {
+            if (message) {
+              this._inbox.push(message);
+            }
+          });
         }
-
-        return 0;
+        if (this._inbox.length === 0) {
+          return 0;
+        }
+        const message = this._inbox.shift();
+        if (this.onmessage) {
+          this.onmessage(JSON.parse(message));
+        }
+        return 1;
       }
 
       close() {
+        const index = activeTransports.indexOf(this);
+        if (index >= 0) {
+          activeTransports.splice(index, 1);
+        }
         host.webSocketClient().close(this.connectionId);
 
         if (this.onclose) {
