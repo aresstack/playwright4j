@@ -25,6 +25,29 @@ auch, dass der Download-Strom NICHT über `fs.createReadStream`, sondern über
 einen CDP-/Browser-gestützten Strom läuft, dessen Daten bei uns leer
 ankommen.
 
+## TestBrowserTypeConnect (Paket 7) — Test-Infrastruktur braucht node.exe
+
+**Status:** Nicht grün (`initializationError` im Test-Setup). `TestBrowserBind`
+ist durch Paket 7 grün (2/0).
+
+**Symptom:** `java.io.IOException: Cannot run program ".../playwright4j-driver/
+node.exe": CreateProcess error=2`.
+
+**Diagnose:** Das `@BeforeAll`/Setup von `TestBrowserTypeConnect` startet einen
+**echten externen Playwright-Server als separaten `node.exe`-Prozess**, gegen den
+sich der Test dann via `connectOverWS`/connect verbindet. In der GraalVM-Variante
+gibt es kein `node.exe` — der Treiber IST GraalDriverMain (JVM), und dieser
+Server-Start-Pfad der Test-Infrastruktur ist auf `node.exe` festverdrahtet.
+
+**Einordnung:** Das ist eine **Abhängigkeit der Test-Infrastruktur von Node**, kein
+fehlendes Treiber-Primitiv. `net.createServer`/`http.createServer` (das eigentliche
+Ziel von Paket 7) funktionieren — `browser.bind` ist grün. Für
+`TestBrowserTypeConnect` müsste der separate Server-Start ebenfalls über die
+GraalDriverMain-Ersetzung laufen (Driver-Spawn-Pfad der Connect-Server-Seite),
+nicht über `node.exe`. Separat zu betrachten.
+
+---
+
 ## TestHar / TestBrowserContextHar — HAR-Zip-Export (Paket 8e) — ~11 Tests
 
 **Status:** Nicht grün. Read/Replay-HAR ist grün (8d). Reiner Zip-EXPORT

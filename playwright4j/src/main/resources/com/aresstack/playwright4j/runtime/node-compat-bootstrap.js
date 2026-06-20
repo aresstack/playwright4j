@@ -2235,40 +2235,170 @@
     };
   }
 
+  // Host-backed TCP server/socket layer for Node net.createServer (Playwright's browser.bind /
+  // BrowserServer). The Java host owns the real sockets; events arrive via __playwright4jDrainNet
+  // and are dispatched here on the single JS thread.
+  const NET_UNIT = '';
+  const netServersById = {};
+  const netSocketsById = {};
+
+  class NetSocket extends EventEmitter {
+    constructor(socketId) {
+      super();
+      this.__socketId = socketId;
+      this.readable = true;
+      this.writable = true;
+    }
+
+    write(chunk, encoding, callback) {
+      if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = undefined;
+      }
+      const buffer = global.Buffer.isBuffer(chunk)
+        ? chunk
+        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+      if (this.__socketId) {
+        host.netServer().write(this.__socketId, buffer.toString('base64'));
+      }
+      if (callback) {
+        callback();
+      }
+      return true;
+    }
+
+    end(chunk) {
+      if (chunk !== undefined && chunk !== null) {
+        this.write(chunk);
+      }
+      this.destroy();
+      return this;
+    }
+
+    destroy() {
+      if (this.__socketId) {
+        host.netServer().closeSocket(this.__socketId);
+        this.__socketId = null;
+      }
+      return this;
+    }
+
+    setEncoding() { return this; }
+    setNoDelay() { return this; }
+    setKeepAlive() { return this; }
+    setTimeout() { return this; }
+    pause() { return this; }
+    resume() { return this; }
+  }
+
+  class NetServer extends EventEmitter {
+    constructor(connectionListener) {
+      super();
+      this.__serverId = null;
+      this.__port = 0;
+      this.__host = '127.0.0.1';
+      if (typeof connectionListener === 'function') {
+        this.on('connection', connectionListener);
+      }
+    }
+
+    listen() {
+      const args = Array.prototype.slice.call(arguments);
+      const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+      let port = 0;
+      let hostName = '127.0.0.1';
+      if (args.length > 0 && args[0] && typeof args[0] === 'object') {
+        port = args[0].port || 0;
+        hostName = args[0].host || '127.0.0.1';
+      } else {
+        if (args.length > 0 && args[0] !== undefined && args[0] !== null) {
+          port = parseInt(args[0], 10) || 0;
+        }
+        if (args.length > 1 && typeof args[1] === 'string') {
+          hostName = args[1];
+        }
+      }
+      const result = String(host.netServer().listen(hostName, port));
+      const separatorIndex = result.indexOf(NET_UNIT);
+      this.__serverId = separatorIndex < 0 ? result : result.substring(0, separatorIndex);
+      this.__port = separatorIndex < 0 ? port : parseInt(result.substring(separatorIndex + 1), 10);
+      this.__host = hostName;
+      netServersById[this.__serverId] = this;
+      if (callback) {
+        this.on('listening', callback);
+      }
+      const self = this;
+      Promise.resolve().then(function () { self.emit('listening'); });
+      return this;
+    }
+
+    address() {
+      return { port: this.__port, address: this.__host, family: 'IPv4' };
+    }
+
+    close(callback) {
+      if (this.__serverId) {
+        host.netServer().closeServer(this.__serverId);
+        delete netServersById[this.__serverId];
+        this.__serverId = null;
+      }
+      const self = this;
+      Promise.resolve().then(function () { self.emit('close'); });
+      if (callback) {
+        callback();
+      }
+      return this;
+    }
+
+    unref() { return this; }
+    ref() { return this; }
+  }
+
+  global.__playwright4jDrainNet = function () {
+    const batch = String(host.netServer().drainEvents() || '');
+    if (batch.length === 0) {
+      return 0;
+    }
+    const lines = batch.split('\n');
+    let handled = 0;
+    for (let index = 0; index < lines.length; index++) {
+      const parts = lines[index].split(NET_UNIT);
+      const type = parts[0];
+      if (type === 'connection') {
+        const server = netServersById[parts[1]];
+        const socket = new NetSocket(parts[2]);
+        netSocketsById[parts[2]] = socket;
+        if (server) {
+          server.emit('connection', socket);
+        }
+        handled++;
+      } else if (type === 'data') {
+        const socket = netSocketsById[parts[1]];
+        if (socket) {
+          socket.emit('data', global.Buffer.from(parts[2] || '', 'base64'));
+        }
+        handled++;
+      } else if (type === 'close') {
+        const socket = netSocketsById[parts[1]];
+        if (socket) {
+          socket.emit('end');
+          socket.emit('close');
+          delete netSocketsById[parts[1]];
+        }
+        handled++;
+      }
+    }
+    return handled;
+  };
+
   modules.net = {
-    Socket: class Socket extends modules.events.EventEmitter {
-      constructor() {
-        super();
+    Socket: NetSocket,
+    Server: NetServer,
+    createServer: function (options, connectionListener) {
+      if (typeof options === 'function') {
+        connectionListener = options;
       }
-
-      connect() {
-        return unsupported('net.Socket.connect')();
-      }
-
-      destroy() {
-        return this;
-      }
-    },
-    Server: class Server extends modules.events.EventEmitter {
-      constructor(connectionListener) {
-        super();
-
-        if (connectionListener) {
-          this.on('connection', connectionListener);
-        }
-      }
-
-      listen() {
-        return unsupported('net.Server.listen')();
-      }
-
-      close(callback) {
-        if (callback) {
-          callback();
-        }
-
-        return this;
-      }
+      return new NetServer(connectionListener);
     },
     isIP: function (value) {
       return /^\d+\.\d+\.\d+\.\d+$/.test(String(value)) ? 4 : 0;
@@ -2281,6 +2411,56 @@
     },
     createConnection: unsupported('net.createConnection')
   };
+
+  // Minimal HTTP server backing http.createServer, used by Playwright's WebSocket-based
+  // BrowserServer (browser.bind). Listen/address/close are real (delegated to a host TCP server);
+  // request/upgrade parsing is not implemented (the bind contract test never connects a client).
+  function createHttpServer(requestListener) {
+    const netServer = new NetServer();
+    const server = new EventEmitter();
+    server.__netServer = netServer;
+    if (typeof requestListener === 'function') {
+      server.on('request', requestListener);
+    }
+    netServer.on('connection', function (socket) {
+      server.emit('connection', socket);
+    });
+    server.listen = function () {
+      const args = Array.prototype.slice.call(arguments);
+      const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+      const self = this;
+      if (callback) {
+        this.once('listening', callback);
+      }
+      netServer.once('listening', function () { self.emit('listening'); });
+      netServer.listen.apply(netServer, args);
+      return this;
+    };
+    server.address = function () {
+      return netServer.address();
+    };
+    server.close = function (callback) {
+      const self = this;
+      netServer.once('close', function () { self.emit('close'); });
+      netServer.close(callback);
+      return this;
+    };
+    server.setTimeout = function () { return this; };
+    server.ref = function () { return this; };
+    server.unref = function () { return this; };
+    return server;
+  }
+
+  modules.http.createServer = function (options, requestListener) {
+    return createHttpServer(typeof options === 'function' ? options : requestListener);
+  };
+  modules.http.Server = function (options, requestListener) {
+    return createHttpServer(typeof options === 'function' ? options : requestListener);
+  };
+  modules.https.createServer = function (options, requestListener) {
+    return createHttpServer(typeof options === 'function' ? options : requestListener);
+  };
+
   modules.tls = {};
   modules.url = {
     URL: global.URL,

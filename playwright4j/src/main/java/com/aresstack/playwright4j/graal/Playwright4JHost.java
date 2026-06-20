@@ -11,6 +11,7 @@ public final class Playwright4JHost {
     private final HostDriverPipe driverPipe;
     private final HostProcessLauncher processLauncher;
     private final MissingHostFunctionReporter missingHostFunctionReporter;
+    private final JdkHostNetServer netServer = new JdkHostNetServer();
 
     public Playwright4JHost(
             HostEnvironment environment,
@@ -224,6 +225,11 @@ public final class Playwright4JHost {
         return base64Data == null || base64Data.isEmpty()
                 ? new byte[0]
                 : java.util.Base64.getDecoder().decode(base64Data);
+    }
+
+    @HostAccess.Export
+    public JdkHostNetServer netServer() {
+        return netServer;
     }
 
     @HostAccess.Export
