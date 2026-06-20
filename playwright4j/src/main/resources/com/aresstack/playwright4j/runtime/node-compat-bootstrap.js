@@ -585,9 +585,31 @@
     SIGTERM: 15
   };
 
+  function createHostHash(algorithm) {
+    const chunks = [];
+    return {
+      update: function (data, encoding) {
+        chunks.push(global.Buffer.from(data, encoding));
+        return this;
+      },
+      digest: function (encoding) {
+        const base64 = chunks.length > 0 ? global.Buffer.concat(chunks).toString('base64') : '';
+        const hex = host.digestHex(String(algorithm), base64);
+        if (encoding === 'hex') {
+          return hex;
+        }
+        if (!encoding) {
+          // Node returns a Buffer of the raw digest bytes when no encoding is given.
+          return global.Buffer.from(hex, 'hex');
+        }
+        return global.Buffer.from(hex, 'hex').toString(encoding);
+      }
+    };
+  }
+
   modules.crypto = {
     randomBytes: function (size) {
-      const bytes = new Uint8Array(size);
+      const bytes = global.Buffer.alloc(size);
 
       for (let index = 0; index < size; index++) {
         bytes[index] = Math.floor(Math.random() * 256);
@@ -595,7 +617,20 @@
 
       return bytes;
     },
-    createHash: unsupported('crypto.createHash')
+    createHash: function (algorithm) {
+      return createHostHash(algorithm);
+    },
+    randomUUID: function () {
+      const bytes = global.Buffer.alloc(16);
+      for (let index = 0; index < 16; index++) {
+        bytes[index] = Math.floor(Math.random() * 256);
+      }
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = bytes.toString('hex');
+      return hex.substring(0, 8) + '-' + hex.substring(8, 12) + '-' + hex.substring(12, 16)
+        + '-' + hex.substring(16, 20) + '-' + hex.substring(20);
+    }
   };
 
   modules.zlib = {

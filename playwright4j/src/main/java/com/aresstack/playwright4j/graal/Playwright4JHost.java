@@ -98,6 +98,46 @@ public final class Playwright4JHost {
         Playwright4JDebug.log("[pw4j-js] " + message);
     }
 
+    /**
+     * Computes a message digest (e.g. sha1, sha256, md5) over Base64-encoded input and returns
+     * the lower-case hex digest. Backs the runtime's crypto.createHash shim.
+     */
+    @HostAccess.Export
+    public String digestHex(String algorithm, String base64Data) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance(mapDigestAlgorithm(algorithm));
+            byte[] data = base64Data == null || base64Data.isEmpty()
+                    ? new byte[0]
+                    : java.util.Base64.getDecoder().decode(base64Data);
+            byte[] hash = digest.digest(data);
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte value : hash) {
+                hex.append(Character.forDigit((value >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(value & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalArgumentException("Unsupported digest algorithm: " + algorithm, exception);
+        }
+    }
+
+    private static String mapDigestAlgorithm(String algorithm) {
+        String normalized = algorithm == null ? "" : algorithm.toLowerCase().replace("-", "");
+        if (normalized.equals("sha1")) {
+            return "SHA-1";
+        }
+        if (normalized.equals("sha256")) {
+            return "SHA-256";
+        }
+        if (normalized.equals("sha512")) {
+            return "SHA-512";
+        }
+        if (normalized.equals("md5")) {
+            return "MD5";
+        }
+        return algorithm;
+    }
+
     @HostAccess.Export
     public MissingHostFunctionReporter missingHostFunctionReporter() {
         return missingHostFunctionReporter;
