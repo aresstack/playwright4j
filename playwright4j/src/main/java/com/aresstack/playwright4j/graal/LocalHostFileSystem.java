@@ -28,6 +28,42 @@ public final class LocalHostFileSystem implements HostFileSystem {
 
     @Override
     @HostAccess.Export
+    public String readFileBase64(String path) {
+        try {
+            return java.util.Base64.getEncoder().encodeToString(Files.readAllBytes(Paths.get(path)));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot read file: " + path, exception);
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public long lastModifiedMillis(String path) {
+        try {
+            return Files.getLastModifiedTime(Paths.get(path)).toMillis();
+        } catch (IOException exception) {
+            return 0L;
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public long sizeBytes(String path) {
+        try {
+            return Files.size(Paths.get(path));
+        } catch (IOException exception) {
+            return 0L;
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public boolean isDirectorySync(String path) {
+        return Files.isDirectory(Paths.get(path));
+    }
+
+    @Override
+    @HostAccess.Export
     public String createTempDirectory(String prefix) {
         try {
             Path base = Paths.get(System.getProperty("java.io.tmpdir"));

@@ -18,6 +18,30 @@ public final class EmptyHostFileSystem implements HostFileSystem {
 
     @Override
     @HostAccess.Export
+    public String readFileBase64(String path) {
+        return "";
+    }
+
+    @Override
+    @HostAccess.Export
+    public long lastModifiedMillis(String path) {
+        return 0L;
+    }
+
+    @Override
+    @HostAccess.Export
+    public long sizeBytes(String path) {
+        return 0L;
+    }
+
+    @Override
+    @HostAccess.Export
+    public boolean isDirectorySync(String path) {
+        return false;
+    }
+
+    @Override
+    @HostAccess.Export
     public String createTempDirectory(String prefix) {
         throw new UnsupportedOperationException("EmptyHostFileSystem cannot create temporary directories.");
     }

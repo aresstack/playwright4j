@@ -54,12 +54,30 @@ tasks.named('processUpstreamTestResources') {
     includeEmptyDirs = false
 }
 
+// Many upstream tests reference fixtures via the relative path `src/test/resources/...`
+// (e.g. setInputFiles(Paths.get("src/test/resources/file-to-upload.txt")) and file:// URLs
+// built from such paths). Our fixtures live under src/upstreamTest/resources, so we mirror
+// them into a dedicated working directory laid out as `<cwd>/src/test/resources/...` and run
+// the upstream tests from there. This keeps the fix inside the contract-test harness without
+// touching the driver or rewriting upstream tests.
+def upstreamTestCwd = layout.buildDirectory.dir('upstreamTestCwd')
+
+tasks.register('syncUpstreamTestCwd', Copy) {
+    description = 'Mirrors upstream test fixtures to <cwd>/src/test/resources for relative-path access.'
+    from 'src/upstreamTest/resources'
+    into upstreamTestCwd.map { it.dir('src/test/resources') }
+}
+
 tasks.register('upstreamTest', Test) {
     description = 'Runs imported official Microsoft Playwright Java upstream tests against the playwright4j driver replacement.'
     group = 'verification'
     testClassesDirs = sourceSets.upstreamTest.output.classesDirs
     classpath = sourceSets.upstreamTest.runtimeClasspath
     shouldRunAfter test
+
+    // Run from a working directory where relative `src/test/resources/...` paths resolve.
+    dependsOn 'syncUpstreamTestCwd'
+    workingDir = upstreamTestCwd.get().asFile
 
     // Drive the official Microsoft test fixture onto the locally installed Chrome via the
     // standard Playwright browser-channel mechanism instead of a downloaded browser.

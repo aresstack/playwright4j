@@ -158,18 +158,101 @@
     }
   }
 
+  // Node fs.constants subset Playwright touches (fs.constants.F_OK etc. during file access).
+  const fsConstants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1, O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2 };
+
+  function readEncoding(options) {
+    if (typeof options === 'string') {
+      return options;
+    }
+    if (options && typeof options === 'object' && options.encoding) {
+      return options.encoding;
+    }
+    return null;
+  }
+
+  // Reads a file as raw bytes (Buffer). When an encoding is supplied, decodes to a string,
+  // matching Node's fs.readFile/readFileSync semantics (no encoding => Buffer).
+  function hostReadFile(path) {
+    const base64 = host.fileSystem().readFileBase64(String(path));
+    return global.Buffer.from(base64 || '', 'base64');
+  }
+
+  function decodeRead(buffer, options) {
+    const encoding = readEncoding(options);
+    return encoding ? buffer.toString(encoding) : buffer;
+  }
+
+  function enoent(operation, path) {
+    const error = new Error('ENOENT: no such file or directory, ' + operation + " '" + String(path) + "'");
+    error.code = 'ENOENT';
+    error.errno = -2;
+    error.path = String(path);
+    return error;
+  }
+
+  function hostStat(path) {
+    const text = String(path);
+    if (!hostExists(text)) {
+      throw enoent('stat', text);
+    }
+    const isDir = !!host.fileSystem().isDirectorySync(text);
+    const size = Number(host.fileSystem().sizeBytes(text)) || 0;
+    const mtimeMs = Number(host.fileSystem().lastModifiedMillis(text)) || 0;
+    return {
+      size: size,
+      mode: isDir ? 16877 : 33188,
+      mtimeMs: mtimeMs,
+      ctimeMs: mtimeMs,
+      atimeMs: mtimeMs,
+      birthtimeMs: mtimeMs,
+      mtime: new Date(mtimeMs),
+      ctime: new Date(mtimeMs),
+      atime: new Date(mtimeMs),
+      birthtime: new Date(mtimeMs),
+      isFile: function () { return !isDir; },
+      isDirectory: function () { return isDir; },
+      isSymbolicLink: function () { return false; },
+      isBlockDevice: function () { return false; },
+      isCharacterDevice: function () { return false; },
+      isFIFO: function () { return false; },
+      isSocket: function () { return false; }
+    };
+  }
+
+  function hostRealpath(path) {
+    const text = String(path);
+    if (!hostExists(text)) {
+      throw enoent('realpath', text);
+    }
+    return text;
+  }
+
+  const realpathSync = function (path) {
+    return hostRealpath(path);
+  };
+  realpathSync.native = realpathSync;
+
   modules.fs = {
+    constants: fsConstants,
     existsSync: function (path) {
       return hostExists(path);
     },
-    readFileSync: function (path, encoding) {
-      return host.fileSystem().readFileSync(String(path), encoding || 'utf8');
+    readFileSync: function (path, options) {
+      return decodeRead(hostReadFile(path), options);
     },
     accessSync: function (path) {
       if (!hostExists(path)) {
-        throw new Error('ENOENT: no such file or directory, access ' + String(path));
+        throw enoent('access', path);
       }
     },
+    statSync: function (path) {
+      return hostStat(path);
+    },
+    lstatSync: function (path) {
+      return hostStat(path);
+    },
+    realpathSync: realpathSync,
     writeFileSync: function (path, content) {
       host.fileSystem().writeFile(String(path), content === undefined ? '' : String(content));
     },
@@ -184,37 +267,29 @@
       return undefined;
     },
     stat: function (path, callback) {
-      const exists = hostExists(path);
       Promise.resolve().then(function () {
-        if (exists) {
-          callback(null, { isFile: function () { return true; }, isDirectory: function () { return false; } });
-        } else {
-          const error = new Error('ENOENT: no such file or directory, stat ' + String(path));
-          error.code = 'ENOENT';
+        try {
+          callback(null, hostStat(path));
+        } catch (error) {
           callback(error);
         }
       });
     },
     promises: {
-      readFile: async function (path, encoding) {
-        return host.fileSystem().readFileSync(String(path), encoding || 'utf8');
+      readFile: async function (path, options) {
+        return decodeRead(hostReadFile(path), options);
       },
       mkdtemp: async function (prefix) {
         return host.fileSystem().createTempDirectory(String(prefix));
       },
       stat: async function (path) {
-        if (!hostExists(path)) {
-          const error = new Error('ENOENT: no such file or directory, stat ' + String(path));
-          error.code = 'ENOENT';
-          throw error;
-        }
-        return {
-          mtime: new Date(0),
-          mtimeMs: 0,
-          size: 0,
-          isFile: function () { return true; },
-          isDirectory: function () { return false; }
-        };
+        return hostStat(path);
+      },
+      lstat: async function (path) {
+        return hostStat(path);
+      },
+      realpath: async function (path) {
+        return hostRealpath(path);
       },
       writeFile: async function (path, content) {
         host.fileSystem().writeFile(String(path), content === undefined ? '' : String(content));
@@ -229,7 +304,7 @@
       },
       access: async function (path) {
         if (!hostExists(path)) {
-          throw new Error('ENOENT: no such file or directory, access ' + String(path));
+          throw enoent('access', path);
         }
       }
     }
