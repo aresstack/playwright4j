@@ -1302,16 +1302,49 @@
           }
         }
 
-        const match = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/);
-
-        if (match) {
+        const schemeAuthority = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\//);
+        if (schemeAuthority) {
           this._opaque = false;
-          this.protocol = match[1];
-          this.hostname = match[2];
-          this.port = match[3] || '';
-          this.pathname = match[4] || '/';
-          this.hash = match[6] || '';
-          this._searchParams = new global.URLSearchParams(match[5] || '');
+          this.protocol = schemeAuthority[1];
+          let rest = text.substring(schemeAuthority[0].length);
+
+          // Authority runs up to the first '/', '?' or '#'.
+          const authorityEnd = rest.search(/[\/?#]/);
+          const authority = authorityEnd < 0 ? rest : rest.substring(0, authorityEnd);
+          let afterAuthority = authorityEnd < 0 ? '' : rest.substring(authorityEnd);
+
+          // [userinfo@]host[:port]
+          let hostPort = authority;
+          const atIndex = authority.lastIndexOf('@');
+          if (atIndex >= 0) {
+            const userInfo = authority.substring(0, atIndex);
+            const colonIndex = userInfo.indexOf(':');
+            this.username = colonIndex >= 0 ? userInfo.substring(0, colonIndex) : userInfo;
+            this.password = colonIndex >= 0 ? userInfo.substring(colonIndex + 1) : '';
+            hostPort = authority.substring(atIndex + 1);
+          } else {
+            this.username = '';
+            this.password = '';
+          }
+
+          const hostPortMatch = hostPort.match(/^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/);
+          this.hostname = hostPortMatch ? hostPortMatch[1] : hostPort;
+          this.port = hostPortMatch && hostPortMatch[2] ? hostPortMatch[2] : '';
+
+          this.hash = '';
+          const hashIdx = afterAuthority.indexOf('#');
+          if (hashIdx >= 0) {
+            this.hash = afterAuthority.substring(hashIdx);
+            afterAuthority = afterAuthority.substring(0, hashIdx);
+          }
+          let query = '';
+          const queryIdx = afterAuthority.indexOf('?');
+          if (queryIdx >= 0) {
+            query = afterAuthority.substring(queryIdx + 1);
+            afterAuthority = afterAuthority.substring(0, queryIdx);
+          }
+          this.pathname = afterAuthority || '/';
+          this._searchParams = new global.URLSearchParams(query);
           return;
         }
 
@@ -1323,6 +1356,8 @@
         }
         this._opaque = true;
         this.protocol = schemeMatch[1];
+        this.username = '';
+        this.password = '';
         this.hostname = '';
         this.port = '';
         let remainder = schemeMatch[2];
@@ -1369,18 +1404,28 @@
           // Opaque URLs (data:, about:, ...) have no authority and keep their path verbatim.
           return this.protocol + this.pathname + this.search + (this.hash || '');
         }
-        return this.protocol + '//' + this.host + (this.pathname || '/') + this.search + (this.hash || '');
+        let userInfo = '';
+        if (this.username) {
+          userInfo = this.username + (this.password ? ':' + this.password : '') + '@';
+        }
+        return this.protocol + '//' + userInfo + this.host + (this.pathname || '/') + this.search + (this.hash || '');
       }
 
       set href(value) {
         const parsed = new global.URL(String(value));
         this._opaque = parsed._opaque;
         this.protocol = parsed.protocol;
+        this.username = parsed.username;
+        this.password = parsed.password;
         this.hostname = parsed.hostname;
         this.port = parsed.port;
         this.pathname = parsed.pathname;
         this.hash = parsed.hash;
         this._searchParams = parsed._searchParams;
+      }
+
+      toJSON() {
+        return this.href;
       }
 
       toString() {
