@@ -483,9 +483,31 @@
       this.listenersByName = {};
     }
 
+    // Node libraries frequently inherit EventEmitter via util.inherits and never call the
+    // parent constructor, relying on lazy initialization of the internal listener registry
+    // inside on()/emit(). Mirror that so such objects (e.g. yazl's zip streams) work.
+    __listeners() {
+      if (!this.listenersByName) {
+        this.listenersByName = {};
+      }
+      return this.listenersByName;
+    }
+
     on(name, listener) {
-      this.listenersByName[name] = this.listenersByName[name] || [];
-      this.listenersByName[name].push(listener);
+      const registry = this.__listeners();
+      registry[name] = registry[name] || [];
+      registry[name].push(listener);
+      return this;
+    }
+
+    addListener(name, listener) {
+      return this.on(name, listener);
+    }
+
+    prependListener(name, listener) {
+      const registry = this.__listeners();
+      registry[name] = registry[name] || [];
+      registry[name].unshift(listener);
       return this;
     }
 
@@ -495,19 +517,41 @@
         self.off(name, onceListener);
         return listener.apply(this, arguments);
       }
+      onceListener.__originalListener = listener;
       return this.on(name, onceListener);
     }
 
+    prependOnceListener(name, listener) {
+      const self = this;
+      function onceListener() {
+        self.off(name, onceListener);
+        return listener.apply(this, arguments);
+      }
+      onceListener.__originalListener = listener;
+      return this.prependListener(name, onceListener);
+    }
+
     off(name, listener) {
-      const listeners = this.listenersByName[name] || [];
-      this.listenersByName[name] = listeners.filter(function (candidate) {
-        return candidate !== listener;
+      const registry = this.__listeners();
+      const listeners = registry[name] || [];
+      registry[name] = listeners.filter(function (candidate) {
+        return candidate !== listener && candidate.__originalListener !== listener;
       });
       return this;
     }
 
     removeListener(name, listener) {
       return this.off(name, listener);
+    }
+
+    removeAllListeners(name) {
+      const registry = this.__listeners();
+      if (name === undefined) {
+        this.listenersByName = {};
+      } else {
+        delete registry[name];
+      }
+      return this;
     }
 
     setMaxListeners(value) {
@@ -519,18 +563,31 @@
       return this.maxListeners || 0;
     }
 
+    eventNames() {
+      return Object.keys(this.__listeners());
+    }
+
     listeners(name) {
-      return (this.listenersByName[name] || []).slice();
+      return (this.__listeners()[name] || []).slice();
+    }
+
+    rawListeners(name) {
+      return (this.__listeners()[name] || []).slice();
     }
 
     listenerCount(name) {
-      return (this.listenersByName[name] || []).length;
+      return (this.__listeners()[name] || []).length;
     }
 
     emit(name) {
       const args = Array.prototype.slice.call(arguments, 1);
-      const listeners = this.listenersByName[name] || [];
-      listeners.slice().forEach(function (listener) {
+      const listeners = (this.__listeners()[name] || []).slice();
+      // Node throws if an 'error' event has no listeners; surface that instead of swallowing.
+      if (listeners.length === 0 && name === 'error') {
+        const err = args[0];
+        throw (err instanceof Error) ? err : new Error('Unhandled "error" event');
+      }
+      listeners.forEach(function (listener) {
         listener.apply(null, args);
       });
       return listeners.length > 0;
@@ -723,16 +780,279 @@
     }
   };
 
-  modules.stream = {
-    Stream: class Stream extends EventEmitter {},
-    Readable: class Readable extends EventEmitter {},
-    Writable: class Writable extends EventEmitter {},
-    Transform: class Transform extends EventEmitter {
-      pipe(destination) {
-        return destination;
+  // A small but functional Node stream layer. Node libraries bundled with Playwright (yazl/
+  // yauzl for HAR zip, download streaming) rely on flowing-mode Readable, _write/_transform
+  // hooks, pipe(), and finish/end/close ordering. Keep semantics close to Node, minimal scope.
+  class Readable extends EventEmitter {
+    constructor(options) {
+      super();
+      this.readable = true;
+      this._readableBuffer = [];
+      this._flowing = false;
+      this._readableEnded = false;
+      if (options && typeof options.read === 'function') {
+        this._read = options.read;
       }
-    },
-    PassThrough: class PassThrough extends EventEmitter {}
+    }
+
+    push(chunk) {
+      if (chunk === null) {
+        this._readableEnded = true;
+        if (this._flowing) {
+          this.emit('end');
+        }
+        return false;
+      }
+      if (this._flowing) {
+        this.emit('data', chunk);
+      } else {
+        this._readableBuffer.push(chunk);
+      }
+      return true;
+    }
+
+    on(name, listener) {
+      const result = super.on(name, listener);
+      if (name === 'data') {
+        this.resume();
+      }
+      return result;
+    }
+
+    resume() {
+      if (this._flowing) {
+        return this;
+      }
+      this._flowing = true;
+      while (this._readableBuffer.length > 0) {
+        this.emit('data', this._readableBuffer.shift());
+      }
+      if (this._readableEnded) {
+        this.emit('end');
+      }
+      return this;
+    }
+
+    pause() {
+      this._flowing = false;
+      return this;
+    }
+
+    setEncoding() {
+      return this;
+    }
+
+    pipe(destination) {
+      const self = this;
+      this.on('data', function (chunk) {
+        if (destination && typeof destination.write === 'function') {
+          destination.write(chunk);
+        }
+      });
+      this.on('end', function () {
+        if (destination && typeof destination.end === 'function') {
+          destination.end();
+        }
+      });
+      this.on('error', function (error) {
+        if (destination && typeof destination.emit === 'function') {
+          destination.emit('error', error);
+        }
+      });
+      if (destination && typeof destination.emit === 'function') {
+        destination.emit('pipe', self);
+      }
+      return destination;
+    }
+
+    destroy(error) {
+      this._readableEnded = true;
+      if (error) {
+        this.emit('error', error);
+      }
+      this.emit('close');
+      return this;
+    }
+  }
+
+  class Writable extends EventEmitter {
+    constructor(options) {
+      super();
+      this.writable = true;
+      this._writableEnded = false;
+      if (options && typeof options.write === 'function') {
+        this._write = options.write;
+      }
+      if (options && typeof options.final === 'function') {
+        this._final = options.final;
+      }
+    }
+
+    write(chunk, encoding, callback) {
+      if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = undefined;
+      }
+      const self = this;
+      try {
+        if (typeof this._write === 'function') {
+          this._write(chunk, encoding, function (error) {
+            if (error) {
+              self.emit('error', error);
+            }
+            if (callback) {
+              callback(error);
+            }
+          });
+        } else if (callback) {
+          callback();
+        }
+      } catch (error) {
+        this.emit('error', error);
+      }
+      return true;
+    }
+
+    end(chunk, encoding, callback) {
+      if (typeof chunk === 'function') {
+        callback = chunk;
+        chunk = undefined;
+      } else if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = undefined;
+      }
+      const self = this;
+      const finish = function () {
+        self._writableEnded = true;
+        self.emit('finish');
+        self.emit('close');
+        if (callback) {
+          callback();
+        }
+      };
+      const afterWrite = function () {
+        if (typeof self._final === 'function') {
+          self._final(function () { finish(); });
+        } else {
+          finish();
+        }
+      };
+      if (chunk !== undefined && chunk !== null) {
+        this.write(chunk, encoding, afterWrite);
+      } else {
+        afterWrite();
+      }
+      return this;
+    }
+
+    destroy(error) {
+      if (error) {
+        this.emit('error', error);
+      }
+      this.emit('close');
+      return this;
+    }
+  }
+
+  // Transform is both readable and writable: written chunks pass through _transform and are
+  // pushed to the readable side.
+  class Transform extends Readable {
+    constructor(options) {
+      super(options);
+      this.writable = true;
+      if (options && typeof options.transform === 'function') {
+        this._transform = options.transform;
+      }
+      if (options && typeof options.flush === 'function') {
+        this._flush = options.flush;
+      }
+    }
+
+    write(chunk, encoding, callback) {
+      if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = undefined;
+      }
+      const self = this;
+      try {
+        if (typeof this._transform === 'function') {
+          this._transform(chunk, encoding, function (error, data) {
+            if (data !== undefined && data !== null) {
+              self.push(data);
+            }
+            if (error) {
+              self.emit('error', error);
+            }
+            if (callback) {
+              callback(error);
+            }
+          });
+        } else {
+          this.push(chunk);
+          if (callback) {
+            callback();
+          }
+        }
+      } catch (error) {
+        this.emit('error', error);
+      }
+      return true;
+    }
+
+    end(chunk, encoding, callback) {
+      if (typeof chunk === 'function') {
+        callback = chunk;
+        chunk = undefined;
+      } else if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = undefined;
+      }
+      const self = this;
+      const doEnd = function () {
+        if (typeof self._flush === 'function') {
+          self._flush(function (error, data) {
+            if (data !== undefined && data !== null) {
+              self.push(data);
+            }
+            self.push(null);
+            self.emit('finish');
+            if (callback) {
+              callback(error);
+            }
+          });
+        } else {
+          self.push(null);
+          self.emit('finish');
+          if (callback) {
+            callback();
+          }
+        }
+      };
+      if (chunk !== undefined && chunk !== null) {
+        this.write(chunk, encoding, doEnd);
+      } else {
+        doEnd();
+      }
+      return this;
+    }
+  }
+
+  class PassThrough extends Transform {
+    constructor(options) {
+      super(options);
+      this._transform = function (chunk, encoding, callback) {
+        callback(null, chunk);
+      };
+    }
+  }
+
+  modules.stream = {
+    Stream: Readable,
+    Readable: Readable,
+    Writable: Writable,
+    Duplex: Transform,
+    Transform: Transform,
+    PassThrough: PassThrough
   };
 
   modules.readline = {
