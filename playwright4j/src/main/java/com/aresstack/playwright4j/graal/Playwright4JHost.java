@@ -138,6 +138,94 @@ public final class Playwright4JHost {
         return algorithm;
     }
 
+    /**
+     * Raw DEFLATE (no zlib header/checksum) over Base64 input, returning Base64 output. Backs the
+     * runtime's zlib.deflateRaw used by Playwright's HAR zip writer. level < 0 selects the default.
+     */
+    @HostAccess.Export
+    public String deflateRaw(String base64Data, int level) {
+        byte[] data = decodeBase64(base64Data);
+        java.util.zip.Deflater deflater = new java.util.zip.Deflater(
+                level < 0 ? java.util.zip.Deflater.DEFAULT_COMPRESSION : level, true);
+        try {
+            deflater.setInput(data);
+            deflater.finish();
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(Math.max(64, data.length / 2));
+            byte[] buffer = new byte[8192];
+            while (!deflater.finished()) {
+                int count = deflater.deflate(buffer);
+                out.write(buffer, 0, count);
+            }
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
+        } finally {
+            deflater.end();
+        }
+    }
+
+    /** Raw INFLATE (counterpart of {@link #deflateRaw}) over Base64 input, returning Base64. */
+    @HostAccess.Export
+    public String inflateRaw(String base64Data) {
+        byte[] data = decodeBase64(base64Data);
+        java.util.zip.Inflater inflater = new java.util.zip.Inflater(true);
+        try {
+            inflater.setInput(data);
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(Math.max(64, data.length * 3));
+            byte[] buffer = new byte[8192];
+            while (!inflater.finished()) {
+                int count = inflater.inflate(buffer);
+                if (count == 0 && (inflater.finished() || inflater.needsInput() || inflater.needsDictionary())) {
+                    break;
+                }
+                out.write(buffer, 0, count);
+            }
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
+        } catch (java.util.zip.DataFormatException exception) {
+            throw new IllegalStateException("Cannot inflate raw deflate stream", exception);
+        } finally {
+            inflater.end();
+        }
+    }
+
+    /** gzip (with header/trailer) over Base64 input, returning Base64. Backs zlib.gzip. */
+    @HostAccess.Export
+    public String gzip(String base64Data) {
+        byte[] data = decodeBase64(base64Data);
+        try {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(Math.max(64, data.length / 2));
+            try (java.util.zip.GZIPOutputStream gzip = new java.util.zip.GZIPOutputStream(out)) {
+                gzip.write(data);
+            }
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("Cannot gzip data", exception);
+        }
+    }
+
+    /** gunzip counterpart of {@link #gzip}. Backs zlib.gunzip. */
+    @HostAccess.Export
+    public String gunzip(String base64Data) {
+        byte[] data = decodeBase64(base64Data);
+        try {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(Math.max(64, data.length * 3));
+            try (java.util.zip.GZIPInputStream gzip = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(data))) {
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = gzip.read(buffer)) != -1) {
+                    out.write(buffer, 0, count);
+                }
+            }
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("Cannot gunzip data", exception);
+        }
+    }
+
+    private static byte[] decodeBase64(String base64Data) {
+        return base64Data == null || base64Data.isEmpty()
+                ? new byte[0]
+                : java.util.Base64.getDecoder().decode(base64Data);
+    }
+
     @HostAccess.Export
     public MissingHostFunctionReporter missingHostFunctionReporter() {
         return missingHostFunctionReporter;

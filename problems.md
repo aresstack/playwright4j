@@ -25,6 +25,50 @@ auch, dass der Download-Strom NICHT über `fs.createReadStream`, sondern über
 einen CDP-/Browser-gestützten Strom läuft, dessen Daten bei uns leer
 ankommen.
 
+## TestHar / TestBrowserContextHar — HAR-Zip-Export (Paket 8e) — ~11 Tests
+
+**Status:** Nicht grün. Read/Replay-HAR ist grün (8d). Reiner Zip-EXPORT
+hängt. Betroffen: `shouldProduceExtractedZip`, `shouldRoundTripHarZip`,
+`shouldRoundTrip*Zip`, `shouldUpdateHarZip*`, `shouldRoundTripHarWithPostData`,
+`shouldDisambiguateByHeader`, `shouldIgnoreAbortedRequests`, `TestHar.shouldAttachContent`.
+
+**Was funktioniert (in 8e implementiert):**
+- `zlib.deflateRaw`/`inflateRaw`/`gzip`/`gunzip` (Host-gestützt, `Deflater`/`Inflater`
+  nowrap=raw) — verifiziert: Deflate läuft (`in=4668 out=1068`).
+- Node-`Buffer`-Integer-Accessor (`writeUInt32LE`/`writeUInt16LE`/`readUInt32LE`/…,
+  `writeBigUInt64LE`) — der Zip-Writer baut damit erfolgreich die Local-/Central-
+  Directory-Header.
+- Binär-korrektes `fs.writeFile`/`writeFileSync` (Buffer statt `String(...)`).
+- `stream.Readable.from`, `stream.pipeline`/`finished` (+ `stream.promises`),
+  "sticky" Lifecycle-Events (`open`/`ready`/`finish`/`close`) für spät
+  angehängte Listener.
+
+**Genauer Befund (per Debug-Trace):** Beim Export schreibt die gebündelte
+Zip-Bibliothek das KOMPLETTE Zip (alle 12 Chunks inkl. Central Directory +
+EOCD) per `pipe` in den `.har`-`createWriteStream` — aber **beendet ihren
+Output-Stream nie** (`push(null)`/`end()` wird nicht aufgerufen). Damit ruft
+der Pipe nie `dest.end()` → `_final` → `writeFileBase64` auf, der
+`harExport`-Befehl settlet nie, und der Test läuft in den (8f-)Timeout.
+
+**Verdacht:** Die interne async-Choreografie der gebündelten Zip-Lib (yazl-artig)
+finalisiert ihren Output-Stream über einen Mechanismus (per-Entry
+Deflate-/CRC-Transform-`end`, Entry-Pump-Counter, `setImmediate`-Kette o.ä.),
+der mit unserem Stream-Layer nicht exakt zusammenspielt. Ohne den
+gebündelten Lib-Quelltext nicht eindeutig lokalisierbar.
+
+**Hinweis/Trade-off:** Durch 8e schlagen die Zip-Export-Tests jetzt per Timeout
+fehl (vorher schneller `deflateRaw is not a function`-Fehler). Der Build
+terminiert dank 8f weiterhin sauber (0 Leaks), nur langsamer für die
+HAR-Export-Tests.
+
+**Nächster Schritt (wenn wieder aufgegriffen):** Per-Entry-Pipeline der Zip-Lib
+nachstellen (welche Transform-Kette, wie wird der Output-Stream beendet?),
+ggf. `Transform`-`end`/`finish`-Reihenfolge und Backpressure (`write()`-Rückgabe,
+`drain`) exakt an Node angleichen. Eng am Stream-Layer, der von Download (8c)
+mitbenutzt wird — Regressionen vermeiden.
+
+---
+
 **Nächster Schritt (wenn wieder aufgegriffen):** Mit `-i` + Debug die
 fs-/Stream-Aufrufe für genau diesen Pfad tracen (welche Methode öffnet den
 Strom, welcher Pfad, ob `hostReadFile` aufgerufen wird), und die

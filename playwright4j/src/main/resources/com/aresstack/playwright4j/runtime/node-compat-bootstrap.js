@@ -183,6 +183,21 @@
     return encoding ? buffer.toString(encoding) : buffer;
   }
 
+  // Writes either text or binary (Buffer/Uint8Array) content, preserving raw bytes. Playwright's
+  // HAR/zip code writes Buffers, which must not be stringified.
+  function hostWriteFile(path, content) {
+    const target = String(path);
+    if (content === undefined || content === null) {
+      host.fileSystem().writeFile(target, '');
+      return;
+    }
+    if (global.Buffer.isBuffer(content) || content instanceof Uint8Array) {
+      host.fileSystem().writeFileBase64(target, global.Buffer.from(content).toString('base64'));
+      return;
+    }
+    host.fileSystem().writeFile(target, String(content));
+  }
+
   function enoent(operation, path) {
     const error = new Error('ENOENT: no such file or directory, ' + operation + " '" + String(path) + "'");
     error.code = 'ENOENT';
@@ -254,7 +269,7 @@
     },
     realpathSync: realpathSync,
     writeFileSync: function (path, content) {
-      host.fileSystem().writeFile(String(path), content === undefined ? '' : String(content));
+      hostWriteFile(path, content);
     },
     mkdirSync: function (path) {
       host.fileSystem().createDirectories(String(path));
@@ -355,7 +370,7 @@
         return hostRealpath(path);
       },
       writeFile: async function (path, content) {
-        host.fileSystem().writeFile(String(path), content === undefined ? '' : String(content));
+        hostWriteFile(path, content);
         return undefined;
       },
       mkdir: async function (path) {
@@ -859,12 +874,72 @@
     }
   };
 
+  function toInputBuffer(value) {
+    if (global.Buffer.isBuffer(value)) {
+      return value;
+    }
+    if (value instanceof Uint8Array || Array.isArray(value)) {
+      return global.Buffer.from(value);
+    }
+    return global.Buffer.from(String(value), 'utf8');
+  }
+
+  function zlibLevel(options) {
+    return options && typeof options.level === 'number' ? options.level : -1;
+  }
+
+  function zlibDeflateRaw(value, options) {
+    return global.Buffer.from(host.deflateRaw(toInputBuffer(value).toString('base64'), zlibLevel(options)), 'base64');
+  }
+
+  function zlibInflateRaw(value) {
+    return global.Buffer.from(host.inflateRaw(toInputBuffer(value).toString('base64')), 'base64');
+  }
+
+  function zlibGzip(value) {
+    return global.Buffer.from(host.gzip(toInputBuffer(value).toString('base64')), 'base64');
+  }
+
+  function zlibGunzip(value) {
+    return global.Buffer.from(host.gunzip(toInputBuffer(value).toString('base64')), 'base64');
+  }
+
+  // Node-style async wrapper: (input, [options], callback) with callback(error, result).
+  function zlibAsync(compute) {
+    return function (value, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = undefined;
+      }
+      Promise.resolve().then(function () {
+        try {
+          const result = compute(value, options);
+          if (callback) { callback(null, result); }
+        } catch (error) {
+          if (callback) { callback(error); }
+        }
+      });
+    };
+  }
+
   modules.zlib = {
-    gzipSync: function (value) {
-      return value;
-    },
-    gunzipSync: function (value) {
-      return value;
+    deflateRawSync: function (value, options) { return zlibDeflateRaw(value, options); },
+    inflateRawSync: function (value) { return zlibInflateRaw(value); },
+    deflateRaw: zlibAsync(zlibDeflateRaw),
+    inflateRaw: zlibAsync(zlibInflateRaw),
+    gzipSync: function (value) { return zlibGzip(value); },
+    gunzipSync: function (value) { return zlibGunzip(value); },
+    gzip: zlibAsync(zlibGzip),
+    gunzip: zlibAsync(zlibGunzip),
+    deflateSync: function (value, options) { return zlibDeflateRaw(value, options); },
+    inflateSync: function (value) { return zlibInflateRaw(value); },
+    deflate: zlibAsync(zlibDeflateRaw),
+    inflate: zlibAsync(zlibInflateRaw),
+    constants: {
+      Z_NO_COMPRESSION: 0,
+      Z_BEST_SPEED: 1,
+      Z_BEST_COMPRESSION: 9,
+      Z_DEFAULT_COMPRESSION: -1
     }
   };
 
@@ -934,6 +1009,39 @@
 
     get readableEnded() {
       return this._readableEnded && this._readableBuffer.length === 0;
+    }
+
+    static from(iterable) {
+      const stream = new Readable();
+      Promise.resolve().then(function () {
+        try {
+          if (iterable === undefined || iterable === null) {
+            stream.push(null);
+          } else if (typeof iterable === 'string' || global.Buffer.isBuffer(iterable) || iterable instanceof Uint8Array) {
+            stream.push(iterable);
+            stream.push(null);
+          } else if (typeof iterable[Symbol.iterator] === 'function') {
+            const list = Array.from(iterable);
+            for (let index = 0; index < list.length; index++) {
+              stream.push(list[index]);
+            }
+            stream.push(null);
+          } else if (typeof iterable[Symbol.asyncIterator] === 'function') {
+            (async function () {
+              for await (const item of iterable) {
+                stream.push(item);
+              }
+              stream.push(null);
+            })().catch(function (error) { stream.emit('error', error); });
+          } else {
+            stream.push(iterable);
+            stream.push(null);
+          }
+        } catch (error) {
+          stream.emit('error', error);
+        }
+      });
+      return stream;
     }
 
     on(name, listener) {
@@ -1015,12 +1123,32 @@
       super();
       this.writable = true;
       this._writableEnded = false;
+      // One-shot lifecycle events (open/ready/finish/close) are "sticky": consumers frequently
+      // attach a listener (e.g. await once(stream, 'close')) right after calling end(), i.e. after
+      // we already emitted. Record fired events and replay them to late listeners so awaits resolve.
+      this._firedEvents = {};
       if (options && typeof options.write === 'function') {
         this._write = options.write;
       }
       if (options && typeof options.final === 'function') {
         this._final = options.final;
       }
+    }
+
+    fireSticky(name) {
+      const args = Array.prototype.slice.call(arguments, 1);
+      this._firedEvents[name] = args;
+      this.emit.apply(this, arguments);
+    }
+
+    on(name, listener) {
+      const result = super.on(name, listener);
+      if (this._firedEvents && Object.prototype.hasOwnProperty.call(this._firedEvents, name)) {
+        const args = this._firedEvents[name];
+        const self = this;
+        Promise.resolve().then(function () { listener.apply(self, args); });
+      }
+      return result;
     }
 
     write(chunk, encoding, callback) {
@@ -1059,8 +1187,8 @@
       const self = this;
       const finish = function () {
         self._writableEnded = true;
-        self.emit('finish');
-        self.emit('close');
+        self.fireSticky('finish');
+        self.fireSticky('close');
         if (callback) {
           callback();
         }
@@ -1181,13 +1309,78 @@
     }
   }
 
+  function streamFinished(stream, optionsOrCallback, maybeCallback) {
+    const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
+    let done = false;
+    const finish = function (error) {
+      if (done) {
+        return;
+      }
+      done = true;
+      if (callback) {
+        callback(error || null);
+      }
+    };
+    stream.on('end', function () { finish(); });
+    stream.on('finish', function () { finish(); });
+    stream.on('close', function () { finish(); });
+    stream.on('error', function (error) { finish(error); });
+    return function () { done = true; };
+  }
+
+  function streamPipeline() {
+    const args = Array.prototype.slice.call(arguments);
+    const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+    let done = false;
+    const finish = function (error) {
+      if (done) {
+        return;
+      }
+      done = true;
+      if (callback) {
+        callback(error || null);
+      }
+    };
+    for (let index = 0; index < args.length; index++) {
+      if (args[index] && typeof args[index].on === 'function') {
+        args[index].on('error', finish);
+      }
+    }
+    for (let index = 0; index < args.length - 1; index++) {
+      args[index].pipe(args[index + 1]);
+    }
+    const last = args[args.length - 1];
+    streamFinished(last, finish);
+    return last;
+  }
+
   modules.stream = {
     Stream: Readable,
     Readable: Readable,
     Writable: Writable,
     Duplex: Transform,
     Transform: Transform,
-    PassThrough: PassThrough
+    PassThrough: PassThrough,
+    finished: streamFinished,
+    pipeline: streamPipeline,
+    promises: {
+      finished: function (stream, options) {
+        return new Promise(function (resolve, reject) {
+          streamFinished(stream, function (error) {
+            if (error) { reject(error); } else { resolve(); }
+          });
+        });
+      },
+      pipeline: function () {
+        const args = Array.prototype.slice.call(arguments);
+        return new Promise(function (resolve, reject) {
+          args.push(function (error) {
+            if (error) { reject(error); } else { resolve(); }
+          });
+          streamPipeline.apply(null, args);
+        });
+      }
+    }
   };
 
   // File streams, backed by the host filesystem. createWriteStream buffers and flushes on end;
@@ -1219,8 +1412,8 @@
       }
     };
     Promise.resolve().then(function () {
-      stream.emit('open', 0);
-      stream.emit('ready');
+      stream.fireSticky('open', 0);
+      stream.fireSticky('ready');
     });
     return stream;
   };
@@ -1242,6 +1435,31 @@
     });
     return stream;
   };
+
+  // Streaming zlib transforms (buffer all input, (de)compress on flush). Playwright's zip code
+  // may pipe through createDeflateRaw/createInflateRaw rather than the one-shot helpers.
+  function makeZlibTransform(compute, options) {
+    const chunks = [];
+    const transform = new Transform();
+    transform._transform = function (chunk, encoding, callback) {
+      chunks.push(toInputBuffer(chunk));
+      callback();
+    };
+    transform._flush = function (callback) {
+      try {
+        const all = chunks.length > 0 ? global.Buffer.concat(chunks) : global.Buffer.alloc(0);
+        callback(null, compute(all, options));
+      } catch (error) {
+        callback(error);
+      }
+    };
+    return transform;
+  }
+
+  modules.zlib.createDeflateRaw = function (options) { return makeZlibTransform(zlibDeflateRaw, options); };
+  modules.zlib.createInflateRaw = function (options) { return makeZlibTransform(zlibInflateRaw, options); };
+  modules.zlib.createGzip = function (options) { return makeZlibTransform(zlibGzip, options); };
+  modules.zlib.createGunzip = function (options) { return makeZlibTransform(zlibGunzip, options); };
 
   modules.readline = {
     createInterface: function (options) {
@@ -2368,6 +2586,124 @@
         }
       }
       return true;
+    }
+
+    slice(start, end) {
+      return Buffer.from(this.subarray(start, end));
+    }
+
+    // Fixed-width integer accessors (Node Buffer API) used by Playwright's zip writer/reader.
+    writeUInt8(value, offset) {
+      offset = offset || 0;
+      this[offset] = value & 0xff;
+      return offset + 1;
+    }
+
+    writeUInt16LE(value, offset) {
+      offset = offset || 0;
+      this[offset] = value & 0xff;
+      this[offset + 1] = (value >>> 8) & 0xff;
+      return offset + 2;
+    }
+
+    writeUInt16BE(value, offset) {
+      offset = offset || 0;
+      this[offset] = (value >>> 8) & 0xff;
+      this[offset + 1] = value & 0xff;
+      return offset + 2;
+    }
+
+    writeUInt32LE(value, offset) {
+      offset = offset || 0;
+      this[offset] = value & 0xff;
+      this[offset + 1] = (value >>> 8) & 0xff;
+      this[offset + 2] = (value >>> 16) & 0xff;
+      this[offset + 3] = (value >>> 24) & 0xff;
+      return offset + 4;
+    }
+
+    writeUInt32BE(value, offset) {
+      offset = offset || 0;
+      this[offset] = (value >>> 24) & 0xff;
+      this[offset + 1] = (value >>> 16) & 0xff;
+      this[offset + 2] = (value >>> 8) & 0xff;
+      this[offset + 3] = value & 0xff;
+      return offset + 4;
+    }
+
+    writeInt8(value, offset) { return this.writeUInt8(value, offset); }
+    writeInt16LE(value, offset) { return this.writeUInt16LE(value, offset); }
+    writeInt16BE(value, offset) { return this.writeUInt16BE(value, offset); }
+    writeInt32LE(value, offset) { return this.writeUInt32LE(value, offset); }
+    writeInt32BE(value, offset) { return this.writeUInt32BE(value, offset); }
+
+    writeBigUInt64LE(value, offset) {
+      offset = offset || 0;
+      let v = typeof value === 'bigint' ? value : BigInt(value);
+      for (let index = 0; index < 8; index++) {
+        this[offset + index] = Number(v & 0xffn);
+        v >>= 8n;
+      }
+      return offset + 8;
+    }
+
+    writeUIntLE(value, offset, byteLength) {
+      offset = offset || 0;
+      let v = value;
+      for (let index = 0; index < byteLength; index++) {
+        this[offset + index] = v & 0xff;
+        v = Math.floor(v / 256);
+      }
+      return offset + byteLength;
+    }
+
+    readUInt8(offset) {
+      return this[offset || 0];
+    }
+
+    readUInt16LE(offset) {
+      offset = offset || 0;
+      return this[offset] | (this[offset + 1] << 8);
+    }
+
+    readUInt16BE(offset) {
+      offset = offset || 0;
+      return (this[offset] << 8) | this[offset + 1];
+    }
+
+    readUInt32LE(offset) {
+      offset = offset || 0;
+      return (this[offset] | (this[offset + 1] << 8) | (this[offset + 2] << 16)) + this[offset + 3] * 0x1000000;
+    }
+
+    readUInt32BE(offset) {
+      offset = offset || 0;
+      return this[offset] * 0x1000000 + ((this[offset + 1] << 16) | (this[offset + 2] << 8) | this[offset + 3]);
+    }
+
+    readInt32LE(offset) {
+      offset = offset || 0;
+      return this[offset] | (this[offset + 1] << 8) | (this[offset + 2] << 16) | (this[offset + 3] << 24);
+    }
+
+    readBigUInt64LE(offset) {
+      offset = offset || 0;
+      let result = 0n;
+      for (let index = 7; index >= 0; index--) {
+        result = (result << 8n) | BigInt(this[offset + index]);
+      }
+      return result;
+    }
+
+    readUIntLE(offset, byteLength) {
+      offset = offset || 0;
+      let value = 0;
+      let multiplier = 1;
+      for (let index = 0; index < byteLength; index++) {
+        value += this[offset + index] * multiplier;
+        multiplier *= 256;
+      }
+      return value;
     }
   }
 
