@@ -996,7 +996,9 @@
         ? this._readableBuffer[0]
         : global.Buffer.concat(this._readableBuffer);
       this._readableBuffer = [];
-      if (size === undefined || size === null || pending.length <= size) {
+      // A non-positive/NaN/absent size means "return all currently available" (Node semantics).
+      // Playwright's StreamDispatcher calls read() with no usable size, which arrives as NaN.
+      if (!(size > 0) || pending.length <= size) {
         if (this._readableBuffer.length === 0 && this._readableEnded) {
           this.readable = false;
         }

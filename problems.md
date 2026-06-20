@@ -1,31 +1,24 @@
 # Offene Punkte (problems.md)
 
-Dinge, die im Rahmen der Arbeitspakete 8a–8e / 7 nicht vollständig gelöst werden
-konnten. Jeweils mit aktuellem Stand, Diagnose und Verdacht.
+Verbleibende Restinseln. Jeweils mit aktuellem Stand, Diagnose und Verdacht.
 
-## TestDownload.shouldExposeStream (Paket 8c) — 1 Test
+Reihenfolge/Priorität:
+1. ~~Download stream: TestDownload.shouldExposeStream~~ — **GELÖST** (s.u.)
+2. TestBrowserTypeConnect: node.exe-Testinfrastruktur ersetzen
+3. HAR Zip Export: großer Stream/Zip/Finalize-Block
 
-**Status:** Nicht grün. TestDownload ist sonst 21/22 (vorher 2/20).
+## ~~TestDownload.shouldExposeStream~~ — GELÖST
 
-**Symptom:** `download.createReadStream()` liefert einen leeren Strom —
-`expected <Hello world> but was <>`. Vorher (vor den 8c-Stream-Änderungen)
-lief der Test in einen 25s-Timeout; nach Einführung von pull-basiertem
-`Readable.read(size)` + `'readable'`-Replay schlägt er jetzt schnell fehl
-(kein Hänger mehr), aber mit leerem Inhalt.
+**Status:** Grün. TestDownload ist jetzt **22/22**.
 
-**Diagnose/Verdacht:** Der StreamDispatcher von Playwright Core liest den
-Download-Artefakt-Strom (`artifact.createReadStream`). Unsere
-`fs.createReadStream` + `Readable` (pull-Modus) liefern offenbar beim ersten
-`read(size)` des Dispatchers noch keine Bytes bzw. der Dispatcher beendet,
-bevor die im Microtask gepushten Bytes konsumiert werden — d.h. ein
-Reihenfolge-/Timing-Problem zwischen dem Microtask in `createReadStream`
-(push(buffer)/push(null)) und dem Zeitpunkt, zu dem der Dispatcher seine
-`'readable'`/`'end'`-Listener registriert und `read()` aufruft. Möglich ist
-auch, dass der Download-Strom NICHT über `fs.createReadStream`, sondern über
-einen CDP-/Browser-gestützten Strom läuft, dessen Daten bei uns leer
-ankommen.
+**Root Cause war:** Playwrights StreamDispatcher ruft `stream.read(size)` mit
+`size = NaN` auf. Unser `Readable.read` behandelte das wie „Teilmenge lesen"
+(`pending.subarray(0, NaN)` → leerer Buffer) statt wie Node „alles Verfügbare
+zurückgeben". Fix: `read(size)` gibt bei nicht-positivem/NaN/fehlendem `size`
+den kompletten gepufferten Inhalt zurück (`!(size > 0)`). Kein breiter
+Stream-Umbau.
 
-## TestBrowserTypeConnect (Paket 7) — Test-Infrastruktur braucht node.exe
+## TestBrowserTypeConnect (Insel 2) — Test-Infrastruktur braucht node.exe
 
 **Status:** Nicht grün (`initializationError` im Test-Setup). `TestBrowserBind`
 ist durch Paket 7 grün (2/0).
@@ -48,7 +41,7 @@ nicht über `node.exe`. Separat zu betrachten.
 
 ---
 
-## TestHar / TestBrowserContextHar — HAR-Zip-Export (Paket 8e) — ~11 Tests
+## TestHar / TestBrowserContextHar — HAR-Zip-Export (Insel 3) — ~11 Tests
 
 **Status:** Nicht grün. Read/Replay-HAR ist grün (8d). Reiner Zip-EXPORT
 hängt. Betroffen: `shouldProduceExtractedZip`, `shouldRoundTripHarZip`,
