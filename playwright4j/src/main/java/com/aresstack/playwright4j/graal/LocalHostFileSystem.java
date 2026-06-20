@@ -98,6 +98,23 @@ public final class LocalHostFileSystem implements HostFileSystem {
         }
     }
 
+    @Override
+    @HostAccess.Export
+    public void writeFileBase64(String path, String base64) {
+        try {
+            Path target = Paths.get(path);
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+            byte[] bytes = base64 == null || base64.isEmpty()
+                    ? new byte[0]
+                    : java.util.Base64.getDecoder().decode(base64);
+            Files.write(target, bytes);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot write file: " + path, exception);
+        }
+    }
+
     private static String sanitizePrefix(String prefix) {
         if (prefix == null || prefix.isEmpty()) {
             return "playwright4j-";

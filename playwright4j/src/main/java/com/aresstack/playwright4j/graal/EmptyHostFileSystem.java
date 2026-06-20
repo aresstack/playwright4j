@@ -57,4 +57,10 @@ public final class EmptyHostFileSystem implements HostFileSystem {
     public void writeFile(String path, String content) {
         throw new UnsupportedOperationException("EmptyHostFileSystem cannot write files.");
     }
+
+    @Override
+    @HostAccess.Export
+    public void writeFileBase64(String path, String base64) {
+        throw new UnsupportedOperationException("EmptyHostFileSystem cannot write files.");
+    }
 }

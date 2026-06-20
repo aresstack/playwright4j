@@ -25,6 +25,17 @@ public final class GraalDriverMain {
 
         PlaywrightDriverBundleSource driverBundleSource = new PlaywrightDriverBundleSource(Thread.currentThread().getContextClassLoader());
         JdkHostProcessLauncher processLauncher = new JdkHostProcessLauncher();
+
+        // Guarantee the browser process tree is torn down whenever this driver JVM shuts down for
+        // any orderly reason (stdin EOF, System.exit, parent closing the pipe). Without this a
+        // Chromium tree could be orphaned if the parent abandons a hung command and closes the
+        // pipe before the normal closeAll() in the finally block below runs.
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                processLauncher.closeAll();
+            }
+        }, "playwright4j-driver-shutdown"));
         Playwright4JHost host = new Playwright4JHost(
                 new FixedHostEnvironment(platform(), architecture(), Paths.get("").toAbsolutePath().toString(), environment),
                 new LocalHostFileSystem(),

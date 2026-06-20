@@ -89,6 +89,15 @@ tasks.register('upstreamTest', Test) {
     systemProperty 'playwright4j.debug', findProperty('playwright4j.debug') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
 
+    // Safety net: a single driver call that never returns (e.g. an unsupported HAR/zip export
+    // during BrowserContext.close()) must not wedge the whole forked JVM. A generous per-method
+    // JUnit timeout interrupts such a hang so the suite proceeds to @AfterAll, closes Playwright,
+    // and the driver child receives EOF and shuts down (killing Chrome). Well above any legitimate
+    // test duration, so it never affects green tests. Same-thread mode keeps Playwright's
+    // single-threaded affinity intact.
+    systemProperty 'junit.jupiter.execution.timeout.default', findProperty('playwright4j.testTimeout') ?: '90 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+
     testLogging {
         events "passed", "failed", "skipped"
         showStandardStreams = false

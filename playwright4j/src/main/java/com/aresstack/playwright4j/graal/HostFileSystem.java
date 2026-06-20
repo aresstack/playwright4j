@@ -23,4 +23,7 @@ public interface HostFileSystem {
     void createDirectories(String path);
 
     void writeFile(String path, String content);
+
+    /** Writes raw bytes (provided Base64-encoded) to a file, creating parent directories. */
+    void writeFileBase64(String path, String base64);
 }

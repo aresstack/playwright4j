@@ -1055,6 +1055,59 @@
     PassThrough: PassThrough
   };
 
+  // File streams, backed by the host filesystem. createWriteStream buffers and flushes on end;
+  // createReadStream emits the file's bytes once and ends. These let Playwright's HAR/zip and
+  // download code complete their pipe()/end() lifecycles (finish/close) so the commands settle
+  // instead of awaiting forever (which previously wedged BrowserContext.close()).
+  modules.fs.createWriteStream = function (path, options) {
+    const target = String(path);
+    const chunks = [];
+    const stream = new Writable();
+    stream.path = target;
+    stream.bytesWritten = 0;
+    stream._write = function (chunk, encoding, callback) {
+      const buffer = global.Buffer.isBuffer(chunk)
+        ? chunk
+        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+      chunks.push(buffer);
+      stream.bytesWritten += buffer.length;
+      callback();
+    };
+    stream._final = function (callback) {
+      try {
+        const all = chunks.length > 0 ? global.Buffer.concat(chunks) : global.Buffer.alloc(0);
+        host.fileSystem().writeFileBase64(target, all.toString('base64'));
+        callback();
+      } catch (error) {
+        stream.emit('error', error);
+        callback();
+      }
+    };
+    Promise.resolve().then(function () {
+      stream.emit('open', 0);
+      stream.emit('ready');
+    });
+    return stream;
+  };
+
+  modules.fs.createReadStream = function (path, options) {
+    const target = String(path);
+    const encoding = readEncoding(options);
+    const stream = new Readable();
+    stream.path = target;
+    Promise.resolve().then(function () {
+      try {
+        const buffer = hostReadFile(target);
+        stream.emit('open', 0);
+        stream.push(encoding ? buffer.toString(encoding) : buffer);
+        stream.push(null);
+      } catch (error) {
+        stream.emit('error', error);
+      }
+    });
+    return stream;
+  };
+
   modules.readline = {
     createInterface: function (options) {
       const reader = new EventEmitter();
