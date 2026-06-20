@@ -1179,14 +1179,19 @@
   }
 
   if (typeof global.URL !== 'function') {
-    // Removes "." and ".." segments from an absolute path, per RFC 3986.
+    // Removes "." and ".." segments from a path, per RFC 3986. A trailing "." or ".." keeps
+    // the directory trailing slash (e.g. ".../dir/." -> ".../dir/").
     const normalizeUrlPath = function (path) {
       const isAbsolute = path.charAt(0) === '/';
       const segments = path.split('/');
       const output = [];
       for (let index = 0; index < segments.length; index++) {
         const segment = segments[index];
+        const isLast = index === segments.length - 1;
         if (segment === '.') {
+          if (isLast) {
+            output.push('');
+          }
           continue;
         }
         if (segment === '..') {
@@ -1194,6 +1199,9 @@
             output.pop();
           } else if (!isAbsolute) {
             output.push('..');
+          }
+          if (isLast) {
+            output.push('');
           }
           continue;
         }
@@ -1218,7 +1226,7 @@
             text = baseUrl.protocol + text;
           } else if (text.charAt(0) === '/') {
             // Absolute-path reference: replaces the whole base path.
-            text = baseUrl.origin + text;
+            text = baseUrl.origin + normalizeUrlPath(text);
           } else if (text.charAt(0) === '?') {
             text = baseUrl.origin + baseUrl.pathname + text;
           } else if (text.charAt(0) === '#') {
@@ -1235,6 +1243,7 @@
         const match = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/([^\/:?#]+)(?::(\d+))?([^?#]*)(\?[^#]*)?(#.*)?$/);
 
         if (match) {
+          this._opaque = false;
           this.protocol = match[1];
           this.hostname = match[2];
           this.port = match[3] || '';
@@ -1244,12 +1253,13 @@
           return;
         }
 
-        // Scheme-only / opaque URLs (data:, file:, mailto:, ...). We do not fully parse the
-        // authority, but expose the protocol so callers can route/reject correctly.
+        // Scheme-only / opaque URLs (data:, about:, mailto:, ...). These have no authority and
+        // render without "//"; the opaque path is kept verbatim.
         const schemeMatch = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)([\s\S]*)$/);
         if (!schemeMatch) {
           throw new TypeError('Invalid URL: ' + text);
         }
+        this._opaque = true;
         this.protocol = schemeMatch[1];
         this.hostname = '';
         this.port = '';
@@ -1276,7 +1286,7 @@
       }
 
       get origin() {
-        return this.protocol + '//' + this.host;
+        return this._opaque ? 'null' : this.protocol + '//' + this.host;
       }
 
       get search() {
@@ -1293,11 +1303,16 @@
       }
 
       get href() {
+        if (this._opaque) {
+          // Opaque URLs (data:, about:, ...) have no authority and keep their path verbatim.
+          return this.protocol + this.pathname + this.search + (this.hash || '');
+        }
         return this.protocol + '//' + this.host + (this.pathname || '/') + this.search + (this.hash || '');
       }
 
       set href(value) {
         const parsed = new global.URL(String(value));
+        this._opaque = parsed._opaque;
         this.protocol = parsed.protocol;
         this.hostname = parsed.hostname;
         this.port = parsed.port;
