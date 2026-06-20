@@ -2377,6 +2377,18 @@
     Buffer: global.Buffer
   };
 
+  // Base64 <-> binary-string globals used by Playwright's HAR content decoding.
+  if (typeof global.atob !== 'function') {
+    global.atob = function (data) {
+      return latin1Decode(base64Decode(String(data)));
+    };
+  }
+  if (typeof global.btoa !== 'function') {
+    global.btoa = function (data) {
+      return base64Encode(latin1Encode(String(data)));
+    };
+  }
+
   global.setImmediate = function (callback) {
     return setTimeout(callback, 0);
   };
