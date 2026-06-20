@@ -115,6 +115,70 @@ public final class LocalHostFileSystem implements HostFileSystem {
         }
     }
 
+    @Override
+    @HostAccess.Export
+    public void deleteFile(String path) {
+        try {
+            Files.deleteIfExists(Paths.get(path));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot delete file: " + path, exception);
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public void deleteRecursively(String path) {
+        Path root = Paths.get(path);
+        if (!Files.exists(root)) {
+            return;
+        }
+        try {
+            Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
+                    Files.deleteIfExists(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                    Files.deleteIfExists(dir);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot delete recursively: " + path, exception);
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public void copyFile(String source, String destination) {
+        try {
+            Path target = Paths.get(destination);
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+            Files.copy(Paths.get(source), target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot copy file: " + source + " -> " + destination, exception);
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public void rename(String source, String destination) {
+        try {
+            Path target = Paths.get(destination);
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+            Files.move(Paths.get(source), target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot move file: " + source + " -> " + destination, exception);
+        }
+    }
+
     private static String sanitizePrefix(String prefix) {
         if (prefix == null || prefix.isEmpty()) {
             return "playwright4j-";

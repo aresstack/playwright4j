@@ -26,4 +26,16 @@ public interface HostFileSystem {
 
     /** Writes raw bytes (provided Base64-encoded) to a file, creating parent directories. */
     void writeFileBase64(String path, String base64);
+
+    /** Deletes a file (no error if it does not exist). Backs fs.unlink/rm. */
+    void deleteFile(String path);
+
+    /** Recursively deletes a file or directory tree (no error if absent). Backs fs.rm recursive. */
+    void deleteRecursively(String path);
+
+    /** Copies a file, creating destination parent directories. Backs fs.copyFile. */
+    void copyFile(String source, String destination);
+
+    /** Moves/renames a file, creating destination parent directories. Backs fs.rename. */
+    void rename(String source, String destination);
 }

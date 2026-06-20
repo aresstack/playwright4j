@@ -63,4 +63,28 @@ public final class EmptyHostFileSystem implements HostFileSystem {
     public void writeFileBase64(String path, String base64) {
         throw new UnsupportedOperationException("EmptyHostFileSystem cannot write files.");
     }
+
+    @Override
+    @HostAccess.Export
+    public void deleteFile(String path) {
+        // No-op: nothing to delete on an empty filesystem.
+    }
+
+    @Override
+    @HostAccess.Export
+    public void deleteRecursively(String path) {
+        // No-op: nothing to delete on an empty filesystem.
+    }
+
+    @Override
+    @HostAccess.Export
+    public void copyFile(String source, String destination) {
+        throw new UnsupportedOperationException("EmptyHostFileSystem cannot copy files.");
+    }
+
+    @Override
+    @HostAccess.Export
+    public void rename(String source, String destination) {
+        throw new UnsupportedOperationException("EmptyHostFileSystem cannot move files.");
+    }
 }

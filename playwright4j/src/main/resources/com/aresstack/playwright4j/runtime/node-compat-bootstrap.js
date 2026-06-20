@@ -263,8 +263,71 @@
     mkdtempSync: function (prefix) {
       return host.fileSystem().createTempDirectory(String(prefix));
     },
-    rmSync: function () {
+    rmSync: function (path, options) {
+      if (path !== undefined) {
+        if (options && options.recursive) {
+          host.fileSystem().deleteRecursively(String(path));
+        } else {
+          host.fileSystem().deleteFile(String(path));
+        }
+      }
       return undefined;
+    },
+    rmdirSync: function (path, options) {
+      if (path !== undefined) {
+        host.fileSystem().deleteRecursively(String(path));
+      }
+      return undefined;
+    },
+    rm: function (path, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = undefined;
+      }
+      Promise.resolve().then(function () {
+        try {
+          if (options && options.recursive) {
+            host.fileSystem().deleteRecursively(String(path));
+          } else {
+            host.fileSystem().deleteFile(String(path));
+          }
+          if (callback) { callback(null); }
+        } catch (error) {
+          if (callback) { callback(error); }
+        }
+      });
+    },
+    unlinkSync: function (path) {
+      host.fileSystem().deleteFile(String(path));
+      return undefined;
+    },
+    copyFileSync: function (source, destination) {
+      host.fileSystem().copyFile(String(source), String(destination));
+      return undefined;
+    },
+    renameSync: function (source, destination) {
+      host.fileSystem().rename(String(source), String(destination));
+      return undefined;
+    },
+    unlink: function (path, callback) {
+      Promise.resolve().then(function () {
+        try {
+          host.fileSystem().deleteFile(String(path));
+          if (callback) { callback(null); }
+        } catch (error) {
+          if (callback) { callback(error); }
+        }
+      });
+    },
+    rename: function (source, destination, callback) {
+      Promise.resolve().then(function () {
+        try {
+          host.fileSystem().rename(String(source), String(destination));
+          if (callback) { callback(null); }
+        } catch (error) {
+          if (callback) { callback(error); }
+        }
+      });
     },
     stat: function (path, callback) {
       Promise.resolve().then(function () {
@@ -299,7 +362,32 @@
         host.fileSystem().createDirectories(String(path));
         return undefined;
       },
-      rm: async function () {
+      rm: async function (path, options) {
+        if (path !== undefined) {
+          if (options && options.recursive) {
+            host.fileSystem().deleteRecursively(String(path));
+          } else {
+            host.fileSystem().deleteFile(String(path));
+          }
+        }
+        return undefined;
+      },
+      rmdir: async function (path) {
+        if (path !== undefined) {
+          host.fileSystem().deleteRecursively(String(path));
+        }
+        return undefined;
+      },
+      unlink: async function (path) {
+        host.fileSystem().deleteFile(String(path));
+        return undefined;
+      },
+      copyFile: async function (source, destination) {
+        host.fileSystem().copyFile(String(source), String(destination));
+        return undefined;
+      },
+      rename: async function (source, destination) {
+        host.fileSystem().rename(String(source), String(destination));
         return undefined;
       },
       access: async function (path) {
@@ -798,23 +886,69 @@
     push(chunk) {
       if (chunk === null) {
         this._readableEnded = true;
+        // Keep `readable` true until the buffer is drained so pull-mode consumers can finish
+        // reading any buffered bytes; flowing-mode consumers get 'end' immediately.
         if (this._flowing) {
+          this.readable = false;
           this.emit('end');
+        } else {
+          this.emit('readable');
         }
         return false;
       }
+      this._readableBuffer.push(chunk);
       if (this._flowing) {
-        this.emit('data', chunk);
+        while (this._readableBuffer.length > 0) {
+          this.emit('data', this._readableBuffer.shift());
+        }
       } else {
-        this._readableBuffer.push(chunk);
+        // Pull mode: notify consumers that data is available to read().
+        this.emit('readable');
       }
       return true;
+    }
+
+    // Pull-based read used by Playwright's StreamDispatcher (download.createReadStream): returns
+    // up to `size` buffered bytes, or null when nothing is currently buffered.
+    read(size) {
+      if (this._readableBuffer.length === 0) {
+        if (this._readableEnded) {
+          this.readable = false;
+        }
+        return null;
+      }
+      let pending = this._readableBuffer.length === 1
+        ? this._readableBuffer[0]
+        : global.Buffer.concat(this._readableBuffer);
+      this._readableBuffer = [];
+      if (size === undefined || size === null || pending.length <= size) {
+        if (this._readableBuffer.length === 0 && this._readableEnded) {
+          this.readable = false;
+        }
+        return pending;
+      }
+      const head = global.Buffer.from(pending.subarray(0, size));
+      this._readableBuffer = [global.Buffer.from(pending.subarray(size))];
+      return head;
+    }
+
+    get readableEnded() {
+      return this._readableEnded && this._readableBuffer.length === 0;
     }
 
     on(name, listener) {
       const result = super.on(name, listener);
       if (name === 'data') {
         this.resume();
+      } else if (name === 'readable' && (this._readableBuffer.length > 0 || this._readableEnded)) {
+        // Node re-signals readability to listeners attached after data is already buffered (or
+        // after end). Playwright's StreamDispatcher attaches 'readable'/'end' per read() call,
+        // often after createReadStream already pushed everything, so replay the signal async.
+        const self = this;
+        Promise.resolve().then(function () { self.emit('readable'); });
+      } else if (name === 'end' && this._readableEnded && this._readableBuffer.length === 0) {
+        const self = this;
+        Promise.resolve().then(function () { self.emit('end'); });
       }
       return result;
     }
@@ -828,6 +962,7 @@
         this.emit('data', this._readableBuffer.shift());
       }
       if (this._readableEnded) {
+        this.readable = false;
         this.emit('end');
       }
       return this;
