@@ -18,26 +18,60 @@ zurückgeben". Fix: `read(size)` gibt bei nicht-positivem/NaN/fehlendem `size`
 den kompletten gepufferten Inhalt zurück (`!(size > 0)`). Kein breiter
 Stream-Umbau.
 
-## TestBrowserTypeConnect (Insel 2) — Test-Infrastruktur braucht node.exe
+## TestBrowserTypeConnect (Insel 2) — harter node.exe-Launcher-Blocker
 
-**Status:** Nicht grün (`initializationError` im Test-Setup). `TestBrowserBind`
-ist durch Paket 7 grün (2/0).
+**Status:** Nicht grün (`initializationError` im `@BeforeAll`). ~20 Tests
+betroffen. `TestBrowserBind` bleibt durch Paket 7 grün (2/0).
 
-**Symptom:** `java.io.IOException: Cannot run program ".../playwright4j-driver/
-node.exe": CreateProcess error=2`.
+**Symptom:** `java.io.IOException: Cannot run program
+".../playwright4j-driver/node.exe": CreateProcess error=2`.
 
-**Diagnose:** Das `@BeforeAll`/Setup von `TestBrowserTypeConnect` startet einen
-**echten externen Playwright-Server als separaten `node.exe`-Prozess**, gegen den
-sich der Test dann via `connectOverWS`/connect verbindet. In der GraalVM-Variante
-gibt es kein `node.exe` — der Treiber IST GraalDriverMain (JVM), und dieser
-Server-Start-Pfad der Test-Infrastruktur ist auf `node.exe` festverdrahtet.
+**Wer startet was (Diagnose):** `TestBrowserTypeConnect.launchBrowserServer()`
+(Upstream-Test, **nicht änderbar**) baut die Commandline selbst und umgeht
+bewusst unseren `Driver.createProcessBuilder()`:
 
-**Einordnung:** Das ist eine **Abhängigkeit der Test-Infrastruktur von Node**, kein
-fehlendes Treiber-Primitiv. `net.createServer`/`http.createServer` (das eigentliche
-Ziel von Paket 7) funktionieren — `browser.bind` ist grün. Für
-`TestBrowserTypeConnect` müsste der separate Server-Start ebenfalls über die
-GraalDriverMain-Ersetzung laufen (Driver-Spawn-Pfad der Connect-Server-Seite),
-nicht über `node.exe`. Separat zu betrachten.
+```java
+Path dir   = Driver.ensureDriverInstalled(...).driverDir(); // <tmp>/playwright4j-driver
+String node  = dir.resolve("node.exe").toString();          // bzw. "node" auf Unix
+String cliJs = dir.resolve("package/cli.js").toString();
+new ProcessBuilder(node, cliJs, "launch-server", "--browser", browserType.name());
+wsEndpoint = process.getInputStream().readLine();           // erwartet "ws://..." (stdout, Zeile 1)
+browser    = browserType.connect(wsEndpoint);               // echte WebSocket-Browser-Session
+```
+
+- Commandline **vorher (Original-Playwright):** `<driverDir>/node.exe
+  <driverDir>/package/cli.js launch-server --browser chromium`, liest
+  `ws://...` von stdout.
+- Commandline **nachher (gewünscht):** müsste `java … GraalDriverMain
+  launch-server --browser chromium` sein — aber der Test ruft hart
+  `driverDir/node.exe` auf, **nicht** `createProcessBuilder()`.
+
+**Harter Blocker (verifiziert):** Es gibt keinen sauberen Weg, auf **Windows**
+ein lauffähiges `node.exe` bereitzustellen, ohne eine native Binärdatei
+auszuliefern:
+- `ProcessBuilder("…node.exe")` ruft `CreateProcess` → braucht ein echtes
+  PE-Executable. Ein umbenanntes Skript/Batch läuft nicht.
+- `java.exe` nach `node.exe` kopieren scheitert doppelt: (a) `java.exe` läuft
+  außerhalb seines JDK-Layouts nicht (Test: `exit=127`); (b) selbst wenn,
+  interpretiert `java.exe <pfad>/cli.js …` den `.js`-Pfad als **Main-Klassen-
+  Namen** (Source-File-Mode triggert nur bei `.java`/`--source`).
+- Ein `node`-Shell-Skript mit Shebang wäre nur auf **Unix** lauffähig
+  (dort wird der Test über `node` statt `node.exe` gestartet).
+
+**Was außerdem nötig wäre (über den Launcher hinaus):**
+1. `GraalDriverMain`-`launch-server`-Modus: `cli.js` mit `launch-server`-argv
+   laufen lassen, den `ws://`-Endpoint auf stdout schreiben (statt des
+   length-prefixed Treiberprotokolls), und nicht den stdin-Pump fahren.
+2. Echtes HTTP-Request-/WebSocket-Upgrade-Parsing im `http.createServer`
+   (in Paket 7 bewusst gestubbt, weil bei `browser.bind` kein Client
+   connectet). Hier connectet der Java-Client per WS → der gebündelte
+   PlaywrightServer braucht funktionierende `net`/`http`/`ws`-Upgrades.
+
+**Einordnung:** Das ist **kein** einfacher Spawn-Redirect und **kein** fehlendes
+Node-Primitive, sondern (a) ein Windows-Native-Launcher-Problem + (b) ein
+großer WS-Server-Serving-Block. Realistisch eigener, größerer Slice; auf Windows
+ohne mitgelieferten Launcher-Binary nicht grün zu bekommen. Empfehlung: zusammen
+mit/nach HAR-Zip betrachten oder als bekannte Windows-Limitierung führen.
 
 ---
 
