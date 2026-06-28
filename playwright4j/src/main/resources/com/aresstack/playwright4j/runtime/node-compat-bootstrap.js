@@ -248,8 +248,102 @@
   };
   realpathSync.native = realpathSync;
 
+  // File-descriptor table for fd-based fs ops (fs.open/read/fstat/close). The whole file is read
+  // into memory on open and random-access reads are served from it. Used by the zip reader
+  // (yauzl) for HAR zip replay; sizes here are small (HAR archives).
+  const fdTable = {};
+  let nextFd = 3;
+
+  function fdOpen(path) {
+    const buffer = hostReadFile(path);
+    const fd = nextFd++;
+    fdTable[fd] = { buffer: buffer, position: 0, path: String(path) };
+    return fd;
+  }
+
+  function fdRead(fd, buffer, offset, length, position) {
+    const entry = fdTable[fd];
+    if (!entry) {
+      throw enoent('read', 'fd:' + fd);
+    }
+    const start = (position === null || position === undefined) ? entry.position : position;
+    let count = 0;
+    while (count < length && start + count < entry.buffer.length) {
+      buffer[offset + count] = entry.buffer[start + count];
+      count++;
+    }
+    if (position === null || position === undefined) {
+      entry.position = start + count;
+    }
+    return count;
+  }
+
+  function fdStat(fd) {
+    const entry = fdTable[fd];
+    if (!entry) {
+      throw enoent('fstat', 'fd:' + fd);
+    }
+    return {
+      size: entry.buffer.length,
+      mode: 33188,
+      mtimeMs: 0,
+      mtime: new Date(0),
+      isFile: function () { return true; },
+      isDirectory: function () { return false; },
+      isSymbolicLink: function () { return false; }
+    };
+  }
+
   modules.fs = {
     constants: fsConstants,
+    openSync: function (path) {
+      return fdOpen(path);
+    },
+    open: function (path, flags, mode, callback) {
+      callback = typeof flags === 'function' ? flags : (typeof mode === 'function' ? mode : callback);
+      Promise.resolve().then(function () {
+        try {
+          callback(null, fdOpen(path));
+        } catch (error) {
+          callback(error);
+        }
+      });
+    },
+    readSync: function (fd, buffer, offset, length, position) {
+      return fdRead(fd, buffer, offset || 0, length === undefined ? buffer.length : length, position);
+    },
+    read: function (fd, buffer, offset, length, position, callback) {
+      Promise.resolve().then(function () {
+        try {
+          const bytesRead = fdRead(fd, buffer, offset || 0, length === undefined ? buffer.length : length, position);
+          callback(null, bytesRead, buffer);
+        } catch (error) {
+          callback(error);
+        }
+      });
+    },
+    fstatSync: function (fd) {
+      return fdStat(fd);
+    },
+    fstat: function (fd, options, callback) {
+      callback = typeof options === 'function' ? options : callback;
+      Promise.resolve().then(function () {
+        try {
+          callback(null, fdStat(fd));
+        } catch (error) {
+          callback(error);
+        }
+      });
+    },
+    closeSync: function (fd) {
+      delete fdTable[fd];
+    },
+    close: function (fd, callback) {
+      delete fdTable[fd];
+      if (callback) {
+        Promise.resolve().then(function () { callback(null); });
+      }
+    },
     existsSync: function (path) {
       return hostExists(path);
     },
@@ -581,121 +675,123 @@
     }
   };
 
-  class EventEmitter {
-    constructor() {
+  // EventEmitter is a function constructor (not an ES6 class) so bundled CommonJS libraries can
+  // inherit it via `EventEmitter.call(this)` (e.g. yauzl's zip reader). ES6 classes forbid being
+  // invoked without `new`; a function constructor supports `new EventEmitter()`, `.call(this)`,
+  // and `class X extends EventEmitter` alike. Listener registry is lazily initialized so libs
+  // that inherit via util.inherits without calling the constructor still work.
+  function EventEmitter() {
+    if (!this.listenersByName) {
       this.listenersByName = {};
     }
-
-    // Node libraries frequently inherit EventEmitter via util.inherits and never call the
-    // parent constructor, relying on lazy initialization of the internal listener registry
-    // inside on()/emit(). Mirror that so such objects (e.g. yazl's zip streams) work.
-    __listeners() {
-      if (!this.listenersByName) {
-        this.listenersByName = {};
-      }
-      return this.listenersByName;
-    }
-
-    on(name, listener) {
-      const registry = this.__listeners();
-      registry[name] = registry[name] || [];
-      registry[name].push(listener);
-      return this;
-    }
-
-    addListener(name, listener) {
-      return this.on(name, listener);
-    }
-
-    prependListener(name, listener) {
-      const registry = this.__listeners();
-      registry[name] = registry[name] || [];
-      registry[name].unshift(listener);
-      return this;
-    }
-
-    once(name, listener) {
-      const self = this;
-      function onceListener() {
-        self.off(name, onceListener);
-        return listener.apply(this, arguments);
-      }
-      onceListener.__originalListener = listener;
-      return this.on(name, onceListener);
-    }
-
-    prependOnceListener(name, listener) {
-      const self = this;
-      function onceListener() {
-        self.off(name, onceListener);
-        return listener.apply(this, arguments);
-      }
-      onceListener.__originalListener = listener;
-      return this.prependListener(name, onceListener);
-    }
-
-    off(name, listener) {
-      const registry = this.__listeners();
-      const listeners = registry[name] || [];
-      registry[name] = listeners.filter(function (candidate) {
-        return candidate !== listener && candidate.__originalListener !== listener;
-      });
-      return this;
-    }
-
-    removeListener(name, listener) {
-      return this.off(name, listener);
-    }
-
-    removeAllListeners(name) {
-      const registry = this.__listeners();
-      if (name === undefined) {
-        this.listenersByName = {};
-      } else {
-        delete registry[name];
-      }
-      return this;
-    }
-
-    setMaxListeners(value) {
-      this.maxListeners = value;
-      return this;
-    }
-
-    getMaxListeners() {
-      return this.maxListeners || 0;
-    }
-
-    eventNames() {
-      return Object.keys(this.__listeners());
-    }
-
-    listeners(name) {
-      return (this.__listeners()[name] || []).slice();
-    }
-
-    rawListeners(name) {
-      return (this.__listeners()[name] || []).slice();
-    }
-
-    listenerCount(name) {
-      return (this.__listeners()[name] || []).length;
-    }
-
-    emit(name) {
-      const args = Array.prototype.slice.call(arguments, 1);
-      const listeners = (this.__listeners()[name] || []).slice();
-      // Node throws if an 'error' event has no listeners; surface that instead of swallowing.
-      if (listeners.length === 0 && name === 'error') {
-        const err = args[0];
-        throw (err instanceof Error) ? err : new Error('Unhandled "error" event');
-      }
-      listeners.forEach(function (listener) {
-        listener.apply(null, args);
-      });
-      return listeners.length > 0;
-    }
   }
+
+  EventEmitter.prototype.__listeners = function () {
+    if (!this.listenersByName) {
+      this.listenersByName = {};
+    }
+    return this.listenersByName;
+  };
+
+  EventEmitter.prototype.on = function (name, listener) {
+    const registry = this.__listeners();
+    registry[name] = registry[name] || [];
+    registry[name].push(listener);
+    return this;
+  };
+
+  EventEmitter.prototype.addListener = function (name, listener) {
+    return this.on(name, listener);
+  };
+
+  EventEmitter.prototype.prependListener = function (name, listener) {
+    const registry = this.__listeners();
+    registry[name] = registry[name] || [];
+    registry[name].unshift(listener);
+    return this;
+  };
+
+  EventEmitter.prototype.once = function (name, listener) {
+    const self = this;
+    function onceListener() {
+      self.off(name, onceListener);
+      return listener.apply(this, arguments);
+    }
+    onceListener.__originalListener = listener;
+    return this.on(name, onceListener);
+  };
+
+  EventEmitter.prototype.prependOnceListener = function (name, listener) {
+    const self = this;
+    function onceListener() {
+      self.off(name, onceListener);
+      return listener.apply(this, arguments);
+    }
+    onceListener.__originalListener = listener;
+    return this.prependListener(name, onceListener);
+  };
+
+  EventEmitter.prototype.off = function (name, listener) {
+    const registry = this.__listeners();
+    const listeners = registry[name] || [];
+    registry[name] = listeners.filter(function (candidate) {
+      return candidate !== listener && candidate.__originalListener !== listener;
+    });
+    return this;
+  };
+
+  EventEmitter.prototype.removeListener = function (name, listener) {
+    return this.off(name, listener);
+  };
+
+  EventEmitter.prototype.removeAllListeners = function (name) {
+    const registry = this.__listeners();
+    if (name === undefined) {
+      this.listenersByName = {};
+    } else {
+      delete registry[name];
+    }
+    return this;
+  };
+
+  EventEmitter.prototype.setMaxListeners = function (value) {
+    this.maxListeners = value;
+    return this;
+  };
+
+  EventEmitter.prototype.getMaxListeners = function () {
+    return this.maxListeners || 0;
+  };
+
+  EventEmitter.prototype.eventNames = function () {
+    return Object.keys(this.__listeners());
+  };
+
+  EventEmitter.prototype.listeners = function (name) {
+    return (this.__listeners()[name] || []).slice();
+  };
+
+  EventEmitter.prototype.rawListeners = function (name) {
+    return (this.__listeners()[name] || []).slice();
+  };
+
+  EventEmitter.prototype.listenerCount = function (name) {
+    return (this.__listeners()[name] || []).length;
+  };
+
+  EventEmitter.prototype.emit = function (name) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    const listeners = (this.__listeners()[name] || []).slice();
+    // Node throws if an 'error' event has no listeners; surface that instead of swallowing.
+    if (listeners.length === 0 && name === 'error') {
+      const err = args[0];
+      throw (err instanceof Error) ? err : new Error('Unhandled "error" event');
+    }
+    listeners.forEach(function (listener) {
+      listener.apply(null, args);
+    });
+    return listeners.length > 0;
+  };
 
   modules.events = EventEmitter;
   modules.events.EventEmitter = EventEmitter;
@@ -946,370 +1042,404 @@
   // A small but functional Node stream layer. Node libraries bundled with Playwright (yazl/
   // yauzl for HAR zip, download streaming) rely on flowing-mode Readable, _write/_transform
   // hooks, pipe(), and finish/end/close ordering. Keep semantics close to Node, minimal scope.
-  class Readable extends EventEmitter {
-    constructor(options) {
-      super();
-      this.readable = true;
-      this._readableBuffer = [];
-      this._flowing = false;
-      this._readableEnded = false;
-      if (options && typeof options.read === 'function') {
-        this._read = options.read;
-      }
+  // The stream classes are function constructors (not ES6 classes) so bundled CommonJS libraries
+  // can inherit them via util.inherits + `Readable.call(this)` / `Transform.call(this)` (e.g.
+  // fd-slicer's zip entry read stream `xe` does `Readable.call(this)`). ES6 classes throw when
+  // invoked without `new`; function constructors support `new`, `.call(this)`, and being extended.
+  function Readable(options) {
+    EventEmitter.call(this);
+    this.readable = true;
+    this._readableBuffer = [];
+    this._flowing = false;
+    this._readableEnded = false;
+    this._reading = false;
+    // Some bundled readable-stream consumers (e.g. fd-slicer's zip entry reader) read
+    // this._readableState.highWaterMark to size their reads.
+    this._readableState = { highWaterMark: 16384, flowing: false, ended: false };
+    if (options && typeof options.read === 'function') {
+      this._read = options.read;
     }
+    if (options && typeof options.highWaterMark === 'number') {
+      this._readableState.highWaterMark = options.highWaterMark;
+    }
+  }
+  Readable.prototype = Object.create(EventEmitter.prototype);
+  Readable.prototype.constructor = Readable;
 
-    push(chunk) {
-      if (chunk === null) {
-        this._readableEnded = true;
-        // Keep `readable` true until the buffer is drained so pull-mode consumers can finish
-        // reading any buffered bytes; flowing-mode consumers get 'end' immediately.
-        if (this._flowing) {
-          this.readable = false;
-          this.emit('end');
-        } else {
-          this.emit('readable');
-        }
-        return false;
-      }
-      this._readableBuffer.push(chunk);
+  // Pull-based source streams (e.g. fd-slicer's zip entry reader) implement _read() and only
+  // produce data when it is invoked. Drive _read while flowing so such streams actually emit
+  // their bytes and reach end; without this the zip read pipeline never completes.
+  Readable.prototype._maybeRead = function () {
+    if (this._readableEnded || this._reading || !this._flowing || typeof this._read !== 'function') {
+      return;
+    }
+    this._reading = true;
+    try {
+      this._read(65536);
+    } catch (error) {
+      this.emit('error', error);
+    }
+    this._reading = false;
+  };
+
+  Readable.prototype.push = function (chunk) {
+    if (chunk === null) {
+      this._readableEnded = true;
+      // Keep `readable` true until the buffer is drained so pull-mode consumers can finish
+      // reading any buffered bytes; flowing-mode consumers get 'end' immediately.
       if (this._flowing) {
-        while (this._readableBuffer.length > 0) {
-          this.emit('data', this._readableBuffer.shift());
-        }
+        this.readable = false;
+        this.emit('end');
       } else {
-        // Pull mode: notify consumers that data is available to read().
         this.emit('readable');
       }
-      return true;
+      return false;
     }
-
-    // Pull-based read used by Playwright's StreamDispatcher (download.createReadStream): returns
-    // up to `size` buffered bytes, or null when nothing is currently buffered.
-    read(size) {
-      if (this._readableBuffer.length === 0) {
-        if (this._readableEnded) {
-          this.readable = false;
-        }
-        return null;
-      }
-      let pending = this._readableBuffer.length === 1
-        ? this._readableBuffer[0]
-        : global.Buffer.concat(this._readableBuffer);
-      this._readableBuffer = [];
-      // A non-positive/NaN/absent size means "return all currently available" (Node semantics).
-      // Playwright's StreamDispatcher calls read() with no usable size, which arrives as NaN.
-      if (!(size > 0) || pending.length <= size) {
-        if (this._readableBuffer.length === 0 && this._readableEnded) {
-          this.readable = false;
-        }
-        return pending;
-      }
-      const head = global.Buffer.from(pending.subarray(0, size));
-      this._readableBuffer = [global.Buffer.from(pending.subarray(size))];
-      return head;
-    }
-
-    get readableEnded() {
-      return this._readableEnded && this._readableBuffer.length === 0;
-    }
-
-    static from(iterable) {
-      const stream = new Readable();
-      Promise.resolve().then(function () {
-        try {
-          if (iterable === undefined || iterable === null) {
-            stream.push(null);
-          } else if (typeof iterable === 'string' || global.Buffer.isBuffer(iterable) || iterable instanceof Uint8Array) {
-            stream.push(iterable);
-            stream.push(null);
-          } else if (typeof iterable[Symbol.iterator] === 'function') {
-            const list = Array.from(iterable);
-            for (let index = 0; index < list.length; index++) {
-              stream.push(list[index]);
-            }
-            stream.push(null);
-          } else if (typeof iterable[Symbol.asyncIterator] === 'function') {
-            (async function () {
-              for await (const item of iterable) {
-                stream.push(item);
-              }
-              stream.push(null);
-            })().catch(function (error) { stream.emit('error', error); });
-          } else {
-            stream.push(iterable);
-            stream.push(null);
-          }
-        } catch (error) {
-          stream.emit('error', error);
-        }
-      });
-      return stream;
-    }
-
-    on(name, listener) {
-      const result = super.on(name, listener);
-      if (name === 'data') {
-        this.resume();
-      } else if (name === 'readable' && (this._readableBuffer.length > 0 || this._readableEnded)) {
-        // Node re-signals readability to listeners attached after data is already buffered (or
-        // after end). Playwright's StreamDispatcher attaches 'readable'/'end' per read() call,
-        // often after createReadStream already pushed everything, so replay the signal async.
-        const self = this;
-        Promise.resolve().then(function () { self.emit('readable'); });
-      } else if (name === 'end' && this._readableEnded && this._readableBuffer.length === 0) {
-        const self = this;
-        Promise.resolve().then(function () { self.emit('end'); });
-      }
-      return result;
-    }
-
-    resume() {
-      if (this._flowing) {
-        return this;
-      }
-      this._flowing = true;
+    this._readableBuffer.push(chunk);
+    if (this._flowing) {
       while (this._readableBuffer.length > 0) {
         this.emit('data', this._readableBuffer.shift());
       }
+      // Ask the source for more (Node calls _read again after each consumed chunk).
+      this._maybeRead();
+    } else {
+      // Pull mode: notify consumers that data is available to read().
+      this.emit('readable');
+    }
+    return true;
+  };
+
+  // Pull-based read used by Playwright's StreamDispatcher (download.createReadStream): returns
+  // up to `size` buffered bytes, or null when nothing is currently buffered.
+  Readable.prototype.read = function (size) {
+    if (this._readableBuffer.length === 0) {
       if (this._readableEnded) {
         this.readable = false;
-        this.emit('end');
       }
-      return this;
+      return null;
     }
-
-    pause() {
-      this._flowing = false;
-      return this;
-    }
-
-    setEncoding() {
-      return this;
-    }
-
-    pipe(destination) {
-      const self = this;
-      this.on('data', function (chunk) {
-        if (destination && typeof destination.write === 'function') {
-          destination.write(chunk);
-        }
-      });
-      this.on('end', function () {
-        if (destination && typeof destination.end === 'function') {
-          destination.end();
-        }
-      });
-      this.on('error', function (error) {
-        if (destination && typeof destination.emit === 'function') {
-          destination.emit('error', error);
-        }
-      });
-      if (destination && typeof destination.emit === 'function') {
-        destination.emit('pipe', self);
+    let pending = this._readableBuffer.length === 1
+      ? this._readableBuffer[0]
+      : global.Buffer.concat(this._readableBuffer);
+    this._readableBuffer = [];
+    // A non-positive/NaN/absent size means "return all currently available" (Node semantics).
+    // Playwright's StreamDispatcher calls read() with no usable size, which arrives as NaN.
+    if (!(size > 0) || pending.length <= size) {
+      if (this._readableBuffer.length === 0 && this._readableEnded) {
+        this.readable = false;
       }
-      return destination;
+      return pending;
     }
+    const head = global.Buffer.from(pending.subarray(0, size));
+    this._readableBuffer = [global.Buffer.from(pending.subarray(size))];
+    return head;
+  };
 
-    destroy(error) {
-      this._readableEnded = true;
-      if (error) {
-        this.emit('error', error);
-      }
-      this.emit('close');
-      return this;
+  Object.defineProperty(Readable.prototype, 'readableEnded', {
+    get: function () {
+      return this._readableEnded && this._readableBuffer.length === 0;
     }
-  }
+  });
 
-  class Writable extends EventEmitter {
-    constructor(options) {
-      super();
-      this.writable = true;
-      this._writableEnded = false;
-      // One-shot lifecycle events (open/ready/finish/close) are "sticky": consumers frequently
-      // attach a listener (e.g. await once(stream, 'close')) right after calling end(), i.e. after
-      // we already emitted. Record fired events and replay them to late listeners so awaits resolve.
-      this._firedEvents = {};
-      if (options && typeof options.write === 'function') {
-        this._write = options.write;
-      }
-      if (options && typeof options.final === 'function') {
-        this._final = options.final;
-      }
-    }
-
-    fireSticky(name) {
-      const args = Array.prototype.slice.call(arguments, 1);
-      this._firedEvents[name] = args;
-      this.emit.apply(this, arguments);
-    }
-
-    on(name, listener) {
-      const result = super.on(name, listener);
-      if (this._firedEvents && Object.prototype.hasOwnProperty.call(this._firedEvents, name)) {
-        const args = this._firedEvents[name];
-        const self = this;
-        Promise.resolve().then(function () { listener.apply(self, args); });
-      }
-      return result;
-    }
-
-    write(chunk, encoding, callback) {
-      if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = undefined;
-      }
-      const self = this;
+  Readable.from = function (iterable) {
+    const stream = new Readable();
+    Promise.resolve().then(function () {
       try {
-        if (typeof this._write === 'function') {
-          this._write(chunk, encoding, function (error) {
-            if (error) {
-              self.emit('error', error);
+        if (iterable === undefined || iterable === null) {
+          stream.push(null);
+        } else if (typeof iterable === 'string' || global.Buffer.isBuffer(iterable) || iterable instanceof Uint8Array) {
+          stream.push(iterable);
+          stream.push(null);
+        } else if (typeof iterable[Symbol.iterator] === 'function') {
+          const list = Array.from(iterable);
+          for (let index = 0; index < list.length; index++) {
+            stream.push(list[index]);
+          }
+          stream.push(null);
+        } else if (typeof iterable[Symbol.asyncIterator] === 'function') {
+          (async function () {
+            for await (const item of iterable) {
+              stream.push(item);
             }
-            if (callback) {
-              callback(error);
-            }
-          });
-        } else if (callback) {
-          callback();
+            stream.push(null);
+          })().catch(function (error) { stream.emit('error', error); });
+        } else {
+          stream.push(iterable);
+          stream.push(null);
         }
       } catch (error) {
-        this.emit('error', error);
+        stream.emit('error', error);
       }
-      return true;
-    }
+    });
+    return stream;
+  };
 
-    end(chunk, encoding, callback) {
-      if (typeof chunk === 'function') {
-        callback = chunk;
-        chunk = undefined;
-      } else if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = undefined;
-      }
+  Readable.prototype.on = function (name, listener) {
+    const result = EventEmitter.prototype.on.call(this, name, listener);
+    if (name === 'data') {
+      this.resume();
+    } else if (name === 'readable' && (this._readableBuffer.length > 0 || this._readableEnded)) {
+      // Node re-signals readability to listeners attached after data is already buffered (or
+      // after end). Playwright's StreamDispatcher attaches 'readable'/'end' per read() call,
+      // often after createReadStream already pushed everything, so replay the signal async.
       const self = this;
-      const finish = function () {
-        self._writableEnded = true;
-        self.fireSticky('finish');
-        self.fireSticky('close');
-        if (callback) {
-          callback();
-        }
-      };
-      const afterWrite = function () {
-        if (typeof self._final === 'function') {
-          self._final(function () { finish(); });
-        } else {
-          finish();
-        }
-      };
-      if (chunk !== undefined && chunk !== null) {
-        this.write(chunk, encoding, afterWrite);
-      } else {
-        afterWrite();
-      }
+      Promise.resolve().then(function () { self.emit('readable'); });
+    } else if (name === 'end' && this._readableEnded && this._readableBuffer.length === 0) {
+      const self = this;
+      Promise.resolve().then(function () { self.emit('end'); });
+    }
+    return result;
+  };
+
+  Readable.prototype.resume = function () {
+    if (this._flowing) {
       return this;
     }
+    this._flowing = true;
+    while (this._readableBuffer.length > 0) {
+      this.emit('data', this._readableBuffer.shift());
+    }
+    if (this._readableEnded) {
+      this.readable = false;
+      this.emit('end');
+    } else {
+      // Kick off pull-based sources (_read) now that we are flowing.
+      this._maybeRead();
+    }
+    return this;
+  };
 
-    destroy(error) {
-      if (error) {
-        this.emit('error', error);
+  Readable.prototype.pause = function () {
+    this._flowing = false;
+    return this;
+  };
+
+  Readable.prototype.setEncoding = function () {
+    return this;
+  };
+
+  Readable.prototype.pipe = function (destination) {
+    const self = this;
+    this.on('data', function (chunk) {
+      if (destination && typeof destination.write === 'function') {
+        destination.write(chunk);
       }
-      this.emit('close');
-      return this;
+    });
+    this.on('end', function () {
+      if (destination && typeof destination.end === 'function') {
+        destination.end();
+      }
+    });
+    this.on('error', function (error) {
+      if (destination && typeof destination.emit === 'function') {
+        destination.emit('error', error);
+      }
+    });
+    if (destination && typeof destination.emit === 'function') {
+      destination.emit('pipe', self);
+    }
+    return destination;
+  };
+
+  Readable.prototype.destroy = function (error) {
+    this._readableEnded = true;
+    if (error) {
+      this.emit('error', error);
+    }
+    this.emit('close');
+    return this;
+  };
+
+  function Writable(options) {
+    EventEmitter.call(this);
+    this.writable = true;
+    this._writableEnded = false;
+    // One-shot lifecycle events (open/ready/finish/close) are "sticky": consumers frequently
+    // attach a listener (e.g. await once(stream, 'close')) right after calling end(), i.e. after
+    // we already emitted. Record fired events and replay them to late listeners so awaits resolve.
+    this._firedEvents = {};
+    if (options && typeof options.write === 'function') {
+      this._write = options.write;
+    }
+    if (options && typeof options.final === 'function') {
+      this._final = options.final;
     }
   }
+  Writable.prototype = Object.create(EventEmitter.prototype);
+  Writable.prototype.constructor = Writable;
+
+  Writable.prototype.fireSticky = function (name) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    this._firedEvents[name] = args;
+    this.emit.apply(this, arguments);
+  };
+
+  Writable.prototype.on = function (name, listener) {
+    const result = EventEmitter.prototype.on.call(this, name, listener);
+    if (this._firedEvents && Object.prototype.hasOwnProperty.call(this._firedEvents, name)) {
+      const args = this._firedEvents[name];
+      const self = this;
+      Promise.resolve().then(function () { listener.apply(self, args); });
+    }
+    return result;
+  };
+
+  Writable.prototype.write = function (chunk, encoding, callback) {
+    if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const self = this;
+    try {
+      if (typeof this._write === 'function') {
+        this._write(chunk, encoding, function (error) {
+          if (error) {
+            self.emit('error', error);
+          }
+          if (callback) {
+            callback(error);
+          }
+        });
+      } else if (callback) {
+        callback();
+      }
+    } catch (error) {
+      this.emit('error', error);
+    }
+    return true;
+  };
+
+  Writable.prototype.end = function (chunk, encoding, callback) {
+    if (typeof chunk === 'function') {
+      callback = chunk;
+      chunk = undefined;
+    } else if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const self = this;
+    const finish = function () {
+      self._writableEnded = true;
+      self.fireSticky('finish');
+      self.fireSticky('close');
+      if (callback) {
+        callback();
+      }
+    };
+    const afterWrite = function () {
+      if (typeof self._final === 'function') {
+        self._final(function () { finish(); });
+      } else {
+        finish();
+      }
+    };
+    if (chunk !== undefined && chunk !== null) {
+      this.write(chunk, encoding, afterWrite);
+    } else {
+      afterWrite();
+    }
+    return this;
+  };
+
+  Writable.prototype.destroy = function (error) {
+    if (error) {
+      this.emit('error', error);
+    }
+    this.emit('close');
+    return this;
+  };
 
   // Transform is both readable and writable: written chunks pass through _transform and are
   // pushed to the readable side.
-  class Transform extends Readable {
-    constructor(options) {
-      super(options);
-      this.writable = true;
-      if (options && typeof options.transform === 'function') {
-        this._transform = options.transform;
-      }
-      if (options && typeof options.flush === 'function') {
-        this._flush = options.flush;
-      }
+  function Transform(options) {
+    Readable.call(this, options);
+    this.writable = true;
+    if (options && typeof options.transform === 'function') {
+      this._transform = options.transform;
     }
+    if (options && typeof options.flush === 'function') {
+      this._flush = options.flush;
+    }
+  }
+  Transform.prototype = Object.create(Readable.prototype);
+  Transform.prototype.constructor = Transform;
 
-    write(chunk, encoding, callback) {
-      if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = undefined;
-      }
-      const self = this;
-      try {
-        if (typeof this._transform === 'function') {
-          this._transform(chunk, encoding, function (error, data) {
-            if (data !== undefined && data !== null) {
-              self.push(data);
-            }
-            if (error) {
-              self.emit('error', error);
-            }
-            if (callback) {
-              callback(error);
-            }
-          });
-        } else {
-          this.push(chunk);
-          if (callback) {
-            callback();
+  Transform.prototype.write = function (chunk, encoding, callback) {
+    if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const self = this;
+    try {
+      if (typeof this._transform === 'function') {
+        this._transform(chunk, encoding, function (error, data) {
+          if (data !== undefined && data !== null) {
+            self.push(data);
           }
+          if (error) {
+            self.emit('error', error);
+          }
+          if (callback) {
+            callback(error);
+          }
+        });
+      } else {
+        this.push(chunk);
+        if (callback) {
+          callback();
         }
-      } catch (error) {
-        this.emit('error', error);
       }
-      return true;
+    } catch (error) {
+      this.emit('error', error);
     }
+    return true;
+  };
 
-    end(chunk, encoding, callback) {
-      if (typeof chunk === 'function') {
-        callback = chunk;
-        chunk = undefined;
-      } else if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = undefined;
-      }
-      const self = this;
-      const doEnd = function () {
-        if (typeof self._flush === 'function') {
-          self._flush(function (error, data) {
-            if (data !== undefined && data !== null) {
-              self.push(data);
-            }
-            self.push(null);
-            self.emit('finish');
-            if (callback) {
-              callback(error);
-            }
-          });
-        } else {
+  Transform.prototype.end = function (chunk, encoding, callback) {
+    if (typeof chunk === 'function') {
+      callback = chunk;
+      chunk = undefined;
+    } else if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const self = this;
+    const doEnd = function () {
+      if (typeof self._flush === 'function') {
+        self._flush(function (error, data) {
+          if (data !== undefined && data !== null) {
+            self.push(data);
+          }
           self.push(null);
           self.emit('finish');
           if (callback) {
-            callback();
+            callback(error);
           }
-        }
-      };
-      if (chunk !== undefined && chunk !== null) {
-        this.write(chunk, encoding, doEnd);
+        });
       } else {
-        doEnd();
+        self.push(null);
+        self.emit('finish');
+        if (callback) {
+          callback();
+        }
       }
-      return this;
+    };
+    if (chunk !== undefined && chunk !== null) {
+      this.write(chunk, encoding, doEnd);
+    } else {
+      doEnd();
     }
-  }
+    return this;
+  };
 
-  class PassThrough extends Transform {
-    constructor(options) {
-      super(options);
-      this._transform = function (chunk, encoding, callback) {
-        callback(null, chunk);
-      };
-    }
+  function PassThrough(options) {
+    Transform.call(this, options);
+    this._transform = function (chunk, encoding, callback) {
+      callback(null, chunk);
+    };
   }
+  PassThrough.prototype = Object.create(Transform.prototype);
+  PassThrough.prototype.constructor = PassThrough;
 
   function streamFinished(stream, optionsOrCallback, maybeCallback) {
     const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
@@ -2704,6 +2834,10 @@
       return buffer;
     }
 
+    static allocUnsafe(size) {
+      return new Buffer(size);
+    }
+
     static concat(list, totalLength) {
       let total = totalLength;
       if (total === undefined) {
@@ -2772,6 +2906,42 @@
 
     slice(start, end) {
       return Buffer.from(this.subarray(start, end));
+    }
+
+    // Copies bytes from this buffer into target (Node Buffer.copy). Used by the zip writer to
+    // assemble local/central-directory/EOCD records; a missing copy() previously threw inside a
+    // swallowed setImmediate callback and wedged HAR zip finalization.
+    copy(target, targetStart, sourceStart, sourceEnd) {
+      targetStart = targetStart || 0;
+      sourceStart = sourceStart || 0;
+      sourceEnd = sourceEnd === undefined ? this.length : sourceEnd;
+      let count = 0;
+      for (let index = sourceStart; index < sourceEnd && targetStart + count < target.length; index++) {
+        target[targetStart + count] = this[index];
+        count++;
+      }
+      return count;
+    }
+
+    // Writes a string into this buffer at offset (Node Buffer.write).
+    write(string, offset, length, encoding) {
+      if (typeof offset === 'string') {
+        encoding = offset;
+        offset = 0;
+        length = undefined;
+      } else if (typeof length === 'string') {
+        encoding = length;
+        length = undefined;
+      }
+      offset = offset || 0;
+      const bytes = Buffer.from(String(string), encoding || 'utf8');
+      const writable = length === undefined ? bytes.length : Math.min(length, bytes.length);
+      let count = 0;
+      for (let index = 0; index < writable && offset + count < this.length; index++) {
+        this[offset + count] = bytes[index];
+        count++;
+      }
+      return count;
     }
 
     // Fixed-width integer accessors (Node Buffer API) used by Playwright's zip writer/reader.

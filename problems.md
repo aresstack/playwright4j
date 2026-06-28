@@ -3,20 +3,42 @@
 Verbleibende Restinseln. Jeweils mit aktuellem Stand, Diagnose und Verdacht.
 
 Reihenfolge/Priorität:
-1. ~~Download stream: TestDownload.shouldExposeStream~~ — **GELÖST** (s.u.)
-2. TestBrowserTypeConnect: node.exe-Testinfrastruktur ersetzen
-3. HAR Zip Export: großer Stream/Zip/Finalize-Block
+1. ~~Download stream: TestDownload.shouldExposeStream~~ — **GELÖST**
+2. TestBrowserTypeConnect: node.exe-Testinfrastruktur ersetzen — **offen** (s.u.)
+3. ~~HAR Zip Export: großer Stream/Zip/Finalize-Block~~ — **GELÖST** (s.u.)
 
 ## ~~TestDownload.shouldExposeStream~~ — GELÖST
 
-**Status:** Grün. TestDownload ist jetzt **22/22**.
+**Status:** Grün. TestDownload ist **22/22**.
 
 **Root Cause war:** Playwrights StreamDispatcher ruft `stream.read(size)` mit
 `size = NaN` auf. Unser `Readable.read` behandelte das wie „Teilmenge lesen"
 (`pending.subarray(0, NaN)` → leerer Buffer) statt wie Node „alles Verfügbare
 zurückgeben". Fix: `read(size)` gibt bei nicht-positivem/NaN/fehlendem `size`
-den kompletten gepufferten Inhalt zurück (`!(size > 0)`). Kein breiter
-Stream-Umbau.
+den kompletten gepufferten Inhalt zurück (`!(size > 0)`).
+
+## ~~HAR-Zip-Export / -Import (Insel 3)~~ — GELÖST
+
+**Status:** Grün. `TestBrowserContextHar` **26/0**, `TestHar` **11/0**.
+
+**Root Causes (mehrere, der Reihe nach):**
+1. **Buffer.copy/write fehlten** → das (yazl-)Schreiben warf beim Bauen von
+   Central Directory / EOCD (`comment.copy(...)`) innerhalb eines verschluckten
+   `setImmediate`-Callbacks → `outputStream.end()` lief nie → WRITE-Hang.
+2. **fd-basierte fs-Ops fehlten** (`open`/`read`/`fstat`/`close`) → der Zip-Reader
+   (yauzl) konnte das Archiv nicht öffnen (`fs.open is not a function`).
+3. **EventEmitter + Readable/Writable/Transform/PassThrough waren ES6-Klassen** →
+   gebündelte CommonJS-Libs erben sie via `util.inherits` + `EventEmitter.call(this)`
+   /`Readable.call(this)`, was ES6-Klassen verbieten ("cannot be invoked without
+   'new'"). Auf **Funktions-Konstruktoren** umgestellt (weiterhin `new`-, `.call`-
+   und `extends`-fähig).
+4. **`Readable._read` wurde nie aufgerufen** → pull-basierte Quellen (fd-slicer)
+   lieferten nie Daten. `_read()` wird jetzt im Flowing-Modus getrieben.
+5. **`Readable._readableState.highWaterMark` und `Buffer.allocUnsafe` fehlten** →
+   fd-slicers `_read` warf darauf. Beide ergänzt.
+
+Damit läuft Record→Zip→Schreiben **und** Lesen→Inflate→routeFromHAR vollständig
+(verifiziert: deflate/​inflate-Roundtrip, Central Directory, EOCD).
 
 ## TestBrowserTypeConnect (Insel 2) — harter node.exe-Launcher-Blocker
 
