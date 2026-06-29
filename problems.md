@@ -53,6 +53,33 @@ den kompletten gepufferten Inhalt zurück (`!(size > 0)`).
 Damit läuft Record→Zip→Schreiben **und** Lesen→Inflate→routeFromHAR vollständig
 (verifiziert: deflate/​inflate-Roundtrip, Central Directory, EOCD).
 
+## TestClientCertificates — zwei echte TLS-Cluster (1/8)
+
+**Status:** `TestClientCertificates` **1/8**. Zwei getrennte Root Causes (je 4):
+
+**Cluster A — Browser-Context-Client-Certs (4):** `shouldWorkWithBrowserNewContext/
+NewPage/PersistentContext/AsContent`. Stack:
+`CRBrowser.newContext → ClientCertificatesProxy._initSecureContexts →
+tls.createSecureContext`. Fehler: `import_tls.default.createSecureContext is not a
+function` (unser `modules.tls` ist leer). Playwright startet pro Context einen
+**in-driver TLS-terminierenden Proxy**, der dem Origin-Server das Client-Cert
+präsentiert. Benötigt einen größeren Node-TLS-Stack: `tls.createSecureContext`,
+TLS-Server/`tls.connect`/`TLSSocket`, Weiterleitung über `net.createServer`.
+**Großer Block** (vergleichbar mit net.createServer/launch-server).
+
+**Cluster B — APIRequestContext (4):** `passWithTrustedClientCertificates(+Pfx)`,
+`shouldFailWithNoClientCertificatesProvided`, `shouldThrowWithUntrustedClientCerts`.
+Fehler: `PKIX path building failed` aus unserem **Java** `JdkHostHttpClient`. Der
+Fetch erreicht den TLS-Handshake, präsentiert aber kein Client-Cert und vertraut
+der Server-CA nicht. **Mittel**: Cert/Key/CA/PFX/Passphrase + ignoreHTTPSErrors
+von den Request-Optionen durch die Host-HTTP-API zu `JdkHostHttpClient` plumben
+und dort einen `SSLContext` (KeyManager aus PEM/PKCS12, TrustManager) bauen.
+
+**Einordnung:** Echte TLS-Feature-Arbeit, kein kleiner gemeinsamer Primitive.
+Empfehlung: Cluster A wie `TestBrowserTypeConnect` als größeren eigenen Slice
+behandeln; Cluster B (Java-SSLContext-Plumbing) ist der kleinere, testbare Teil.
+Alternativ zuerst Screencast/Video (sauberer Medien-Cluster), dann TLS gebündelt.
+
 ## TestBrowserTypeConnect (Insel 2) — harter node.exe-Launcher-Blocker
 
 **Status:** Nicht grün (`initializationError` im `@BeforeAll`). ~20 Tests
