@@ -115,7 +115,13 @@ public final class JdkHostHttpClient implements HostHttpClient {
         byte[] body = bodyBase64 == null || bodyBase64.isEmpty()
                 ? new byte[0]
                 : Base64.getDecoder().decode(bodyBase64);
-        if (body.length == 0) {
+        if (body.length == 0 && "GET".equalsIgnoreCase(method)) {
+            // A bodyless GET must not carry Content-Length. The JDK's noBody() publisher would
+            // emit "Content-Length: 0", whereas .GET() attaches no publisher (like Node, which
+            // omits the header). This matters for POST -> 302 -> GET redirects, where the
+            // re-issued GET must drop the original request's Content-Length entirely.
+            builder.GET();
+        } else if (body.length == 0) {
             builder.method(method, HttpRequest.BodyPublishers.noBody());
         } else {
             builder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
