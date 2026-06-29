@@ -12,6 +12,8 @@ public final class Playwright4JHost {
     private final HostProcessLauncher processLauncher;
     private final MissingHostFunctionReporter missingHostFunctionReporter;
     private final JdkHostNetServer netServer = new JdkHostNetServer();
+    private final JdkHostTls tls = new JdkHostTls();
+    private final JdkHostCrypto crypto = new JdkHostCrypto();
 
     public Playwright4JHost(
             HostEnvironment environment,
@@ -230,6 +232,16 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public JdkHostNetServer netServer() {
         return netServer;
+    }
+
+    @HostAccess.Export
+    public JdkHostTls tls() {
+        return tls;
+    }
+
+    @HostAccess.Export
+    public JdkHostCrypto crypto() {
+        return crypto;
     }
 
     @HostAccess.Export

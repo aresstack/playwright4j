@@ -59,7 +59,13 @@ final class JdkTlsClientFactory {
         }
     }
 
-    private HttpClient build(String tlsOptions) throws Exception {
+    /**
+     * Builds an {@link SSLContext} from the same Base64 TLS-options JSON used by the APIRequestContext
+     * client. Reused by the BrowserContext client-certificate TLS-MITM engine ({@link JdkHostTls}).
+     * Forces presentation of the configured client certificate, and trusts all servers when
+     * rejectUnauthorized is false.
+     */
+    SSLContext buildSslContext(String tlsOptions) throws Exception {
         boolean rejectUnauthorized = jsonBoolean(tlsOptions, "rejectUnauthorized", true);
         KeyManager[] keyManagers = buildKeyManagers(tlsOptions);
 
@@ -78,6 +84,16 @@ final class JdkTlsClientFactory {
         SSLContext sslContext = SSLContext.getInstance("TLS");
         TrustManager[] trustManagers = rejectUnauthorized ? null : new TrustManager[] { TRUST_ALL };
         sslContext.init(keyManagers, trustManagers, null);
+        return sslContext;
+    }
+
+    static boolean rejectUnauthorizedOf(String tlsOptions) {
+        return jsonBoolean(tlsOptions, "rejectUnauthorized", true);
+    }
+
+    private HttpClient build(String tlsOptions) throws Exception {
+        boolean rejectUnauthorized = jsonBoolean(tlsOptions, "rejectUnauthorized", true);
+        SSLContext sslContext = buildSslContext(tlsOptions);
 
         HttpClient.Builder builder = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))

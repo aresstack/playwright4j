@@ -1174,8 +1174,64 @@
       const hex = bytes.toString('hex');
       return hex.substring(0, 8) + '-' + hex.substring(8, 12) + '-' + hex.substring(12, 16)
         + '-' + hex.substring(16, 20) + '-' + hex.substring(20);
+    },
+    // RSA key-pair generation + RSA-SHA256 signing, used by Playwright's
+    // generateSelfSignedCertificate (client-certificate dummy server cert). Only RSA + the
+    // export forms that function uses (public pkcs1/der, private pkcs1/pem) are supported.
+    generateKeyPairSync: function (type, options) {
+      if (String(type) !== 'rsa') {
+        throw new Error('crypto.generateKeyPairSync: only RSA is supported');
+      }
+      const bits = options && typeof options.modulusLength === 'number' ? options.modulusLength : 2048;
+      const parts = String(host.crypto().generateRsaKeyPair(bits)).split(String.fromCharCode(30));
+      const publicPkcs1Der = global.Buffer.from(parts[1], 'base64');
+      const privatePkcs1Pem = parts[2];
+      return {
+        publicKey: createKeyObject(null, publicPkcs1Der, null),
+        privateKey: createKeyObject(parts[0], null, privatePkcs1Pem)
+      };
+    },
+    sign: function (algorithm, data, key) {
+      const keyId = key && key.__pw4jKeyId;
+      if (!keyId) {
+        throw new Error('crypto.sign requires a private KeyObject from generateKeyPairSync');
+      }
+      const base64 = host.crypto().signSha256(keyId, toInputBuffer(data).toString('base64'));
+      return global.Buffer.from(base64, 'base64');
     }
   };
+
+  function createKeyObject(keyId, publicPkcs1Der, privatePkcs1Pem) {
+    return {
+      __pw4jKeyId: keyId,
+      asymmetricKeyType: 'rsa',
+      export: function (options) {
+        const format = options && options.format;
+        if (publicPkcs1Der) {
+          return format === 'pem'
+            ? derToPem('RSA PUBLIC KEY', publicPkcs1Der)
+            : publicPkcs1Der;
+        }
+        if (privatePkcs1Pem) {
+          return format === 'der'
+            ? pemBodyToBuffer(privatePkcs1Pem)
+            : privatePkcs1Pem;
+        }
+        return null;
+      }
+    };
+  }
+
+  function derToPem(label, der) {
+    const base64 = global.Buffer.from(der).toString('base64');
+    const lines = base64.match(/.{1,64}/g) || [base64];
+    return '-----BEGIN ' + label + '-----\n' + lines.join('\n') + '\n-----END ' + label + '-----\n';
+  }
+
+  function pemBodyToBuffer(pem) {
+    const body = String(pem).replace(/-----BEGIN [^-]+-----/g, '').replace(/-----END [^-]+-----/g, '').replace(/\s+/g, '');
+    return global.Buffer.from(body, 'base64');
+  }
 
   function toInputBuffer(value) {
     if (global.Buffer.isBuffer(value)) {
@@ -1665,6 +1721,100 @@
   PassThrough.prototype = Object.create(Transform.prototype);
   PassThrough.prototype.constructor = PassThrough;
 
+  // A real Duplex: independent readable (via push, inherited from Readable) and writable sides,
+  // honouring the { read, write, destroy, final } option callbacks. Distinct from Transform (whose
+  // write feeds its own readable side). Playwright's client-certificate interceptor builds
+  // `new stream.Duplex({ read, write, destroy })` whose write must forward bytes to the SOCKS proxy
+  // rather than loop back into the readable side.
+  function Duplex(options) {
+    Readable.call(this, options);
+    this.writable = true;
+    if (options && typeof options.write === 'function') {
+      this._writeImpl = options.write;
+    }
+    if (options && typeof options.final === 'function') {
+      this._finalImpl = options.final;
+    }
+    if (options && typeof options.destroy === 'function') {
+      this._destroyImpl = options.destroy;
+    }
+  }
+  Duplex.prototype = Object.create(Readable.prototype);
+  Duplex.prototype.constructor = Duplex;
+
+  Duplex.prototype.write = function (chunk, encoding, callback) {
+    if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const self = this;
+    if (typeof this._writeImpl === 'function') {
+      this._writeImpl(chunk, encoding, function (error) {
+        if (error) {
+          self.emit('error', error);
+        }
+        if (callback) {
+          callback(error);
+        }
+      });
+    } else if (callback) {
+      callback();
+    }
+    return true;
+  };
+
+  Duplex.prototype.end = function (chunk, encoding, callback) {
+    if (typeof chunk === 'function') {
+      callback = chunk;
+      chunk = undefined;
+    } else if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const self = this;
+    const finish = function () {
+      const done = function () {
+        self.writable = false;
+        self.emit('finish');
+        if (callback) {
+          callback();
+        }
+      };
+      if (typeof self._finalImpl === 'function') {
+        self._finalImpl(done);
+      } else {
+        done();
+      }
+    };
+    if (chunk !== undefined && chunk !== null) {
+      this.write(chunk, encoding, finish);
+    } else {
+      finish();
+    }
+    return this;
+  };
+
+  Duplex.prototype.destroy = function (error) {
+    if (this._destroyed) {
+      return this;
+    }
+    this._destroyed = true;
+    const self = this;
+    const done = function (laterError) {
+      const failure = laterError || error;
+      if (failure) {
+        self.emit('error', failure);
+      }
+      self.emit('close');
+    };
+    if (typeof this._destroyImpl === 'function') {
+      this._destroyImpl(error || null, done);
+    } else {
+      done();
+    }
+    return this;
+  };
+
   function streamFinished(stream, optionsOrCallback, maybeCallback) {
     const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
     let done = false;
@@ -1714,7 +1864,7 @@
     Stream: Readable,
     Readable: Readable,
     Writable: Writable,
-    Duplex: Transform,
+    Duplex: Duplex,
     Transform: Transform,
     PassThrough: PassThrough,
     finished: streamFinished,
@@ -2383,9 +2533,58 @@
     }
   };
   modules.http2 = {};
+  function dnsLookupAll(hostname, family) {
+    const raw = String(host.netServer().resolve(String(hostname)) || '');
+    const result = [];
+    if (raw) {
+      raw.split(',').forEach(function (entry) {
+        const pair = entry.split('|');
+        const entryFamily = parseInt(pair[1], 10);
+        if (!family || family === entryFamily) {
+          result.push({ address: pair[0], family: entryFamily });
+        }
+      });
+    }
+    return result;
+  }
   modules.dns = {
-    lookup: unsupported('dns.lookup'),
-    resolve: unsupported('dns.resolve')
+    lookup: function (hostname, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      options = options || {};
+      try {
+        const all = dnsLookupAll(hostname, options.family);
+        if (options.all) {
+          callback(null, all);
+        } else if (all.length > 0) {
+          callback(null, all[0].address, all[0].family);
+        } else {
+          const error = new Error('getaddrinfo ENOTFOUND ' + hostname);
+          error.code = 'ENOTFOUND';
+          callback(error);
+        }
+      } catch (error) {
+        callback(error);
+      }
+    },
+    resolve: unsupported('dns.resolve'),
+    promises: {
+      lookup: function (hostname, options) {
+        return new Promise(function (resolve, reject) {
+          modules.dns.lookup(hostname, options || {}, function (error, address, family) {
+            if (error) {
+              reject(error);
+            } else if (options && options.all) {
+              resolve(address);
+            } else {
+              resolve({ address: address, family: family });
+            }
+          });
+        });
+      }
+    }
   };
   if (typeof global.URLSearchParams !== 'function') {
     global.URLSearchParams = class URLSearchParams {
@@ -2736,6 +2935,10 @@
       this.__socketId = socketId;
       this.readable = true;
       this.writable = true;
+      this.localAddress = undefined;
+      this.localPort = undefined;
+      this.remoteAddress = undefined;
+      this.remotePort = undefined;
     }
 
     write(chunk, encoding, callback) {
@@ -2874,6 +3077,26 @@
           delete netSocketsById[parts[1]];
         }
         handled++;
+      } else if (type === 'connect') {
+        // Outbound connection established (net.createConnection).
+        const socket = netSocketsById[parts[1]];
+        if (socket) {
+          socket.localAddress = parts[2];
+          socket.localPort = parseInt(parts[3], 10);
+          socket.remoteAddress = parts[4];
+          socket.remotePort = parseInt(parts[5], 10);
+          socket.emit('connect');
+        }
+        handled++;
+      } else if (type === 'connecterror') {
+        const socket = netSocketsById[parts[1]];
+        if (socket) {
+          const error = new Error(parts[2] || 'connect failed');
+          error.code = 'ECONNREFUSED';
+          socket.emit('error', error);
+          delete netSocketsById[parts[1]];
+        }
+        handled++;
       }
     }
     return handled;
@@ -2897,8 +3120,29 @@
     isIPv6: function (value) {
       return String(value).indexOf(':') >= 0;
     },
-    createConnection: unsupported('net.createConnection')
+    createConnection: function (options, connectListener) {
+      let hostName = '127.0.0.1';
+      let port = 0;
+      if (options && typeof options === 'object') {
+        hostName = options.host || options.hostname || '127.0.0.1';
+        port = options.port || 0;
+      } else {
+        port = parseInt(options, 10) || 0;
+        if (typeof connectListener === 'string') {
+          hostName = connectListener;
+          connectListener = arguments[2];
+        }
+      }
+      const socketId = String(host.netServer().connect(String(hostName), parseInt(port, 10) || 0));
+      const socket = new NetSocket(socketId);
+      netSocketsById[socketId] = socket;
+      if (typeof connectListener === 'function') {
+        socket.on('connect', connectListener);
+      }
+      return socket;
+    }
   };
+  modules.net.connect = modules.net.createConnection;
 
   // Minimal HTTP server backing http.createServer, used by Playwright's WebSocket-based
   // BrowserServer (browser.bind). Listen/address/close are real (delegated to a host TCP server);
@@ -2949,7 +3193,145 @@
     return createHttpServer(typeof options === 'function' ? options : requestListener);
   };
 
-  modules.tls = {};
+  // Host-backed TLS (via SSLEngine) for Playwright's BrowserContext client-certificate proxy
+  // (socksClientCertificatesInterceptor.js). Each TLSSocket bridges an underlying byte stream
+  // (a net socket, or the SOCKS Duplex on the browser side) and a host SSLEngine: bytes from the
+  // peer drive the handshake / are decrypted; writes are encrypted back onto the underlying stream.
+  function pemString(value) {
+    if (value === undefined || value === null) {
+      return '';
+    }
+    return global.Buffer.isBuffer(value) ? value.toString('utf8') : String(value);
+  }
+
+  function makeTlsSocket(underlying, engineId, onSecure) {
+    const socket = new Duplex({
+      read: function () {},
+      write: function (chunk, encoding, callback) {
+        try {
+          const res = JSON.parse(host.tls().wrap(engineId, toInputBuffer(chunk).toString('base64')));
+          if (res.net) {
+            underlying.write(global.Buffer.from(res.net, 'base64'));
+          }
+          callback(res.error ? new Error(res.error) : undefined);
+        } catch (error) {
+          callback(error);
+        }
+      },
+      destroy: function (error, callback) {
+        host.tls().closeEngine(engineId);
+        try {
+          if (underlying && typeof underlying.destroy === 'function') {
+            underlying.destroy();
+          }
+        } catch (ignored) {
+          // best effort
+        }
+        callback(error);
+      }
+    });
+    socket.encrypted = true;
+    socket.authorized = true;
+    socket.alpnProtocol = false;
+    let secured = false;
+
+    // A per-connection TLS failure must not crash the shared driver: only emit 'error' if someone
+    // is listening (an unhandled 'error' would throw out of the pump), otherwise just tear down.
+    const fail = function (error) {
+      if (socket.listenerCount && socket.listenerCount('error') > 0) {
+        socket.emit('error', error);
+      }
+      try { host.tls().closeEngine(engineId); } catch (ignored) {}
+      socket.push(null);
+    };
+
+    const process = function (res) {
+      if (res.error) {
+        fail(new Error(res.error));
+        return;
+      }
+      if (res.net) {
+        underlying.write(global.Buffer.from(res.net, 'base64'));
+      }
+      if (res.app) {
+        socket.push(global.Buffer.from(res.app, 'base64'));
+      }
+      if (res.established && !secured) {
+        secured = true;
+        socket.alpnProtocol = res.alpn ? res.alpn : false;
+        if (onSecure) {
+          onSecure(socket);
+        }
+      }
+      if (res.closed) {
+        socket.push(null);
+      }
+    };
+    const feed = function (base64) {
+      try {
+        process(JSON.parse(host.tls().pump(engineId, base64 || '')));
+      } catch (error) {
+        fail(error);
+      }
+    };
+
+    underlying.on('data', function (data) { feed(toInputBuffer(data).toString('base64')); });
+    underlying.on('close', function () { socket.push(null); socket.emit('close'); });
+    underlying.on('error', function (error) { fail(error); });
+    socket.__kickHandshake = function () { feed(''); };
+    return socket;
+  }
+
+  modules.tls = {
+    createSecureContext: function (options) {
+      return { __tlsOptions: extractTlsOptions(options || {}) };
+    },
+    connect: function (options, callback) {
+      const underlying = options.socket;
+      const secureContext = options.secureContext;
+      const tlsOptions = secureContext && secureContext.__tlsOptions ? secureContext.__tlsOptions : '';
+      const rejectUnauthorized = options.rejectUnauthorized !== false;
+      const alpn = (options.ALPNProtocols || []).join(',');
+      const servername = options.servername || '';
+      const engineId = String(host.tls().newClientEngine(tlsOptions, String(servername), alpn, rejectUnauthorized));
+      const socket = makeTlsSocket(underlying, engineId, function (s) { s.emit('secureConnect'); });
+      if (typeof callback === 'function') {
+        socket.on('secureConnect', callback);
+      }
+      // Drive the client handshake (emit ClientHello) once listeners are attached.
+      Promise.resolve().then(function () { socket.__kickHandshake(); });
+      return socket;
+    },
+    createServer: function (options, secureConnectionListener) {
+      const server = new EventEmitter();
+      const keyPem = pemString(options.key);
+      const certPem = pemString(options.cert);
+      const alpn = (options.ALPNProtocols || []).join(',');
+      if (typeof secureConnectionListener === 'function') {
+        server.on('secureConnection', secureConnectionListener);
+      }
+      server.on('connection', function (underlying) {
+        let engineId;
+        try {
+          engineId = String(host.tls().newServerEngine(keyPem, certPem, alpn));
+        } catch (error) {
+          server.emit('error', error);
+          return;
+        }
+        makeTlsSocket(underlying, engineId, function (s) { server.emit('secureConnection', s); });
+        // The browser's ClientHello is already buffered on `underlying`; attaching the 'data'
+        // listener in makeTlsSocket resumes it and drives the server handshake.
+      });
+      server.close = function (callback) {
+        if (callback) {
+          callback();
+        }
+        return this;
+      };
+      server.listen = function () { return this; };
+      return server;
+    }
+  };
   modules.url = {
     URL: global.URL,
     URLSearchParams: global.URLSearchParams

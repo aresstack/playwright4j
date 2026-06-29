@@ -51,6 +51,64 @@ public final class JdkHostNetServer {
         }
     }
 
+    /**
+     * Opens an outbound TCP connection (Node net.createConnection), used by Playwright's
+     * client-certificate SOCKS proxy to reach the real server. Returns a socketId immediately; the
+     * connect completes on a background thread, then a {@code connect} event (carrying the local and
+     * remote address/port) is queued, followed by {@code data}/{@code close} events. On failure a
+     * {@code connecterror} event is queued instead.
+     */
+    @HostAccess.Export
+    public String connect(final String host, final int port) {
+        final String socketId = "socket-" + ids.getAndIncrement();
+        Thread connectThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Socket socket = new Socket();
+                    socket.connect(new InetSocketAddress(host, port));
+                    sockets.put(socketId, socket);
+                    socketOutputs.put(socketId, socket.getOutputStream());
+                    // event: connect<UNIT>socketId<UNIT>localAddr<UNIT>localPort<UNIT>remoteAddr<UNIT>remotePort
+                    events.add("connect" + UNIT + socketId
+                            + UNIT + socket.getLocalAddress().getHostAddress() + UNIT + socket.getLocalPort()
+                            + UNIT + host + UNIT + port);
+                    startReadThread(socketId, socket);
+                } catch (IOException exception) {
+                    events.add("connecterror" + UNIT + socketId + UNIT
+                            + (exception.getMessage() == null ? "connect failed" : exception.getMessage()));
+                }
+            }
+        }, "playwright4j-net-connect-" + socketId);
+        connectThread.setDaemon(true);
+        connectThread.start();
+        return socketId;
+    }
+
+    /**
+     * Resolves a hostname to addresses for Node's dns.lookup (used by the client-certificate
+     * proxy's happy-eyeballs connector). Returns comma-separated {@code address|family} entries
+     * (family 4 or 6), or "" if unresolved.
+     */
+    @HostAccess.Export
+    public String resolve(String hostname) {
+        try {
+            java.net.InetAddress[] all = java.net.InetAddress.getAllByName(hostname);
+            StringBuilder builder = new StringBuilder();
+            for (java.net.InetAddress address : all) {
+                if (builder.length() > 0) {
+                    builder.append(',');
+                }
+                builder.append(address.getHostAddress())
+                        .append('|')
+                        .append(address instanceof java.net.Inet6Address ? 6 : 4);
+            }
+            return builder.toString();
+        } catch (Exception exception) {
+            return "";
+        }
+    }
+
     @HostAccess.Export
     public void closeServer(String serverId) {
         ServerSocket serverSocket = servers.remove(serverId);

@@ -20,6 +20,15 @@ public final class GraalDriverMain {
     }
 
     public static void main(String[] args) throws IOException {
+        // java.net.http.HttpClient always performs TLS hostname verification and ignores
+        // SSLParameters.setEndpointIdentificationAlgorithm(null); the only switch is this property,
+        // which must be set before the HttpClient class initialises. It lets ignoreHTTPSErrors /
+        // rejectUnauthorized:false reach servers whose cert SAN does not match the address (e.g. a
+        // client-certificate test server reached via 127.0.0.1 while its cert is for localhost).
+        // Certificate-chain trust is still governed per-client by the TLS options (trust-all only
+        // when rejectUnauthorized is false); this disables the hostname check only.
+        System.setProperty("jdk.internal.httpclient.disableHostnameVerification", Boolean.TRUE.toString());
+
         Map<String, String> environment = new LinkedHashMap<String, String>(System.getenv());
         environment.putIfAbsent("PW_LANG_NAME", "java");
         // Playwright-Core builds its default User-Agent as "... <PW_LANG_NAME>/<PW_LANG_NAME_VERSION>".
