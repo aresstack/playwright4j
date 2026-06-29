@@ -6,23 +6,19 @@ Reihenfolge/Priorität:
 1. ~~Download stream: TestDownload.shouldExposeStream~~ — **GELÖST**
 2. TestBrowserTypeConnect: node.exe-Testinfrastruktur ersetzen — **offen** (s.u.)
 3. ~~HAR Zip Export: großer Stream/Zip/Finalize-Block~~ — **GELÖST**
-4. ~~Tracing (TestTracing / TestChromiumTracing)~~ — **weitgehend GELÖST** (s.u.)
+4. ~~Tracing (TestTracing / TestChromiumTracing)~~ — **GELÖST**
 
-## Tracing — weitgehend gelöst
+## ~~Tracing~~ — GELÖST
 
-**Status:** `TestTracing` **10/0** (1 Skip = PLAYWRIGHT_JAVA_SRC-Assumption).
-`TestChromiumTracing` **6/1** (war 0/7). Cluster: 16 Fehler → 1.
+**Status:** `TestTracing` **10/0/1** (Skip = PLAYWRIGHT_JAVA_SRC-Assumption),
+`TestChromiumTracing` **7/0**. Cluster 16 → 0.
 
 **Gelöst durch:** fs.appendFile + fs.promises.open (FileHandle), zlib-Konstruktor-
 Formen (`new DeflateRaw`), Extraktion der Trace-Viewer-Assets in `Driver.driverDir()`,
-und `Readable.readableLength` (StreamDispatcher-Chunk-Größe, behob den
-1MB-ArrayIndexOutOfBounds beim Lesen großer Trace-Artefakte).
-
-**Verbleibend (1 Test):** `TestChromiumTracing.shouldRunWithCustomCategoriesIfProvided`
-läuft in Timeout — restriktive Kategorie (`disabled-by-default-cc.debug`) erzeugt
-einen (nahezu) leeren Trace-Stream; vermutlich ein Edge-Case beim Lesen eines
-leeren/sehr kleinen Artefakt-Streams oder `rafraf`-Timing. Kleiner Einzelfall,
-kein systemischer Block.
+`Readable.readableLength` (StreamDispatcher-Chunk-Größe; behob den
+1MB-ArrayIndexOutOfBounds), und **zero-copy `Readable.read`-Split** (subarray-Views
+statt `Buffer.from`-Kopie pro Chunk) — der letzte Test war kein Hänger, sondern
+O(n²)-langsam beim Lesen eines großen, ausführlichen Trace-Artefakts.
 
 ## ~~TestDownload.shouldExposeStream~~ — GELÖST
 
