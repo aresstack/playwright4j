@@ -3792,10 +3792,24 @@
         this._inbox = [];
       }
 
-      static async connect(progress, url) {
+      static async connect(progress, url, options = {}) {
         progress?.log('<ws connecting> ' + url);
         traceWebSocket('transport-connect:' + url);
-        const connectionId = host.webSocketClient().open(String(url));
+        // Forward caller-supplied handshake headers (e.g. browserType.connect/connectOverCDP
+        // headers: a custom User-Agent or x-playwright-* headers) into the host WebSocket open.
+        const separator = String.fromCharCode(30);
+        const headerPairs = [];
+        const headers = options && options.headers;
+        if (headers) {
+          for (const name of Object.keys(headers)) {
+            const value = headers[name];
+            if (value === undefined || value === null) {
+              continue;
+            }
+            headerPairs.push(String(name), String(value));
+          }
+        }
+        const connectionId = host.webSocketClient().open(String(url), headerPairs.join(separator));
         progress?.log('<ws connected> ' + url);
         traceWebSocket('transport-connected:' + url);
         const transport = new HostBackedWebSocketTransport(String(url), connectionId);
@@ -3820,8 +3834,22 @@
           return 0;
         }
         const message = this._inbox.shift();
+        // A malformed / non-CDP message (e.g. connecting to a plain WebSocket server that is not a
+        // CDP endpoint, as TestChromium.shouldSendExtraHeadersWithConnectRequest does) must not let
+        // a JSON.parse / onmessage error escape this transport and crash the shared driver pump
+        // (which would take down the whole connection). A malformed frame is a fatal protocol error
+        // for this connection: close the transport so the pending connect rejects promptly, instead
+        // of either crashing the driver or hanging until the caller's timeout.
         if (this.onmessage) {
-          this.onmessage(JSON.parse(message));
+          let parsed;
+          try {
+            parsed = JSON.parse(message);
+          } catch (error) {
+            traceWebSocket('transport-message-error:' + (error && error.message));
+            this.close();
+            return 1;
+          }
+          this.onmessage(parsed);
         }
         return 1;
       }

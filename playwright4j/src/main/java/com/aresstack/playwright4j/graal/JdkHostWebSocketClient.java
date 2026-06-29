@@ -31,9 +31,17 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     @Override
     @org.graalvm.polyglot.HostAccess.Export
     public String open(String url) {
+        return open(url, null);
+    }
+
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
+    public String open(String url, String headers) {
         Connection connection = new Connection();
-        WebSocket webSocket = client.newWebSocketBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
+        WebSocket.Builder builder = client.newWebSocketBuilder()
+                .connectTimeout(Duration.ofSeconds(5));
+        applyHandshakeHeaders(builder, headers);
+        WebSocket webSocket = builder
                 .buildAsync(URI.create(url), connection)
                 .join();
         String id = UUID.randomUUID().toString();
@@ -41,6 +49,29 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         connections.put(id, connection);
         Playwright4JDebug.log("[pw4j-cdp] OPEN " + url);
         return id;
+    }
+
+    private static final String HEADER_SEPARATOR = "\u001e";
+
+    private void applyHandshakeHeaders(WebSocket.Builder builder, String headers) {
+        if (headers == null || headers.isEmpty()) {
+            return;
+        }
+        String[] entries = headers.split(HEADER_SEPARATOR, -1);
+        for (int index = 0; index + 1 < entries.length; index += 2) {
+            String name = entries[index];
+            String value = entries[index + 1];
+            if (name == null || name.trim().isEmpty()) {
+                continue;
+            }
+            try {
+                builder.header(name, value == null ? "" : value);
+            } catch (IllegalArgumentException ignored) {
+                // The JDK forbids setting a few protocol-managed headers (e.g. Connection,
+                // Upgrade, Sec-WebSocket-*); skip those rather than failing the connect.
+                Playwright4JDebug.log("[pw4j-cdp] skipped handshake header " + name);
+            }
+        }
     }
 
     @Override

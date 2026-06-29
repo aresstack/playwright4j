@@ -7,6 +7,16 @@ public interface HostWebSocketClient {
     @HostAccess.Export
     String open(String url);
 
+    /**
+     * Opens a WebSocket, applying the given request headers to the opening handshake. Headers are a
+     * flat string of alternating name / value entries joined by the U+001E record separator (may
+     * be empty). Used
+     * by browserType.connect/connectOverCDP, which forward caller-supplied headers (e.g. a custom
+     * User-Agent or x-playwright-* headers) into the handshake.
+     */
+    @HostAccess.Export
+    String open(String url, String headers);
+
     @HostAccess.Export
     String sendAndWait(String connectionId, String message);
 
