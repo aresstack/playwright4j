@@ -1261,6 +1261,20 @@
     }
   });
 
+  // Total bytes currently buffered. Playwright's StreamDispatcher sizes its reads with
+  // Math.min(stream.readableLength, params.size); without this it computes NaN and pulls the
+  // whole buffer at once, overflowing the client's fixed-size read buffer for large artifacts.
+  Object.defineProperty(Readable.prototype, 'readableLength', {
+    get: function () {
+      let total = 0;
+      for (let index = 0; index < this._readableBuffer.length; index++) {
+        const chunk = this._readableBuffer[index];
+        total += chunk && chunk.length ? chunk.length : 0;
+      }
+      return total;
+    }
+  });
+
   Readable.from = function (iterable) {
     const stream = new Readable();
     Promise.resolve().then(function () {
