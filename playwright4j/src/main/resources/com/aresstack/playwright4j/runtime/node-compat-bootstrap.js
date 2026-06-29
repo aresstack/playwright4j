@@ -2566,7 +2566,7 @@
         const schemeAuthority = text.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\//);
         if (schemeAuthority) {
           this._opaque = false;
-          this.protocol = schemeAuthority[1];
+          this.protocol = schemeAuthority[1].toLowerCase();
           let rest = text.substring(schemeAuthority[0].length);
 
           // Authority runs up to the first '/', '?' or '#'.
@@ -2589,7 +2589,9 @@
           }
 
           const hostPortMatch = hostPort.match(/^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/);
-          this.hostname = hostPortMatch ? hostPortMatch[1] : hostPort;
+          const rawHostname = hostPortMatch ? hostPortMatch[1] : hostPort;
+          // WHATWG lowercases the host for special schemes; opaque-host (non-special) keeps case.
+          this.hostname = /^(https?|wss?|ftp|file):$/.test(this.protocol) ? rawHostname.toLowerCase() : rawHostname;
           this.port = hostPortMatch && hostPortMatch[2] ? hostPortMatch[2] : '';
 
           this.hash = '';
@@ -2604,8 +2606,11 @@
             query = afterAuthority.substring(queryIdx + 1);
             afterAuthority = afterAuthority.substring(0, queryIdx);
           }
-          this.pathname = afterAuthority || '/';
-          this._searchParams = new global.URLSearchParams(query);
+          // WHATWG forces an empty path to "/" only for special schemes (http/https/ws/wss/
+          // ftp/file). Non-special schemes (e.g. my.custom.protocol://foo) keep an empty path —
+          // adding a slash would change Playwright's glob->regex result and break URL matching.
+          this.pathname = afterAuthority || (/^(https?|wss?|ftp|file):$/.test(this.protocol) ? '/' : '');
+          this.__setQuery(query);
           return;
         }
 
@@ -2616,7 +2621,7 @@
           throw new TypeError('Invalid URL: ' + text);
         }
         this._opaque = true;
-        this.protocol = schemeMatch[1];
+        this.protocol = schemeMatch[1].toLowerCase();
         this.username = '';
         this.password = '';
         this.hostname = '';
@@ -2636,7 +2641,16 @@
           remainder = remainder.substring(0, queryIndex);
         }
         this.pathname = remainder;
+        this.__setQuery(query);
+      }
+
+      // Stores the raw (already-encoded) query so search/href preserve it verbatim (WHATWG URL
+      // query encoding leaves $ _ etc. intact), unlike URLSearchParams form-encoding. Once
+      // searchParams is handed out it may be mutated, so search then re-serializes from it.
+      __setQuery(query) {
+        this._search = query ? '?' + query : '';
         this._searchParams = new global.URLSearchParams(query);
+        this._searchDirty = false;
       }
 
       get host() {
@@ -2648,15 +2662,26 @@
       }
 
       get search() {
-        const serialized = this._searchParams.toString();
-        return serialized ? '?' + serialized : '';
+        if (this._searchDirty) {
+          const serialized = this._searchParams.toString();
+          return serialized ? '?' + serialized : '';
+        }
+        return this._search || '';
       }
 
       set search(value) {
-        this._searchParams = new global.URLSearchParams(String(value));
+        let text = String(value);
+        if (text && text.charAt(0) !== '?') {
+          text = '?' + text;
+        }
+        this._search = text;
+        this._searchParams = new global.URLSearchParams(text.replace(/^\?/, ''));
+        this._searchDirty = false;
       }
 
       get searchParams() {
+        // Caller may mutate the returned object; subsequent search/href must reflect that.
+        this._searchDirty = true;
         return this._searchParams;
       }
 
@@ -2669,7 +2694,8 @@
         if (this.username) {
           userInfo = this.username + (this.password ? ':' + this.password : '') + '@';
         }
-        return this.protocol + '//' + userInfo + this.host + (this.pathname || '/') + this.search + (this.hash || '');
+        const path = this.pathname || (/^(https?|wss?|ftp|file):$/.test(this.protocol) ? '/' : '');
+        return this.protocol + '//' + userInfo + this.host + path + this.search + (this.hash || '');
       }
 
       set href(value) {
@@ -2682,7 +2708,9 @@
         this.port = parsed.port;
         this.pathname = parsed.pathname;
         this.hash = parsed.hash;
+        this._search = parsed.search;
         this._searchParams = parsed._searchParams;
+        this._searchDirty = false;
       }
 
       toJSON() {
