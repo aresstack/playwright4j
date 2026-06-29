@@ -117,6 +117,23 @@ public final class LocalHostFileSystem implements HostFileSystem {
 
     @Override
     @HostAccess.Export
+    public void appendFileBase64(String path, String base64) {
+        try {
+            Path target = Paths.get(path);
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+            byte[] bytes = base64 == null || base64.isEmpty()
+                    ? new byte[0]
+                    : java.util.Base64.getDecoder().decode(base64);
+            Files.write(target, bytes, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot append file: " + path, exception);
+        }
+    }
+
+    @Override
+    @HostAccess.Export
     public void deleteFile(String path) {
         try {
             Files.deleteIfExists(Paths.get(path));

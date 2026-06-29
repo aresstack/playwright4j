@@ -66,6 +66,12 @@ public final class EmptyHostFileSystem implements HostFileSystem {
 
     @Override
     @HostAccess.Export
+    public void appendFileBase64(String path, String base64) {
+        throw new UnsupportedOperationException("EmptyHostFileSystem cannot append files.");
+    }
+
+    @Override
+    @HostAccess.Export
     public void deleteFile(String path) {
         // No-op: nothing to delete on an empty filesystem.
     }

@@ -198,6 +198,105 @@
     host.fileSystem().writeFile(target, String(content));
   }
 
+  // Appends text or binary content to a file (Node fs.appendFile semantics).
+  function hostAppendFile(path, content) {
+    const target = String(path);
+    const buffer = (global.Buffer.isBuffer(content) || content instanceof Uint8Array)
+      ? global.Buffer.from(content)
+      : global.Buffer.from(content === undefined || content === null ? '' : String(content), 'utf8');
+    host.fileSystem().appendFileBase64(target, buffer.toString('base64'));
+  }
+
+  function toFileBuffer(data, encoding) {
+    if (global.Buffer.isBuffer(data) || data instanceof Uint8Array) {
+      return global.Buffer.from(data);
+    }
+    return global.Buffer.from(data === undefined || data === null ? '' : String(data), typeof encoding === 'string' ? encoding : 'utf8');
+  }
+
+  // FileHandle returned by fs.promises.open. Writes are buffered and flushed on close()
+  // (write/append mode); reads are served from an in-memory copy. Used e.g. by Chromium tracing.
+  function makeFileHandle(path, flags) {
+    const target = String(path);
+    const mode = flags === undefined || flags === null ? 'r' : String(flags);
+    const isAppend = mode.indexOf('a') >= 0;
+    const writeChunks = [];
+    let wroteAnything = false;
+    let readState = null;
+    function ensureRead() {
+      if (!readState) {
+        readState = { buffer: hostReadFile(target), pos: 0 };
+      }
+      return readState;
+    }
+    return {
+      fd: nextFd++,
+      write: async function (data, offsetOrPosition, lengthOrEncoding) {
+        let buffer;
+        if (typeof data === 'string') {
+          buffer = toFileBuffer(data, lengthOrEncoding);
+        } else {
+          const source = global.Buffer.from(data);
+          const offset = typeof offsetOrPosition === 'number' ? offsetOrPosition : 0;
+          const length = typeof lengthOrEncoding === 'number' ? lengthOrEncoding : source.length - offset;
+          buffer = global.Buffer.from(source.subarray(offset, offset + length));
+        }
+        writeChunks.push(buffer);
+        wroteAnything = true;
+        return { bytesWritten: buffer.length, buffer: data };
+      },
+      writeFile: async function (data, options) {
+        writeChunks.push(toFileBuffer(data, options && options.encoding));
+        wroteAnything = true;
+        return undefined;
+      },
+      appendFile: async function (data) {
+        writeChunks.push(toFileBuffer(data));
+        wroteAnything = true;
+        return undefined;
+      },
+      read: async function (buffer, offset, length, position) {
+        const state = ensureRead();
+        const start = (position === null || position === undefined) ? state.pos : position;
+        let count = 0;
+        while (count < length && start + count < state.buffer.length) {
+          buffer[offset + count] = state.buffer[start + count];
+          count++;
+        }
+        if (position === null || position === undefined) {
+          state.pos = start + count;
+        }
+        return { bytesRead: count, buffer: buffer };
+      },
+      readFile: async function (options) {
+        return decodeRead(hostReadFile(target), options);
+      },
+      stat: async function () {
+        return hostStat(target);
+      },
+      truncate: async function () {
+        writeChunks.length = 0;
+        wroteAnything = true;
+        return undefined;
+      },
+      sync: async function () { return undefined; },
+      datasync: async function () { return undefined; },
+      createReadStream: function () { return modules.fs.createReadStream(target); },
+      createWriteStream: function () { return modules.fs.createWriteStream(target); },
+      close: async function () {
+        if (wroteAnything) {
+          const all = writeChunks.length > 0 ? global.Buffer.concat(writeChunks) : global.Buffer.alloc(0);
+          if (isAppend) {
+            host.fileSystem().appendFileBase64(target, all.toString('base64'));
+          } else {
+            host.fileSystem().writeFileBase64(target, all.toString('base64'));
+          }
+        }
+        return undefined;
+      }
+    };
+  }
+
   function enoent(operation, path) {
     const error = new Error('ENOENT: no such file or directory, ' + operation + " '" + String(path) + "'");
     error.code = 'ENOENT';
@@ -365,6 +464,20 @@
     writeFileSync: function (path, content) {
       hostWriteFile(path, content);
     },
+    appendFileSync: function (path, content) {
+      hostAppendFile(path, content);
+    },
+    appendFile: function (path, content, options, callback) {
+      callback = typeof options === 'function' ? options : callback;
+      Promise.resolve().then(function () {
+        try {
+          hostAppendFile(path, content);
+          if (callback) { callback(null); }
+        } catch (error) {
+          if (callback) { callback(error); }
+        }
+      });
+    },
     mkdirSync: function (path) {
       host.fileSystem().createDirectories(String(path));
       return undefined;
@@ -466,6 +579,13 @@
       writeFile: async function (path, content) {
         hostWriteFile(path, content);
         return undefined;
+      },
+      appendFile: async function (path, content) {
+        hostAppendFile(path, content);
+        return undefined;
+      },
+      open: async function (path, flags) {
+        return makeFileHandle(path, flags);
       },
       mkdir: async function (path) {
         host.fileSystem().createDirectories(String(path));
@@ -1592,6 +1712,13 @@
   modules.zlib.createInflateRaw = function (options) { return makeZlibTransform(zlibInflateRaw, options); };
   modules.zlib.createGzip = function (options) { return makeZlibTransform(zlibGzip, options); };
   modules.zlib.createGunzip = function (options) { return makeZlibTransform(zlibGunzip, options); };
+
+  // Constructor forms (new zlib.DeflateRaw()) used by yazl's streaming compression. A constructor
+  // that returns an object yields that object from `new`, so these produce the transform stream.
+  modules.zlib.DeflateRaw = function (options) { return makeZlibTransform(zlibDeflateRaw, options); };
+  modules.zlib.InflateRaw = function (options) { return makeZlibTransform(zlibInflateRaw, options); };
+  modules.zlib.Gzip = function (options) { return makeZlibTransform(zlibGzip, options); };
+  modules.zlib.Gunzip = function (options) { return makeZlibTransform(zlibGunzip, options); };
 
   modules.readline = {
     createInterface: function (options) {

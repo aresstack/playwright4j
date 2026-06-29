@@ -27,6 +27,9 @@ public interface HostFileSystem {
     /** Writes raw bytes (provided Base64-encoded) to a file, creating parent directories. */
     void writeFileBase64(String path, String base64);
 
+    /** Appends raw bytes (provided Base64-encoded) to a file, creating it if absent. */
+    void appendFileBase64(String path, String base64);
+
     /** Deletes a file (no error if it does not exist). Backs fs.unlink/rm. */
     void deleteFile(String path);
 
