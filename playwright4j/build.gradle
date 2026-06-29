@@ -17,6 +17,10 @@ dependencies {
     api 'org.graalvm.polyglot:js:25.0.0'
     runtimeOnly 'com.microsoft.playwright:driver-bundle:1.59.0'
 
+    // Java-backed video encoding (default backend for the intercepted ffmpeg spawn).
+    implementation 'org.jcodec:jcodec:0.2.5'
+    implementation 'org.jcodec:jcodec-javase:0.2.5'
+
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
     testImplementation 'com.microsoft.playwright:playwright:1.59.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'

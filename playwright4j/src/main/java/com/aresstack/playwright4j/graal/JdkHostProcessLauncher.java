@@ -1,5 +1,9 @@
 package com.aresstack.playwright4j.graal;
 
+import com.aresstack.playwright4j.video.VideoBackends;
+import com.aresstack.playwright4j.video.VideoEncoderBackend;
+import com.aresstack.playwright4j.video.VideoEncoderHandle;
+import com.aresstack.playwright4j.video.VideoEncoderRequest;
 import org.graalvm.polyglot.HostAccess;
 
 import java.io.BufferedReader;
@@ -33,6 +37,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
 
     private final Map<String, Process> processes = new ConcurrentHashMap<String, Process>();
     private final Map<String, java.io.OutputStream> processStdin = new ConcurrentHashMap<String, java.io.OutputStream>();
+    private final Map<String, VideoEncoderHandle> videoEncoders = new ConcurrentHashMap<String, VideoEncoderHandle>();
     private final java.util.concurrent.BlockingQueue<String> processEvents =
             new java.util.concurrent.LinkedBlockingQueue<String>();
     private static final char UNIT = '';
@@ -40,13 +45,23 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     @Override
     @HostAccess.Export
     public String spawnProcess(String command, String arguments, String workingDirectory) {
-        List<String> commandLine = new ArrayList<String>();
-        commandLine.add(command);
+        List<String> argumentList = new ArrayList<String>();
         if (arguments != null && !arguments.isEmpty()) {
             for (String argument : arguments.split(ARGUMENT_SEPARATOR, -1)) {
-                commandLine.add(argument);
+                argumentList.add(argument);
             }
         }
+
+        // The ffmpeg spawn (video recording) is delegated to a Java video-encoding backend
+        // (JCodec by default) instead of running a native encoder. The original Playwright JS is
+        // unchanged; from its point of view a process was spawned, fed MJPEG on stdin, and exits 0.
+        if (isFfmpeg(command)) {
+            return startVideoEncoder(argumentList);
+        }
+
+        List<String> commandLine = new ArrayList<String>();
+        commandLine.add(command);
+        commandLine.addAll(argumentList);
         Playwright4JDebug.log("[pw4j-launcher] spawn=" + commandLine);
         Process process;
         try {
@@ -68,9 +83,41 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         return processId;
     }
 
+    private static boolean isFfmpeg(String command) {
+        if (command == null) {
+            return false;
+        }
+        String normalized = command.toLowerCase(java.util.Locale.ROOT).replace('\\', '/');
+        int slash = normalized.lastIndexOf('/');
+        String basename = slash >= 0 ? normalized.substring(slash + 1) : normalized;
+        return basename.contains("ffmpeg");
+    }
+
+    private String startVideoEncoder(List<String> argumentList) {
+        final String processId = UUID.randomUUID().toString();
+        VideoEncoderRequest request = VideoEncoderRequest.fromFfmpegArguments(argumentList);
+        VideoEncoderBackend backend = VideoBackends.select();
+        Playwright4JDebug.log("[pw4j-launcher] video-encoder backend=" + backend.getClass().getSimpleName()
+                + " out=" + request.outputPath() + " " + request.width() + "x" + request.height() + "@" + request.fps());
+        VideoEncoderHandle handle = backend.start(request, new Runnable() {
+            @Override
+            public void run() {
+                videoEncoders.remove(processId);
+                processEvents.add("exit" + UNIT + processId + UNIT + "0");
+            }
+        });
+        videoEncoders.put(processId, handle);
+        return processId;
+    }
+
     @Override
     @HostAccess.Export
     public void writeStdin(String processId, String base64) {
+        VideoEncoderHandle encoder = videoEncoders.get(processId);
+        if (encoder != null) {
+            encoder.write(java.util.Base64.getDecoder().decode(base64));
+            return;
+        }
         java.io.OutputStream stdin = processStdin.get(processId);
         if (stdin == null) {
             return;
@@ -86,6 +133,11 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     @Override
     @HostAccess.Export
     public void endStdin(String processId) {
+        VideoEncoderHandle encoder = videoEncoders.get(processId);
+        if (encoder != null) {
+            encoder.finish();
+            return;
+        }
         java.io.OutputStream stdin = processStdin.remove(processId);
         if (stdin != null) {
             try {
@@ -203,6 +255,10 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     @Override
     @HostAccess.Export
     public void close(String processId) {
+        VideoEncoderHandle encoder = videoEncoders.remove(processId);
+        if (encoder != null) {
+            encoder.kill();
+        }
         Process process = processes.remove(processId);
         if (process != null) {
             // Destroy the whole tree: Chromium spawns renderer/gpu child processes that must
@@ -213,6 +269,12 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     }
 
     public void closeAll() {
+        for (String processId : new ArrayList<String>(videoEncoders.keySet())) {
+            VideoEncoderHandle encoder = videoEncoders.remove(processId);
+            if (encoder != null) {
+                encoder.kill();
+            }
+        }
         for (String processId : new ArrayList<String>(processes.keySet())) {
             close(processId);
         }
