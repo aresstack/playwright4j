@@ -68,6 +68,24 @@ alles andere ist ein allgemeiner Subprozess. Neue Host-API
 `spawnProcess/writeStdin/endStdin/drainProcessEvents` (stdin-Pipe für Frames,
 stdout/stderr/exit über den Pump). Kein Fake-Video — echtes ffmpeg erzeugt .webm.
 
+## TestPageEmulateMedia.shouldDefaultToLight — UMGEBUNG (OS Dark Mode), kein Treiber-Bug
+
+**Status:** `TestPageEmulateMedia` 8/1 auf dieser Maschine; **9/0 auf Light-Mode-OS/CI**.
+
+**Befund (verifiziert):** Der Test sendet drei `Emulation.setEmulatedMedia` —
+`light` (Context-Default), `dark` (`emulateMedia(DARK)`), `""` (`emulateMedia(null)`
+= Override entfernen). Genau identisch zu Upstream. Zeilen 65–70 (light, dark) sind
+grün; nur Zeile 73 (nach Override-Entfernen erwartet `light`) schlägt fehl, weil
+echtes Chrome (headless, channel=chrome) ohne Override das **OS-Theme** erbt.
+`AppsUseLightTheme=0`/`SystemUsesLightTheme=0` → Windows ist im **Dark Mode** →
+`prefers-color-scheme: dark`.
+
+**Einordnung:** Kein Playwright4J-Treiberdefekt — die CDP-Kommandos sind byte-gleich
+zu Upstream. Der Test setzt voraus, dass der OS-/Chrome-No-Override-Default `light`
+ist (wie auf Upstream-CI). Auf einer Light-Mode-Umgebung grün. Bewusst **kein**
+erzwungener Chrome-Flag (würde für alle Contexts von Upstream abweichen und einen
+Nicht-Bug verdecken).
+
 ## TestClientCertificates — Cluster B gelöst, Cluster A offen (5/4)
 
 **Status:** `TestClientCertificates` **5/4** (war 1/8).
