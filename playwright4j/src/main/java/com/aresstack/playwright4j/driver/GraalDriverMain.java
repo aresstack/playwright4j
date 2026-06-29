@@ -22,6 +22,10 @@ public final class GraalDriverMain {
     public static void main(String[] args) throws IOException {
         Map<String, String> environment = new LinkedHashMap<String, String>(System.getenv());
         environment.putIfAbsent("PW_LANG_NAME", "java");
+        // Playwright-Core builds its default User-Agent as "... <PW_LANG_NAME>/<PW_LANG_NAME_VERSION>".
+        // Upstream Playwright-Java sets these on the driver process so the UA carries "java/<major>";
+        // mirror that here (the value is read via process.env in the bundled core).
+        environment.putIfAbsent("PW_LANG_NAME_VERSION", majorJavaVersion());
 
         PlaywrightDriverBundleSource driverBundleSource = new PlaywrightDriverBundleSource(Thread.currentThread().getContextClassLoader());
         JdkHostProcessLauncher processLauncher = new JdkHostProcessLauncher();
@@ -172,5 +176,18 @@ public final class GraalDriverMain {
     private static String architecture() {
         String osArch = System.getProperty("os.arch", "").toLowerCase();
         return osArch.contains("aarch64") || osArch.contains("arm64") ? "arm64" : "x64";
+    }
+
+    // Mirrors upstream Driver.getMajorJavaVersion(): "1.8.0_x" -> "8", "21.0.1" -> "21".
+    private static String majorJavaVersion() {
+        String version = System.getProperty("java.version", "");
+        if (version.startsWith("1.")) {
+            return version.substring(2, 3);
+        }
+        int dot = version.indexOf('.');
+        if (dot != -1) {
+            return version.substring(0, dot);
+        }
+        return version;
     }
 }
