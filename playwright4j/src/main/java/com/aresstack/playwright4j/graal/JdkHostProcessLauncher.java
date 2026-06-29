@@ -32,6 +32,136 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     private static final int STDERR_RING_BUFFER_LINES = 80;
 
     private final Map<String, Process> processes = new ConcurrentHashMap<String, Process>();
+    private final Map<String, java.io.OutputStream> processStdin = new ConcurrentHashMap<String, java.io.OutputStream>();
+    private final java.util.concurrent.BlockingQueue<String> processEvents =
+            new java.util.concurrent.LinkedBlockingQueue<String>();
+    private static final char UNIT = '';
+
+    @Override
+    @HostAccess.Export
+    public String spawnProcess(String command, String arguments, String workingDirectory) {
+        List<String> commandLine = new ArrayList<String>();
+        commandLine.add(command);
+        if (arguments != null && !arguments.isEmpty()) {
+            for (String argument : arguments.split(ARGUMENT_SEPARATOR, -1)) {
+                commandLine.add(argument);
+            }
+        }
+        Playwright4JDebug.log("[pw4j-launcher] spawn=" + commandLine);
+        Process process;
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(commandLine);
+            if (workingDirectory != null && !workingDirectory.trim().isEmpty()) {
+                processBuilder.directory(new File(workingDirectory));
+            }
+            process = processBuilder.start();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot spawn process: " + commandLine, exception);
+        }
+
+        final String processId = UUID.randomUUID().toString();
+        processes.put(processId, process);
+        processStdin.put(processId, process.getOutputStream());
+        startProcessReader(processId, process.getInputStream(), "stdout");
+        startProcessReader(processId, process.getErrorStream(), "stderr");
+        startExitWatcher(processId, process);
+        return processId;
+    }
+
+    @Override
+    @HostAccess.Export
+    public void writeStdin(String processId, String base64) {
+        java.io.OutputStream stdin = processStdin.get(processId);
+        if (stdin == null) {
+            return;
+        }
+        try {
+            stdin.write(java.util.Base64.getDecoder().decode(base64));
+            stdin.flush();
+        } catch (IOException exception) {
+            // Process ended or pipe broke; ignore (exit event will follow).
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public void endStdin(String processId) {
+        java.io.OutputStream stdin = processStdin.remove(processId);
+        if (stdin != null) {
+            try {
+                stdin.close();
+            } catch (IOException ignored) {
+                // Already closed.
+            }
+        }
+    }
+
+    @Override
+    @HostAccess.Export
+    public String drainProcessEvents() {
+        if (processEvents.isEmpty()) {
+            return "";
+        }
+        StringBuilder batch = new StringBuilder();
+        String event;
+        while ((event = processEvents.poll()) != null) {
+            if (batch.length() > 0) {
+                batch.append('\n');
+            }
+            batch.append(event);
+        }
+        return batch.toString();
+    }
+
+    private void startProcessReader(final String processId, final InputStream stream, final String channel) {
+        Thread reader = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                byte[] buffer = new byte[16384];
+                try {
+                    int count;
+                    while ((count = stream.read(buffer)) != -1) {
+                        if (count == 0) {
+                            continue;
+                        }
+                        String base64 = java.util.Base64.getEncoder()
+                                .encodeToString(java.util.Arrays.copyOf(buffer, count));
+                        processEvents.add("data" + UNIT + processId + UNIT + channel + UNIT + base64);
+                    }
+                } catch (IOException ignored) {
+                    // Stream closed.
+                } finally {
+                    try {
+                        stream.close();
+                    } catch (IOException ignored) {
+                        // Nothing to do.
+                    }
+                }
+            }
+        }, "playwright4j-proc-" + channel + "-" + processId);
+        reader.setDaemon(true);
+        reader.start();
+    }
+
+    private void startExitWatcher(final String processId, final Process process) {
+        Thread watcher = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int code;
+                try {
+                    code = process.waitFor();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    code = -1;
+                }
+                processStdin.remove(processId);
+                processes.remove(processId);
+                processEvents.add("exit" + UNIT + processId + UNIT + code);
+            }
+        }, "playwright4j-proc-exit-" + processId);
+        watcher.setDaemon(true);
+        watcher.start();
+    }
 
     @Override
     @HostAccess.Export

@@ -773,12 +773,99 @@
     return child;
   }
 
+  // General (non-Chromium) subprocesses, e.g. the ffmpeg video encoder. Input is written to the
+  // child's stdin; stdout/stderr/exit arrive via __playwright4jDrainProcesses on the JS thread.
+  const PROC_UNIT = '';
+  const generalProcessesById = {};
+
+  function createGeneralProcess(processId) {
+    const child = new EventEmitter();
+    child.pid = Math.floor(Math.random() * 1000000) + 1;
+    child.killed = false;
+    child.__playwright4jProcessId = processId;
+
+    const stdin = new Writable();
+    stdin._write = function (chunk, encoding, callback) {
+      const buffer = global.Buffer.isBuffer(chunk)
+        ? chunk
+        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+      host.processLauncher().writeStdin(processId, buffer.toString('base64'));
+      callback();
+    };
+    stdin._final = function (callback) {
+      host.processLauncher().endStdin(processId);
+      callback();
+    };
+
+    const stdout = new Readable();
+    const stderr = new Readable();
+    child.stdin = stdin;
+    child.stdout = stdout;
+    child.stderr = stderr;
+    child.stdio = [stdin, stdout, stderr];
+    child.kill = function () {
+      if (!child.killed) {
+        child.killed = true;
+        try {
+          host.processLauncher().close(processId);
+        } catch (error) {
+          // Already gone.
+        }
+      }
+      return true;
+    };
+    child.ref = function () { return child; };
+    child.unref = function () { return child; };
+
+    generalProcessesById[processId] = { child: child, stdout: stdout, stderr: stderr };
+    return child;
+  }
+
+  global.__playwright4jDrainProcesses = function () {
+    const batch = String(host.processLauncher().drainProcessEvents() || '');
+    if (batch.length === 0) {
+      return 0;
+    }
+    const lines = batch.split('\n');
+    let handled = 0;
+    for (let index = 0; index < lines.length; index++) {
+      const parts = lines[index].split(PROC_UNIT);
+      const entry = generalProcessesById[parts[1]];
+      if (!entry) {
+        continue;
+      }
+      if (parts[0] === 'data') {
+        const target = parts[2] === 'stderr' ? entry.stderr : entry.stdout;
+        target.push(global.Buffer.from(parts[3] || '', 'base64'));
+      } else if (parts[0] === 'exit') {
+        const code = parseInt(parts[2], 10);
+        entry.stdout.push(null);
+        entry.stderr.push(null);
+        entry.child.killed = true;
+        entry.child.emit('exit', code, null);
+        entry.child.emit('close', code, null);
+        delete generalProcessesById[parts[1]];
+      }
+      handled++;
+    }
+    return handled;
+  };
+
   modules.child_process = {
     spawn: function (command, args, options) {
-      const joinedArguments = (args || []).map(function (value) {
-        return String(value);
-      }).join(ARGUMENT_SEPARATOR);
+      const argList = (args || []).map(function (value) { return String(value); });
+      const joinedArguments = argList.join(ARGUMENT_SEPARATOR);
       const workingDirectory = options && options.cwd ? String(options.cwd) : global.process.cwd();
+
+      // A Chromium launch is identified by its remote-debugging transport flag; everything else
+      // (notably the ffmpeg video encoder) is a general subprocess fed via stdin.
+      const isChromium = argList.some(function (value) {
+        return value.indexOf('--remote-debugging') === 0;
+      });
+      if (!isChromium) {
+        const generalId = String(host.processLauncher().spawnProcess(String(command), joinedArguments, workingDirectory));
+        return createGeneralProcess(generalId);
+      }
 
       // launchChromium throws on failure; let it propagate so Playwright's launch promise
       // rejects with a real error instead of hanging.
