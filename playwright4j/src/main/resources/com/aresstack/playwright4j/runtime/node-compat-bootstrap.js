@@ -1250,8 +1250,11 @@
       }
       return pending;
     }
-    const head = global.Buffer.from(pending.subarray(0, size));
-    this._readableBuffer = [global.Buffer.from(pending.subarray(size))];
+    // Zero-copy split: subarray returns a Buffer view sharing the backing store, so chunked reads
+    // of a large buffered artifact (e.g. a multi-MB trace) stay O(n) overall instead of re-copying
+    // the remainder on every read.
+    const head = pending.subarray(0, size);
+    this._readableBuffer = [pending.subarray(size)];
     return head;
   };
 
