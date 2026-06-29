@@ -53,6 +53,21 @@ den kompletten gepufferten Inhalt zurück (`!(size > 0)`).
 Damit läuft Record→Zip→Schreiben **und** Lesen→Inflate→routeFromHAR vollständig
 (verifiziert: deflate/​inflate-Roundtrip, Central Directory, EOCD).
 
+## ~~Screencast + Video~~ — GELÖST
+
+**Status:** `TestScreencast` **12/0**, `TestVideo` **1/0** (war 7/5 bzw. 0/1).
+
+**Root Cause war:** Video-Recording spawnt den **ffmpeg**-Encoder
+(`ms-playwright/ffmpeg-1011/ffmpeg-win64.exe`, liegt vor) und pipet MJPEG-Frames
+in dessen stdin. Unser `child_process.spawn` schickte **jeden** Spawn durch
+`launchChromium` → `--remote-debugging-port` angehängt + Warten auf DevTools-
+Endpoint → ffmpeg starb sofort (`Chromium exited (-1414549496)`).
+
+**Fix:** `spawn` behandelt nur Launches mit `--remote-debugging*`-Flag als Chromium;
+alles andere ist ein allgemeiner Subprozess. Neue Host-API
+`spawnProcess/writeStdin/endStdin/drainProcessEvents` (stdin-Pipe für Frames,
+stdout/stderr/exit über den Pump). Kein Fake-Video — echtes ffmpeg erzeugt .webm.
+
 ## TestClientCertificates — zwei echte TLS-Cluster (1/8)
 
 **Status:** `TestClientCertificates` **1/8**. Zwei getrennte Root Causes (je 4):
