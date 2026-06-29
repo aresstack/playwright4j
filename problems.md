@@ -68,7 +68,26 @@ alles andere ist ein allgemeiner Subprozess. Neue Host-API
 `spawnProcess/writeStdin/endStdin/drainProcessEvents` (stdin-Pipe für Frames,
 stdout/stderr/exit über den Pump). Kein Fake-Video — echtes ffmpeg erzeugt .webm.
 
-## TestClientCertificates — zwei echte TLS-Cluster (1/8)
+## TestClientCertificates — Cluster B gelöst, Cluster A offen (5/4)
+
+**Status:** `TestClientCertificates` **5/4** (war 1/8).
+
+**Cluster B — APIRequestContext — GELÖST (4 Tests + http):** Die Node-https-TLS-
+Optionen (cert/key/pfx/passphrase/rejectUnauthorized) werden jetzt über die
+Host-Grenze gereicht (`extractTlsOptions` behandelt Node-Array- und
+`{pem}`/`{buf}`-Wrapper) und `JdkHostHttpClient` baut pro Config einen
+gecachten `HttpClient` via `JdkTlsClientFactory`: PEM (X.509-Chain + PKCS#8 →
+in-memory PKCS12 → KeyManager), PFX (PKCS12 mit Passphrase), `ignoreHTTPSErrors`
+→ trust-all + Hostname-Check aus (nur für diesen Request), und ein
+`ForcingKeyManager` präsentiert das Client-Cert immer (self-signed → 403 statt
+401). Grün: passWith…/…Pfx, shouldFail…, shouldThrow…, shouldKeepSupportingHttp.
+
+**Cluster A — BrowserContext clientCertificates — OFFEN (4 Tests):**
+`shouldWorkWithBrowserNewContext/NewPage/PersistentContext/AsContent`. Braucht
+weiterhin den Node-TLS-Proxy (`tls.createSecureContext` + net/tls-Server). Siehe
+unten — großer eigener Slice, zusammen mit dem net/tls-Server-Stack.
+
+## TestClientCertificates — Cluster A Details
 
 **Status:** `TestClientCertificates` **1/8**. Zwei getrennte Root Causes (je 4):
 
