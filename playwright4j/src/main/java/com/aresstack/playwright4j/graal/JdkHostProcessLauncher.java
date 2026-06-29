@@ -227,6 +227,13 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         Playwright4JDebug.log("[pw4j-launcher] command=" + commandLine);
         Playwright4JDebug.log("[pw4j-launcher] userDataDir=" + userDataDirectory);
 
+        // A persistent context reuses the same --user-data-dir across launches. Chromium does not
+        // always remove its DevToolsActivePort on exit, so a stale file from a previous launch can
+        // still be present here. Remove it before starting, otherwise readWebSocketEndpoint may read
+        // the previous run's (now dead) port/GUID before the new Chromium rewrites the file, leaving
+        // us connected to a defunct endpoint. For normal launches (fresh temp dir) this is a no-op.
+        deleteStaleDevToolsActivePort(userDataDirectory);
+
         OutputRingBuffer stderrBuffer = new OutputRingBuffer(STDERR_RING_BUFFER_LINES);
         Process process;
         try {
@@ -329,6 +336,17 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             return Files.createTempDirectory("playwright4j-chromium-");
         } catch (IOException exception) {
             throw new IllegalStateException("Cannot create Chromium profile directory.", exception);
+        }
+    }
+
+    private void deleteStaleDevToolsActivePort(Path userDataDirectory) {
+        if (userDataDirectory == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(userDataDirectory.resolve("DevToolsActivePort"));
+        } catch (IOException ignored) {
+            // Best effort: if we cannot remove it, readWebSocketEndpoint still falls back to stderr.
         }
     }
 
