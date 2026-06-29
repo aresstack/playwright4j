@@ -239,3 +239,44 @@ Strom, welcher Pfad, ob `hostReadFile` aufgerufen wird), und die
 `read()`/`'readable'`-Sequenz gegen den konkreten StreamDispatcher des
 gebündelten Treibers abgleichen. Eng begrenzt auf den Download-Stream,
 nicht breit am Stream-Layer umbauen (der wird von HAR/8e mitbenutzt).
+
+---
+
+## Block net/tls/connect/server — Phase 0 Bestandsaufnahme (Stand commit eeaf709)
+
+**Phase 3 erledigt (commit eeaf709):** TestChromium 5/0 — connect/connectOverCDP
+reichen jetzt Custom-Handshake-Header durch (`HostWebSocketClient.open(url, headers)`
++ JS-Transport flattet `options.headers`), und ein non-CDP-Frame killt nicht mehr
+den Treiber (Transport schließt sich bei JSON.parse-Fehler selbst → connect rejectet
+schnell statt zu hängen/crashen). `executionError` (@AfterAll-Folgefehler) verschwunden.
+
+**Noch rot — zwei unabhängige Inseln:**
+
+### ClientCertificates A (4 Tests) — voller TLS-MITM fehlt
+Fehler: `import_tls.default.createSecureContext is not a function`
+(`ClientCertificatesProxy._initSecureContexts`, `socksClientCertificatesInterceptor.js`).
+Playwright fährt einen lokalen SOCKS5-Proxy hoch, lenkt Chrome dorthin und macht pro
+Verbindung einen TLS-Man-in-the-Middle. Benötigte (im Bundle verifizierte) Primitive:
+- `tls.createSecureContext({pfx[],key[],cert[]})` — Java SSLContext (wie JdkTlsClientFactory).
+- `tls.connect({socket, host, port, ALPNProtocols, servername, secureContext, rejectUnauthorized}, cb)`
+  = TLS-CLIENT über bestehende Duplex (SSLEngine client-mode + ALPN-Aushandlung).
+- `tls.createServer({key,cert,ALPNProtocols})` + `emit('connection', socket)`
+  → `'secureConnection'(tlsSocket)` = TLS-SERVER-Handshake über Duplex (SSLEngine server-mode).
+- `net.isIP` (vorhanden), `stream.Duplex` (vorhanden), `generateSelfSignedCertificate` (utils — prüfen).
+- `http2.performServerHandshake` optional (im Bundle per `'... in http2'` geguarded).
+- Harte Nebenlücke: `net.createConnection` ist aktuell `unsupported`, wird aber von
+  `happyEyeballs.createSocket` (Outbound-Connect des SOCKS-Proxy) gebraucht.
+
+### TestBrowserTypeConnect — node.exe Launcher fehlt
+`initializationError`: Test ruft DIREKT
+`ProcessBuilder("<driverDir>/node.exe", "package/cli.js", "launch-server", "--browser", "chromium")`
+und liest die `ws://`-Zeile von stdout. driverDir hat `package/`, aber kein `node.exe`
+→ IOException ("Failed to launch server"). **Architektur-Entscheidung offen:** node.exe muss
+eine echte Windows-PE-Datei sein (ProcessBuilder ist nicht abfangbar; ein Skript namens
+node.exe läuft nicht). Optionen: (A) winziger nativer Launcher als committete Bin-Ressource
+(re-exec auf `java … GraalDriverMain --node-compat <argv>`), (B) Build-Zeit-C-Kompilat,
+(C) zurückstellen + als nativer Blocker dokumentieren. Danach Phase 2: net.Server-Konstruktor,
+net.createConnection, http.createServer + WS-Upgrade, Socket-Lifecycle.
+
+**Reihenfolge-Empfehlung:** Phase 4 (TLS) ist unabhängig vom node.exe-Thema und macht
+4 reale Tests grün → vorziehbar. Phase 1/2/5 (launch-server) hängen alle am node.exe-PE.
