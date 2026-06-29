@@ -5,7 +5,24 @@ Verbleibende Restinseln. Jeweils mit aktuellem Stand, Diagnose und Verdacht.
 Reihenfolge/Priorität:
 1. ~~Download stream: TestDownload.shouldExposeStream~~ — **GELÖST**
 2. TestBrowserTypeConnect: node.exe-Testinfrastruktur ersetzen — **offen** (s.u.)
-3. ~~HAR Zip Export: großer Stream/Zip/Finalize-Block~~ — **GELÖST** (s.u.)
+3. ~~HAR Zip Export: großer Stream/Zip/Finalize-Block~~ — **GELÖST**
+4. ~~Tracing (TestTracing / TestChromiumTracing)~~ — **weitgehend GELÖST** (s.u.)
+
+## Tracing — weitgehend gelöst
+
+**Status:** `TestTracing` **10/0** (1 Skip = PLAYWRIGHT_JAVA_SRC-Assumption).
+`TestChromiumTracing` **6/1** (war 0/7). Cluster: 16 Fehler → 1.
+
+**Gelöst durch:** fs.appendFile + fs.promises.open (FileHandle), zlib-Konstruktor-
+Formen (`new DeflateRaw`), Extraktion der Trace-Viewer-Assets in `Driver.driverDir()`,
+und `Readable.readableLength` (StreamDispatcher-Chunk-Größe, behob den
+1MB-ArrayIndexOutOfBounds beim Lesen großer Trace-Artefakte).
+
+**Verbleibend (1 Test):** `TestChromiumTracing.shouldRunWithCustomCategoriesIfProvided`
+läuft in Timeout — restriktive Kategorie (`disabled-by-default-cc.debug`) erzeugt
+einen (nahezu) leeren Trace-Stream; vermutlich ein Edge-Case beim Lesen eines
+leeren/sehr kleinen Artefakt-Streams oder `rafraf`-Timing. Kleiner Einzelfall,
+kein systemischer Block.
 
 ## ~~TestDownload.shouldExposeStream~~ — GELÖST
 
