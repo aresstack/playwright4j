@@ -32,6 +32,7 @@ public final class JdkHostHttpClient implements HostHttpClient {
     private static final Duration MAX_REQUEST_DURATION = Duration.ofSeconds(120);
 
     private final HttpClient client;
+    private final JdkTlsClientFactory tlsClientFactory = new JdkTlsClientFactory();
     private final Map<String, CompletableFuture<HostHttpResponse>> pendingRequests =
             new ConcurrentHashMap<String, CompletableFuture<HostHttpResponse>>();
 
@@ -58,11 +59,12 @@ public final class JdkHostHttpClient implements HostHttpClient {
 
     @Override
     @org.graalvm.polyglot.HostAccess.Export
-    public String startRequest(String method, String url, String headers, String bodyBase64) {
+    public String startRequest(String method, String url, String headers, String bodyBase64, String tlsOptions) {
         String requestId = UUID.randomUUID().toString();
         CompletableFuture<HostHttpResponse> future;
         try {
-            future = client.sendAsync(buildRequest(method, url, headers, bodyBase64),
+            HttpClient requestClient = tlsClientFactory.clientFor(tlsOptions, client);
+            future = requestClient.sendAsync(buildRequest(method, url, headers, bodyBase64),
                             HttpResponse.BodyHandlers.ofByteArray())
                     .handle((response, throwable) -> {
                         if (throwable != null) {

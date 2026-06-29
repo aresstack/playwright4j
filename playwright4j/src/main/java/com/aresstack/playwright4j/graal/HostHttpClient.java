@@ -22,7 +22,7 @@ public interface HostHttpClient {
      * blocked and Playwright's progress timeouts can fire while the request is in flight.
      */
     @HostAccess.Export
-    String startRequest(String method, String url, String headers, String body);
+    String startRequest(String method, String url, String headers, String body, String tlsOptions);
 
     /**
      * Returns the completed {@link HostHttpResponse} for the given request id, or {@code null}

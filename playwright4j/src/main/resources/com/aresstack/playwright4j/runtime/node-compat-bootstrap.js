@@ -2124,6 +2124,103 @@
     }
   }
 
+  // Encodes the Node https TLS options (client certificate + trust policy) for the host so the
+  // Java HTTP client can build a matching SSLContext. Used by APIRequestContext client certs.
+  // Node accepts cert/key/pfx as a value, an array, or an array of wrapper objects:
+  // key:[{pem,passphrase}], pfx:[{buf,passphrase}]; cert:[Buffer,...] (a chain).
+  function tlsEntryToBuffer(entry) {
+    if (entry === undefined || entry === null) {
+      return null;
+    }
+    if (global.Buffer.isBuffer(entry)) {
+      return entry;
+    }
+    if (entry instanceof Uint8Array) {
+      return global.Buffer.from(entry);
+    }
+    if (typeof entry === 'object') {
+      if (entry.pem !== undefined && entry.pem !== null) {
+        return tlsEntryToBuffer(entry.pem);
+      }
+      if (entry.buf !== undefined && entry.buf !== null) {
+        return tlsEntryToBuffer(entry.buf);
+      }
+      return null;
+    }
+    return global.Buffer.from(String(entry), 'utf8');
+  }
+
+  function tlsEntries(value) {
+    if (value === undefined || value === null) {
+      return [];
+    }
+    return Array.isArray(value) ? value : [value];
+  }
+
+  function tlsSingleBase64(value) {
+    const entries = tlsEntries(value);
+    if (entries.length === 0) {
+      return null;
+    }
+    const buffer = tlsEntryToBuffer(entries[0]);
+    return buffer && buffer.length > 0 ? buffer.toString('base64') : null;
+  }
+
+  function tlsChainBase64(value) {
+    const parts = [];
+    tlsEntries(value).forEach(function (entry) {
+      const buffer = tlsEntryToBuffer(entry);
+      if (buffer && buffer.length > 0) {
+        parts.push(buffer);
+        parts.push(global.Buffer.from('\n', 'utf8'));
+      }
+    });
+    return parts.length > 0 ? global.Buffer.concat(parts).toString('base64') : null;
+  }
+
+  function tlsPassphrase(options) {
+    if (options.passphrase !== undefined && options.passphrase !== null) {
+      return String(options.passphrase);
+    }
+    const candidates = tlsEntries(options.pfx).concat(tlsEntries(options.key));
+    for (let index = 0; index < candidates.length; index++) {
+      const entry = candidates[index];
+      if (entry && typeof entry === 'object' && entry.passphrase !== undefined && entry.passphrase !== null) {
+        return String(entry.passphrase);
+      }
+    }
+    return null;
+  }
+
+  function extractTlsOptions(options) {
+    const pfx = tlsSingleBase64(options.pfx);
+    const cert = tlsChainBase64(options.cert);
+    const key = tlsSingleBase64(options.key);
+    const rejectUnauthorized = options.rejectUnauthorized !== false;
+    if (!pfx && !cert && !key && rejectUnauthorized) {
+      return '';
+    }
+    const tls = { rejectUnauthorized: rejectUnauthorized };
+    if (pfx) {
+      tls.pfx = pfx;
+    }
+    if (cert) {
+      tls.cert = cert;
+    }
+    if (key) {
+      tls.key = key;
+    }
+    const passphrase = tlsPassphrase(options);
+    if (passphrase !== null) {
+      tls.passphrase = passphrase;
+    }
+    const ca = tlsChainBase64(options.ca);
+    if (ca) {
+      tls.ca = ca;
+    }
+    return JSON.stringify(tls);
+  }
+
   function createHttpRequest(defaultProtocol, first, second, third) {
     // Node signatures: request(url[, options][, cb]) or request(options[, cb]).
     let urlString = null;
@@ -2212,7 +2309,7 @@
         const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
         // Non-blocking: the response is delivered later via __playwright4jDrainHttp, so the
         // JS thread stays free and Playwright's timeout/abort can take effect mid-request.
-        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64);
+        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options));
       } catch (error) {
         Promise.resolve().then(function () {
           request.emit('error', error);
