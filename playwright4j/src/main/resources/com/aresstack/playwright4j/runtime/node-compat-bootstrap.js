@@ -4,9 +4,11 @@
 
   global.global = global;
 
-  // Keep all console output off the protocol channel (System.out is reserved for the
-  // length-prefixed driver protocol). Route everything to the host stderr pipe.
-  function consoleWrite(args) {
+  // In the normal driver mode System.out is reserved for the length-prefixed protocol, so all
+  // console output is routed to the host stderr pipe. In --node-compat mode (cli.js launch-server)
+  // console.log/info is real stdout - that is where the ws:// endpoint the caller reads is printed -
+  // while console.warn/error stay on stderr, matching Node.
+  function consoleWrite(args, toStdout) {
     try {
       const text = Array.prototype.map.call(args, function (value) {
         if (typeof value === 'string') {
@@ -18,19 +20,23 @@
           return String(value);
         }
       }).join(' ');
-      host.driverPipe().writeErr(text + '\n');
+      if (toStdout && global.__playwright4jNodeCompat) {
+        host.driverPipe().writeOut(text + '\n');
+      } else {
+        host.driverPipe().writeErr(text + '\n');
+      }
     } catch (error) {
       // Diagnostics must never break the run.
     }
   }
   global.console = {
-    log: function () { consoleWrite(arguments); },
-    info: function () { consoleWrite(arguments); },
-    warn: function () { consoleWrite(arguments); },
-    error: function () { consoleWrite(arguments); },
-    debug: function () { consoleWrite(arguments); },
-    trace: function () { consoleWrite(arguments); },
-    dir: function () { consoleWrite(arguments); },
+    log: function () { consoleWrite(arguments, true); },
+    info: function () { consoleWrite(arguments, true); },
+    warn: function () { consoleWrite(arguments, false); },
+    error: function () { consoleWrite(arguments, false); },
+    debug: function () { consoleWrite(arguments, true); },
+    trace: function () { consoleWrite(arguments, false); },
+    dir: function () { consoleWrite(arguments, true); },
     assert: function () {}
   };
 
@@ -2918,6 +2924,20 @@
 
       toString() {
         return this.href;
+      }
+    };
+  }
+
+  // URL.canParse (used by LocalUtilsDispatcher.connect to validate a ws endpoint). Add it whether
+  // URL is our polyfill or a native class that predates canParse.
+  if (typeof global.URL.canParse !== 'function') {
+    global.URL.canParse = function (url, base) {
+      try {
+        // eslint-disable-next-line no-new
+        new global.URL(String(url), base);
+        return true;
+      } catch (error) {
+        return false;
       }
     };
   }

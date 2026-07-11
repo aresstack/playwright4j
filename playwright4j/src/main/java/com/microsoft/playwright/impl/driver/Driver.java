@@ -112,6 +112,11 @@ public final class Driver {
                 lines.add("-D" + property + "=" + value);
             }
         }
+        // Keep the launch-server child's debug log separate from the parent driver's shared log.
+        if (System.getProperty("playwright4j.debug") != null && !System.getProperty("playwright4j.debug").trim().isEmpty()) {
+            lines.add("-Dplaywright4j.debug.file="
+                    + Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-launchserver.log"));
+        }
         lines.add("com.aresstack.playwright4j.driver.GraalDriverMain");
         lines.add("--node-compat");
         return lines;
