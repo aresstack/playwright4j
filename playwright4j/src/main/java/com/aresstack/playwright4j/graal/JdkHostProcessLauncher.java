@@ -306,7 +306,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
                 }
                 continue;
             }
-            result.add(argument);
+            result.add(unwrapQuotedFlagValue(argument));
         }
 
         if (!containsRemoteDebuggingPort(result)) {
@@ -314,6 +314,25 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         }
 
         return result;
+    }
+
+    /**
+     * Playwright wraps some flag values in literal double quotes to protect embedded spaces from a
+     * shell, e.g. {@code --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"} (added for a
+     * SOCKS proxy, as with BrowserContext client certificates). Node's Windows argument quoting
+     * copes with such embedded quotes, but Java's ProcessBuilder mangles an argv element that
+     * contains both spaces and quotes, so Chromium ends up seeing the value split into extra
+     * positional arguments and aborts with "Multiple targets are not supported". Strip the wrapping
+     * quotes so the value travels as a single argv element; ProcessBuilder then quotes the whole
+     * argument itself.
+     */
+    private static String unwrapQuotedFlagValue(String argument) {
+        int quoteStart = argument.indexOf("=\"");
+        if (quoteStart >= 0 && argument.endsWith("\"") && argument.length() > quoteStart + 2) {
+            return argument.substring(0, quoteStart + 1)
+                    + argument.substring(quoteStart + 2, argument.length() - 1);
+        }
+        return argument;
     }
 
     private boolean containsRemoteDebuggingPort(List<String> arguments) {
