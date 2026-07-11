@@ -3364,8 +3364,12 @@
       fd: 1,
       isTTY: false,
       write: function (chunk) {
-        // process.stdout must never reach the length-prefixed protocol channel, which is
-        // driven exclusively by the host pipe's writeMessage. Route it to stderr.
+        // In --node-compat mode (e.g. cli.js launch-server) real stdout carries the ws:// endpoint
+        // line the caller reads, so route it to the host's raw stdout. In the normal driver mode
+        // stdout is the length-prefixed protocol channel, so process.stdout must go to stderr.
+        if (global.__playwright4jNodeCompat) {
+          return host.driverPipe().writeOut(String(chunk));
+        }
         return host.driverPipe().writeErr(String(chunk));
       }
     },
@@ -3382,7 +3386,12 @@
         callback.apply(null, args);
       });
     },
-    exit: function () {
+    exit: function (code) {
+      // Record the requested exit for the --node-compat pump (e.g. cli.js launch-server). In the
+      // normal driver-pipe mode nothing reads these, so exit stays a no-op there (the driver JVM
+      // must not die mid-command).
+      global.__playwright4jExitCode = (code === undefined || code === null) ? 0 : (code | 0);
+      global.__playwright4jExitRequested = true;
       return undefined;
     },
     kill: function () {

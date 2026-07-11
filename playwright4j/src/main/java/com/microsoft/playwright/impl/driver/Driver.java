@@ -74,7 +74,47 @@ public final class Driver {
     public Path driverDir() {
         Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
         ensurePackageExtracted(dir);
+        ensureNodeLauncher(dir);
         return dir;
+    }
+
+    /**
+     * Places the native node.exe compatibility launcher (and its config) next to package/, so that
+     * tests which spawn {@code <driverDir>/node.exe <driverDir>/package/cli.js launch-server ...}
+     * directly (e.g. TestBrowserTypeConnect) re-exec our GraalJS driver in --node-compat mode. The
+     * config bakes in this JVM's java executable, classpath and forwarded system properties so the
+     * launcher can start the driver without knowing them. No-op (with a clear error left for launch
+     * time) if the native launcher was not built (non-Windows / no C toolchain at build).
+     */
+    private void ensureNodeLauncher(Path driverDir) {
+        String launcherName = isWindows() ? "node.exe" : "node";
+        try (InputStream launcher = Driver.class.getClassLoader()
+                .getResourceAsStream("com/aresstack/playwright4j/launcher/node.exe")) {
+            if (launcher == null) {
+                return; // Not built on this platform; a launch-server test will fail with ENOENT.
+            }
+            Files.createDirectories(driverDir);
+            Files.copy(launcher, driverDir.resolve(launcherName), StandardCopyOption.REPLACE_EXISTING);
+            Files.write(driverDir.resolve("node-launcher.cfg"), nodeLauncherConfigLines());
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot install node.exe launcher into " + driverDir, exception);
+        }
+    }
+
+    private java.util.List<String> nodeLauncherConfigLines() {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        lines.add(javaExecutable());
+        lines.add("-cp");
+        lines.add(System.getProperty("java.class.path"));
+        for (String property : FORWARDED_SYSTEM_PROPERTIES) {
+            String value = System.getProperty(property);
+            if (value != null && !value.trim().isEmpty()) {
+                lines.add("-D" + property + "=" + value);
+            }
+        }
+        lines.add("com.aresstack.playwright4j.driver.GraalDriverMain");
+        lines.add("--node-compat");
+        return lines;
     }
 
     /**

@@ -32,6 +32,59 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+// Build the native node.exe compatibility launcher (see src/main/native/node-launcher.c and
+// Driver.driverDir()). Windows + a MinGW-w64 gcc only; elsewhere the resource is simply absent and
+// Driver reports a clear error if a test actually needs it. The launcher is a tiny standalone PE
+// (KERNEL32 + msvcrt only) that re-execs the Java GraalJS driver in --node-compat mode.
+def nodeLauncherOutputDir = layout.buildDirectory.dir('generated/node-launcher')
+def nodeLauncherResourcePath = 'com/aresstack/playwright4j/launcher/node.exe'
+
+static def findMingwGcc() {
+    def candidates = [
+            'C:\\msys64\\mingw64\\bin\\x86_64-w64-mingw32-gcc.exe',
+            'C:\\msys64\\mingw64\\bin\\gcc.exe',
+            'x86_64-w64-mingw32-gcc',
+            'gcc'
+    ]
+    for (candidate in candidates) {
+        try {
+            def probe = new ProcessBuilder(candidate, '--version').redirectErrorStream(true).start()
+            probe.inputStream.text
+            if (probe.waitFor() == 0) {
+                return candidate
+            }
+        } catch (ignored) {
+        }
+    }
+    return null
+}
+
+tasks.register('compileNodeLauncher') {
+    description = 'Compiles the native node.exe compatibility launcher (Windows/MinGW only).'
+    def source = file('src/main/native/node-launcher.c')
+    def outputExe = nodeLauncherOutputDir.get().file(nodeLauncherResourcePath).asFile
+    inputs.file(source)
+    outputs.file(outputExe)
+    onlyIf {
+        System.getProperty('os.name', '').toLowerCase().contains('win') && findMingwGcc() != null
+    }
+    doLast {
+        def gcc = findMingwGcc()
+        outputExe.parentFile.mkdirs()
+        def process = new ProcessBuilder(gcc, '-O2', '-s', '-o', outputExe.absolutePath, source.absolutePath)
+                .redirectErrorStream(true).start()
+        def output = process.inputStream.text
+        def code = process.waitFor()
+        if (code != 0) {
+            throw new GradleException("node.exe launcher compile failed (${gcc}, exit ${code}):\n${output}")
+        }
+        logger.lifecycle("Built node.exe launcher via ${gcc} -> ${outputExe}")
+    }
+}
+
+sourceSets.main.resources.srcDir(nodeLauncherOutputDir)
+tasks.named('processResources') { dependsOn('compileNodeLauncher') }
+
 test {
     useJUnitPlatform()
     systemProperty 'playwright4j.chromeSpike', findProperty('playwright4j.chromeSpike') ?: 'false'

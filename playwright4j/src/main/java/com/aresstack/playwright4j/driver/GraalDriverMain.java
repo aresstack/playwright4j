@@ -49,20 +49,32 @@ public final class GraalDriverMain {
                 processLauncher.closeAll();
             }
         }, "playwright4j-driver-shutdown"));
+        // --node-compat runs the bundled cli.js as a Node CLI (e.g. `cli.js launch-server ...`),
+        // spawned by tests that invoke <driverDir>/node.exe directly. There is no length-prefixed
+        // protocol on stdout here; process.stdout is the caller's real stdout (the ws:// endpoint).
+        boolean nodeCompat = args.length > 0 && "--node-compat".equals(args[0]);
+
+        HostDriverPipe driverPipe = nodeCompat
+                ? new RawIoDriverPipe(System.out, System.err)
+                : new StandardIoDriverPipe(System.out, System.err);
         Playwright4JHost host = new Playwright4JHost(
                 new FixedHostEnvironment(platform(), architecture(), Paths.get("").toAbsolutePath().toString(), environment),
                 new LocalHostFileSystem(),
                 new JdkHostHttpClient(),
                 new JdkHostWebSocketClient(),
-                new StandardIoDriverPipe(System.out, System.err),
+                driverPipe,
                 processLauncher,
                 new RecordingMissingHostFunctionReporter());
 
         try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {
             runtime.loadNodeCompatibilityLayer();
-            runtime.setProcessArguments(processArguments(driverBundleSource, args));
-            runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
-            pumpInput(runtime);
+            if (nodeCompat) {
+                runNodeCompat(runtime, driverBundleSource, args);
+            } else {
+                runtime.setProcessArguments(processArguments(driverBundleSource, args));
+                runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
+                pumpInput(runtime);
+            }
         } finally {
             processLauncher.closeAll();
         }
@@ -71,6 +83,48 @@ public final class GraalDriverMain {
         // alive by lingering non-daemon threads (e.g. java.net.http selector threads).
         System.out.flush();
         System.exit(0);
+    }
+
+    /**
+     * Runs the bundled cli.js as a Node CLI. process.argv is {@code [node, <cli.js path>, <args...>]};
+     * the bundled cli script is evaluated (its require() resolution uses the packaged resources). The
+     * pump keeps the event loop alive so a long-running command (launch-server's ws server, browser
+     * CDP, timers) is serviced until the process is killed or the guest calls process.exit.
+     */
+    private static void runNodeCompat(GraalPlaywrightRuntime runtime, PlaywrightDriverBundleSource driverBundleSource, String[] args) {
+        runtime.evaluate("playwright4j-node-compat.js", "globalThis.__playwright4jNodeCompat = true;");
+
+        String[] nodeArgv = new String[args.length];
+        nodeArgv[0] = "node";
+        System.arraycopy(args, 1, nodeArgv, 1, args.length - 1);
+        runtime.setProcessArguments(nodeArgv);
+
+        runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
+
+        while (true) {
+            if (nodeCompatExitRequested(runtime)) {
+                break;
+            }
+            int fired = runtime.runDueTimers();
+            int drained = runtime.drainTransports();
+            if (fired == 0 && drained == 0) {
+                sleepQuietly(5L);
+            }
+        }
+
+        System.out.flush();
+        System.err.flush();
+        System.exit(nodeCompatExitCode(runtime));
+    }
+
+    private static boolean nodeCompatExitRequested(GraalPlaywrightRuntime runtime) {
+        org.graalvm.polyglot.Value value = runtime.readGlobal("__playwright4jExitRequested");
+        return value != null && !value.isNull() && value.isBoolean() && value.asBoolean();
+    }
+
+    private static int nodeCompatExitCode(GraalPlaywrightRuntime runtime) {
+        org.graalvm.polyglot.Value value = runtime.readGlobal("__playwright4jExitCode");
+        return value != null && !value.isNull() && value.fitsInInt() ? value.asInt() : 0;
     }
 
     private static String[] processArguments(PlaywrightDriverBundleSource driverBundleSource, String[] args) {
