@@ -3144,9 +3144,96 @@
   };
   modules.net.connect = modules.net.createConnection;
 
-  // Minimal HTTP server backing http.createServer, used by Playwright's WebSocket-based
-  // BrowserServer (browser.bind). Listen/address/close are real (delegated to a host TCP server);
-  // request/upgrade parsing is not implemented (the bind contract test never connects a client).
+  function indexOfDoubleCRLF(buffer) {
+    for (let index = 0; index + 3 < buffer.length; index++) {
+      if (buffer[index] === 13 && buffer[index + 1] === 10 && buffer[index + 2] === 13 && buffer[index + 3] === 10) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  function parseHttpRequestHead(headerText, socket) {
+    const lines = headerText.split('\r\n');
+    const requestLine = (lines[0] || '').split(' ');
+    const headers = {};
+    const rawHeaders = [];
+    for (let index = 1; index < lines.length; index++) {
+      const line = lines[index];
+      if (!line) {
+        continue;
+      }
+      const colon = line.indexOf(':');
+      if (colon < 0) {
+        continue;
+      }
+      const name = line.substring(0, colon).trim();
+      const value = line.substring(colon + 1).trim();
+      rawHeaders.push(name, value);
+      headers[name.toLowerCase()] = value;
+    }
+    const request = new EventEmitter();
+    request.method = requestLine[0] || 'GET';
+    request.url = requestLine[1] || '/';
+    request.httpVersion = (requestLine[2] || 'HTTP/1.1').replace('HTTP/', '');
+    request.headers = headers;
+    request.rawHeaders = rawHeaders;
+    request.socket = socket;
+    request.connection = socket;
+    return request;
+  }
+
+  function createServerResponse(socket) {
+    const response = new EventEmitter();
+    response.statusCode = 200;
+    response.headersSent = false;
+    const headers = {};
+    response.setHeader = function (name, value) { headers[String(name).toLowerCase()] = value; return this; };
+    response.getHeader = function (name) { return headers[String(name).toLowerCase()]; };
+    response.writeHead = function (statusCode, statusMessageOrHeaders, maybeHeaders) {
+      response.statusCode = statusCode;
+      const extra = typeof statusMessageOrHeaders === 'object' ? statusMessageOrHeaders : maybeHeaders;
+      if (extra) {
+        for (const key of Object.keys(extra)) {
+          headers[key.toLowerCase()] = extra[key];
+        }
+      }
+      return this;
+    };
+    let wroteHead = false;
+    const flushHead = function () {
+      if (wroteHead) {
+        return;
+      }
+      wroteHead = true;
+      response.headersSent = true;
+      let head = 'HTTP/1.1 ' + response.statusCode + '\r\n';
+      for (const key of Object.keys(headers)) {
+        head += key + ': ' + headers[key] + '\r\n';
+      }
+      head += '\r\n';
+      socket.write(global.Buffer.from(head, 'latin1'));
+    };
+    response.write = function (chunk) {
+      flushHead();
+      socket.write(global.Buffer.isBuffer(chunk) ? chunk : global.Buffer.from(String(chunk)));
+      return true;
+    };
+    response.end = function (chunk) {
+      flushHead();
+      if (chunk !== undefined && chunk !== null) {
+        socket.write(global.Buffer.isBuffer(chunk) ? chunk : global.Buffer.from(String(chunk)));
+      }
+      response.emit('finish');
+      return this;
+    };
+    return response;
+  }
+
+  // Minimal HTTP server backing http.createServer. Listen/address/close are real (delegated to a
+  // host TCP server). Incoming connections are parsed just far enough to dispatch 'request' and, for
+  // WebSocket clients, 'upgrade' (request, socket, head) — the bundled ws library then performs the
+  // handshake/framing over the raw socket (used by launch-server's WSServer).
   function createHttpServer(requestListener) {
     const netServer = new NetServer();
     const server = new EventEmitter();
@@ -3156,6 +3243,23 @@
     }
     netServer.on('connection', function (socket) {
       server.emit('connection', socket);
+      let buffer = global.Buffer.alloc(0);
+      const onData = function (chunk) {
+        buffer = global.Buffer.concat([buffer, chunk]);
+        const headerEnd = indexOfDoubleCRLF(buffer);
+        if (headerEnd < 0) {
+          return; // headers not complete yet
+        }
+        socket.removeListener('data', onData);
+        const request = parseHttpRequestHead(buffer.subarray(0, headerEnd).toString('latin1'), socket);
+        const head = buffer.subarray(headerEnd + 4);
+        if (String(request.headers['upgrade'] || '').toLowerCase() === 'websocket') {
+          server.emit('upgrade', request, socket, head);
+        } else {
+          server.emit('request', request, createServerResponse(socket));
+        }
+      };
+      socket.on('data', onData);
     });
     server.listen = function () {
       const args = Array.prototype.slice.call(arguments);
