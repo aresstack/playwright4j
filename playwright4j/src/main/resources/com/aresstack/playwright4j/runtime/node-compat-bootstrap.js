@@ -4377,6 +4377,7 @@
         this.headers = [];
         this.onmessage = undefined;
         this.onclose = undefined;
+        this.__closed = false;
         // One message per drain so the guest fully drains microtasks between CDP messages
         // (correct event ordering), and non-blocking send (responses arrive via drain),
         // mirroring the browser pipe transport.
@@ -4422,6 +4423,14 @@
           });
         }
         if (this._inbox.length === 0) {
+          // No pending messages: if the peer closed the connection (server closed / killed), surface
+          // onclose exactly once so Playwright fires the browser 'disconnected' event and pending
+          // operations reject instead of hanging.
+          if (!this.__closed && host.webSocketClient().isClosed(this.connectionId)) {
+            this.__closed = true;
+            this.close();
+            return 1;
+          }
           return 0;
         }
         const message = this._inbox.shift();

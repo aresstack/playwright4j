@@ -171,6 +171,13 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         }
     }
 
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
+    public boolean isClosed(String connectionId) {
+        Connection connection = connections.get(connectionId);
+        return connection == null || connection.closed;
+    }
+
     private Connection connection(String connectionId) {
         Connection connection = connections.get(connectionId);
 
@@ -191,6 +198,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         private final LinkedBlockingQueue<String> messages = new LinkedBlockingQueue<>();
         private final StringBuilder partialFrame = new StringBuilder();
         private volatile WebSocket webSocket;
+        private volatile boolean closed;
 
         void attach(WebSocket webSocket) {
             this.webSocket = webSocket;
@@ -224,16 +232,16 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         }
 
         @Override
-        public void onError(WebSocket webSocket, Throwable error) {
-            messages.offer("{\"error\":{\"message\":" + quoteJson(error.getMessage()) + "}}");
+        public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            // The peer closed the WebSocket (e.g. the launch-server was closed or killed). Mark the
+            // connection closed so the transport can surface onclose -> Playwright fires disconnected.
+            closed = true;
+            return null;
         }
 
-        private static String quoteJson(String value) {
-            if (value == null) {
-                return "null";
-            }
-
-            return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        @Override
+        public void onError(WebSocket webSocket, Throwable error) {
+            closed = true;
         }
     }
 }
