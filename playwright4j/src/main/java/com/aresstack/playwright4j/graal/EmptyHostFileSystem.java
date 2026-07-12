@@ -30,6 +30,11 @@ public final class EmptyHostFileSystem implements HostFileSystem {
 
     @Override
     @HostAccess.Export
+    public void setLastModifiedMillis(String path, long millis) {
+    }
+
+    @Override
+    @HostAccess.Export
     public long sizeBytes(String path) {
         return 0L;
     }

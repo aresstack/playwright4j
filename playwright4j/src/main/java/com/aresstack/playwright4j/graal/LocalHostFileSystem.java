@@ -48,6 +48,16 @@ public final class LocalHostFileSystem implements HostFileSystem {
 
     @Override
     @HostAccess.Export
+    public void setLastModifiedMillis(String path, long millis) {
+        try {
+            Files.setLastModifiedTime(Paths.get(path), java.nio.file.attribute.FileTime.fromMillis(millis));
+        } catch (IOException ignored) {
+            // Best effort; matching Node's fs.utimes which tolerates missing targets loosely.
+        }
+    }
+
+    @Override
+    @HostAccess.Export
     public long sizeBytes(String path) {
         try {
             return Files.size(Paths.get(path));

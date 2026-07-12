@@ -12,6 +12,9 @@ public interface HostFileSystem {
     /** Last-modified time in epoch milliseconds, or 0 if unavailable. */
     long lastModifiedMillis(String path);
 
+    /** Sets the file's last-modified time (epoch milliseconds), for Node's fs.utimes. */
+    void setLastModifiedMillis(String path, long millis);
+
     /** File size in bytes, or 0 if unavailable. */
     long sizeBytes(String path);
 

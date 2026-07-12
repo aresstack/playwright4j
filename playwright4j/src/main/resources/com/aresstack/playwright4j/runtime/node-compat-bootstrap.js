@@ -311,6 +311,19 @@
     return error;
   }
 
+  // Converts an fs.utimes time argument to epoch milliseconds. Node accepts a Date, a numeric
+  // seconds-since-epoch value, or a parseable string.
+  function toEpochMillis(value) {
+    if (value instanceof Date) {
+      return value.getTime();
+    }
+    if (typeof value === 'number') {
+      return Math.round(value * 1000);
+    }
+    const parsed = Date.parse(String(value));
+    return isNaN(parsed) ? Date.now() : parsed;
+  }
+
   function hostStat(path) {
     const text = String(path);
     if (!hostExists(text)) {
@@ -473,6 +486,19 @@
     appendFileSync: function (path, content) {
       hostAppendFile(path, content);
     },
+    utimesSync: function (path, atime, mtime) {
+      host.fileSystem().setLastModifiedMillis(String(path), toEpochMillis(mtime));
+    },
+    utimes: function (path, atime, mtime, callback) {
+      Promise.resolve().then(function () {
+        try {
+          host.fileSystem().setLastModifiedMillis(String(path), toEpochMillis(mtime));
+          if (callback) { callback(null); }
+        } catch (error) {
+          if (callback) { callback(error); }
+        }
+      });
+    },
     appendFile: function (path, content, options, callback) {
       callback = typeof options === 'function' ? options : callback;
       Promise.resolve().then(function () {
@@ -588,6 +614,10 @@
       },
       appendFile: async function (path, content) {
         hostAppendFile(path, content);
+        return undefined;
+      },
+      utimes: async function (path, atime, mtime) {
+        host.fileSystem().setLastModifiedMillis(String(path), toEpochMillis(mtime));
         return undefined;
       },
       open: async function (path, flags) {
