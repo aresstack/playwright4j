@@ -887,6 +887,25 @@
     return handled;
   };
 
+  // Recognises a non-Chromium browser launch so it can be rejected fast (see spawn below).
+  // WebKit and Firefox are identified by their pipe-transport flags; the engine name is taken
+  // from the browser binary's directory (e.g. .../webkit-2272/Playwright.exe) for a clear message.
+  function detectUnsupportedBrowserEngine(command, argList) {
+    const hasWebKitPipe = argList.indexOf('--inspector-pipe') >= 0;
+    const hasFirefoxPipe = argList.indexOf('-juggler-pipe') >= 0 || argList.indexOf('--juggler-pipe') >= 0;
+    if (!hasWebKitPipe && !hasFirefoxPipe) {
+      return null;
+    }
+    const normalized = String(command || '').replace(/\\/g, '/').toLowerCase();
+    if (normalized.indexOf('/webkit-') >= 0 || hasWebKitPipe) {
+      return 'webkit';
+    }
+    if (normalized.indexOf('/firefox-') >= 0 || hasFirefoxPipe) {
+      return 'firefox';
+    }
+    return 'non-chromium';
+  }
+
   modules.child_process = {
     spawn: function (command, args, options) {
       const argList = (args || []).map(function (value) { return String(value); });
@@ -899,6 +918,17 @@
         return value.indexOf('--remote-debugging') === 0;
       });
       if (!isChromium) {
+        // WebKit (--inspector-pipe) and Firefox (-juggler-pipe) drive their protocol over fd 3/4
+        // pipes that this Chromium-only runtime does not wire up. Spawning such a browser succeeds
+        // but its transport handshake never completes, so Playwright's launch blocks on its
+        // 180s timeout (a full-sweep hang). Reject fast with a clear error instead — the launch
+        // promise then rejects promptly and no doomed process is left running.
+        const unsupportedEngine = detectUnsupportedBrowserEngine(command, argList);
+        if (unsupportedEngine) {
+          throw new Error('Unsupported browser engine: ' + unsupportedEngine
+            + '. playwright4j runs a Chromium-only runtime; only the chromium browser'
+            + ' (chrome / msedge channels) is available.');
+        }
         const generalId = String(host.processLauncher().spawnProcess(String(command), joinedArguments, workingDirectory));
         return createGeneralProcess(generalId);
       }
