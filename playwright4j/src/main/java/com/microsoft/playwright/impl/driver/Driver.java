@@ -49,6 +49,10 @@ public final class Driver {
         command.add(javaExecutable());
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
+        // Force IPv4 so a "localhost" ws endpoint (e.g. from launch-server) resolves to 127.0.0.1,
+        // matching the host net server's IPv4 bind; otherwise java.net.http may try ::1 first and
+        // fail without falling back (flaky connect on reconnection).
+        command.add("-Djava.net.preferIPv4Stack=true");
         for (String property : FORWARDED_SYSTEM_PROPERTIES) {
             String value = System.getProperty(property);
             if (value != null && !value.trim().isEmpty()) {
@@ -94,7 +98,14 @@ public final class Driver {
                 return; // Not built on this platform; a launch-server test will fail with ENOENT.
             }
             Files.createDirectories(driverDir);
-            Files.copy(launcher, driverDir.resolve(launcherName), StandardCopyOption.REPLACE_EXISTING);
+            Path target = driverDir.resolve(launcherName);
+            // The launcher binary is identical across runs. A test that starts its own launch-server
+            // while a previous one is still running (which holds node.exe open) would otherwise fail
+            // to overwrite it (Windows AccessDeniedException). Only write it when it is missing;
+            // the config (never held open) is rewritten each time so the classpath stays current.
+            if (!Files.exists(target)) {
+                Files.copy(launcher, target, StandardCopyOption.REPLACE_EXISTING);
+            }
             Files.write(driverDir.resolve("node-launcher.cfg"), nodeLauncherConfigLines());
         } catch (IOException exception) {
             throw new IllegalStateException("Cannot install node.exe launcher into " + driverDir, exception);
@@ -106,6 +117,7 @@ public final class Driver {
         lines.add(javaExecutable());
         lines.add("-cp");
         lines.add(System.getProperty("java.class.path"));
+        lines.add("-Djava.net.preferIPv4Stack=true");
         for (String property : FORWARDED_SYSTEM_PROPERTIES) {
             String value = System.getProperty(property);
             if (value != null && !value.trim().isEmpty()) {
