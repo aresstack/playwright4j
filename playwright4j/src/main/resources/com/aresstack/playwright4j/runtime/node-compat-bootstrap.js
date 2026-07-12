@@ -4016,6 +4016,30 @@
       return offset + byteLength;
     }
 
+    // Big-endian multi-byte write. The bundled `ws` Sender frames any payload >= 65536 bytes with a
+    // 64-bit length field written via buf.writeUIntBE(length, 4, 6); without this method every
+    // WebSocket frame >= 64 KiB (e.g. a video/trace artifact chunk read back over browserType.connect)
+    // throws in Sender.frame and is silently never sent, hanging the client on the read response.
+    writeUIntBE(value, offset, byteLength) {
+      offset = offset || 0;
+      let v = value;
+      for (let index = byteLength - 1; index >= 0; index--) {
+        this[offset + index] = v & 0xff;
+        v = Math.floor(v / 256);
+      }
+      return offset + byteLength;
+    }
+
+    writeBigUInt64BE(value, offset) {
+      offset = offset || 0;
+      let v = typeof value === 'bigint' ? value : BigInt(value);
+      for (let index = 7; index >= 0; index--) {
+        this[offset + index] = Number(v & 0xffn);
+        v >>= 8n;
+      }
+      return offset + 8;
+    }
+
     readUInt8(offset) {
       return this[offset || 0];
     }
