@@ -4103,6 +4103,32 @@
     return normalizedName.substring(0, lastSeparatorIndex);
   }
 
+  // Resolves a bare "playwright-core/<rel>" specifier to a bundled package resource, or null.
+  function resolvePackageModule(name) {
+    if (!global.__playwright4jDriverBundleSource) {
+      return null;
+    }
+    let relative = null;
+    if (name.indexOf('playwright-core/') === 0) {
+      relative = name.substring('playwright-core/'.length);
+    } else if (name === 'playwright-core') {
+      relative = 'index';
+    } else {
+      return null;
+    }
+    const base = normalizeResourceName(global.__playwright4jDriverBundleSource.packageResourceName(relative));
+    const hasExplicitExtension = /\.[^/]+$/.test(base);
+    const candidates = hasExplicitExtension
+      ? [base]
+      : [base + '.js', base + '.json', base + '/index.js', base];
+    for (let index = 0; index < candidates.length; index++) {
+      if (global.__playwright4jDriverBundleSource.hasResource(candidates[index])) {
+        return candidates[index];
+      }
+    }
+    return null;
+  }
+
   function resolveRelativeModule(name, parentResourceName) {
     if (!global.__playwright4jDriverBundleSource) {
       return null;
@@ -4592,6 +4618,12 @@
       return module.exports;
     }
 
+    // Route dynamic import() through our CommonJS loader. GraalJS's native dynamic import needs a
+    // module loader / IO (disabled here), so `await import("playwright-core/lib/zipBundle")` (used by
+    // the trace-zip path) would otherwise throw "Operation is not allowed". Only a bare import(
+    // call is rewritten - never `.import(` (a method) or `xImport(`.
+    source = source.replace(/(^|[^\w.$])import\s*\(/g, '$1__playwright4jDynamicImport(');
+
     const factory = new Function('require', 'module', 'exports', '__filename', '__dirname', source);
 
     try {
@@ -4621,6 +4653,13 @@
         if (resolvedResourceName) {
           return loadCommonJsModule(resolvedResourceName);
         }
+      }
+
+      // Bare "playwright-core/..." specifiers resolve to the bundled package (used by the driver's
+      // own dynamic import of playwright-core/lib/zipBundle).
+      const packageResource = resolvePackageModule(name);
+      if (packageResource) {
+        return loadCommonJsModule(packageResource);
       }
 
       reportMissing('require(' + name + ')');
@@ -4656,6 +4695,29 @@
     }
 
     global.process.stdin.emit('data', String(message));
+  };
+
+  // Node-compat dynamic import(): resolve via our CommonJS require and present a Node-style ES
+  // module namespace (the exports, plus a `default`). Rewritten import() calls target this.
+  global.__playwright4jDynamicImport = function (specifier) {
+    return new Promise(function (resolve, reject) {
+      try {
+        const loaded = global.require(String(specifier));
+        if (loaded && loaded.__esModule) {
+          resolve(loaded);
+          return;
+        }
+        const namespace = { default: loaded };
+        if (loaded && typeof loaded === 'object') {
+          for (const key of Object.keys(loaded)) {
+            namespace[key] = loaded[key];
+          }
+        }
+        resolve(namespace);
+      } catch (error) {
+        reject(error);
+      }
+    });
   };
 
   global.require = createRequire('');

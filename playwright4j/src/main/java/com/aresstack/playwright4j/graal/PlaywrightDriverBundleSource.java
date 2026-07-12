@@ -26,6 +26,7 @@ public final class PlaywrightDriverBundleSource {
         return readRequiredResource(cliScriptResourceName());
     }
 
+    @org.graalvm.polyglot.HostAccess.Export
     public String packageResourceName(String packageRelativePath) {
         return "driver/" + platformDirectory() + "/package/" + packageRelativePath;
     }
