@@ -86,6 +86,13 @@ tasks.register('upstreamTest', Test) {
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
     environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
 
+    // TestJavaSourceLocationInConstructor (and Playwright-Java's StackTraceCollector generally)
+    // reads Java sources from PLAYWRIGHT_JAVA_SRC to embed them into `sources`-enabled traces and
+    // to verify them. It defaults to the relative "src/test/java", which resolves against this
+    // task's workingDir (build/upstreamTestCwd) and does not exist there, so StackTraceCollector
+    // throws at construction. Point it at the imported upstream sources' absolute root instead.
+    environment 'PLAYWRIGHT_JAVA_SRC', file('src/upstreamTest/java').absolutePath
+
     systemProperty 'playwright4j.debug', findProperty('playwright4j.debug') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
 
