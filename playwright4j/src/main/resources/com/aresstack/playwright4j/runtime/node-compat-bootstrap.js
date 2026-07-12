@@ -4428,7 +4428,7 @@
           // operations reject instead of hanging.
           if (!this.__closed && host.webSocketClient().isClosed(this.connectionId)) {
             this.__closed = true;
-            this.close();
+            this.close(host.webSocketClient().closeReason(this.connectionId));
             return 1;
           }
           return 0;
@@ -4454,7 +4454,7 @@
         return 1;
       }
 
-      close() {
+      close(reason) {
         const index = activeTransports.indexOf(this);
         if (index >= 0) {
           activeTransports.splice(index, 1);
@@ -4462,7 +4462,9 @@
         host.webSocketClient().close(this.connectionId);
 
         if (this.onclose) {
-          this.onclose('playwright4j');
+          // Pass the peer's close reason through (e.g. "Browser has been closed") so pending
+          // operations reject with the real cause; empty/undefined lets Playwright pick its default.
+          this.onclose(reason ? reason : undefined);
         }
       }
 

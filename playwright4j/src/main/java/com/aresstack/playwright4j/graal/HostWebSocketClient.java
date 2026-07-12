@@ -37,4 +37,8 @@ public interface HostWebSocketClient {
     /** Whether the peer has closed the connection or it errored (so the transport can emit onclose). */
     @HostAccess.Export
     boolean isClosed(String connectionId);
+
+    /** The close reason the peer sent (empty if none), used as the transport onclose reason. */
+    @HostAccess.Export
+    String closeReason(String connectionId);
 }

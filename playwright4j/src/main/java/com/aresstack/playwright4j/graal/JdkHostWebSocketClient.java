@@ -178,6 +178,13 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         return connection == null || connection.closed;
     }
 
+    @Override
+    @org.graalvm.polyglot.HostAccess.Export
+    public String closeReason(String connectionId) {
+        Connection connection = connections.get(connectionId);
+        return connection == null ? "" : connection.closeReason;
+    }
+
     private Connection connection(String connectionId) {
         Connection connection = connections.get(connectionId);
 
@@ -199,6 +206,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         private final StringBuilder partialFrame = new StringBuilder();
         private volatile WebSocket webSocket;
         private volatile boolean closed;
+        private volatile String closeReason = "";
 
         void attach(WebSocket webSocket) {
             this.webSocket = webSocket;
@@ -234,7 +242,10 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
             // The peer closed the WebSocket (e.g. the launch-server was closed or killed). Mark the
-            // connection closed so the transport can surface onclose -> Playwright fires disconnected.
+            // connection closed and keep the close reason so the transport can surface onclose ->
+            // Playwright fires disconnected and rejects pending ops with the server's reason (e.g.
+            // "Browser has been closed"), not a placeholder.
+            closeReason = reason == null ? "" : reason;
             closed = true;
             return null;
         }
