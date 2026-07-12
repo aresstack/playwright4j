@@ -993,6 +993,7 @@
   };
 
   EventEmitter.prototype.emit = function (name) {
+    const self = this;
     const args = Array.prototype.slice.call(arguments, 1);
     const listeners = (this.__listeners()[name] || []).slice();
     // Node throws if an 'error' event has no listeners; surface that instead of swallowing.
@@ -1000,8 +1001,11 @@
       const err = args[0];
       throw (err instanceof Error) ? err : new Error('Unhandled "error" event');
     }
+    // Node invokes listeners with `this` bound to the emitter. Libraries rely on it: the bundled
+    // ws socketOnData does `this[kWebSocket]._receiver.write(chunk)`, so a null/global `this` would
+    // silently drop every inbound WebSocket frame (launch-server never sees protocol messages).
     listeners.forEach(function (listener) {
-      listener.apply(null, args);
+      listener.apply(self, args);
     });
     return listeners.length > 0;
   };
@@ -3000,6 +3004,13 @@
     setTimeout() { return this; }
     pause() { return this; }
     resume() { return this; }
+    // The bundled ws Sender batches frame header + payload with cork()/uncork(); without these
+    // (no-ops here, our write() flushes immediately) it throws mid-send and the connection breaks.
+    cork() { return this; }
+    uncork() { return this; }
+    ref() { return this; }
+    unref() { return this; }
+    get destroyed() { return !this.__socketId; }
   }
 
   class NetServer extends EventEmitter {
