@@ -2957,12 +2957,46 @@
     constructor(socketId) {
       super();
       this.__socketId = socketId;
+      this.__closed = false;
       this.readable = true;
       this.writable = true;
+      this.destroyed = false;
+      this.writableEnded = false;
+      this.readableEnded = false;
       this.localAddress = undefined;
       this.localPort = undefined;
       this.remoteAddress = undefined;
       this.remotePort = undefined;
+    }
+
+    get readyState() {
+      if (this.__closed) {
+        return 'closed';
+      }
+      return this.readable && this.writable ? 'open' : (this.writable ? 'readOnly' : 'writeOnly');
+    }
+
+    // Emits the readable-EOF and terminal 'close' exactly once. Node's stream/ws close handshake
+    // relies on 'end' then 'close' firing; the bundled ws socketOnClose (via 'close') is what makes
+    // the server WebSocket emit its own 'close' so Playwright-Core cleans up the connection.
+    __finishClose(hadError, emitEnd) {
+      if (this.__closed) {
+        return;
+      }
+      this.__closed = true;
+      this.destroyed = true;
+      this.readable = false;
+      this.writable = false;
+      this.readableEnded = true;
+      const self = this;
+      if (emitEnd) {
+        self.emit('end');
+      }
+      if (hadError) {
+        // 'error' listeners must exist; ws attaches socketOnError. Emit before 'close' (Node order).
+        // (Caller passes the error object via emit('error') separately.)
+      }
+      self.emit('close', !!hadError);
     }
 
     write(chunk, encoding, callback) {
@@ -2982,19 +3016,49 @@
       return true;
     }
 
-    end(chunk) {
-      if (chunk !== undefined && chunk !== null) {
-        this.write(chunk);
+    end(chunk, encoding, callback) {
+      if (typeof chunk === 'function') {
+        callback = chunk;
+        chunk = undefined;
+      } else if (typeof encoding === 'function') {
+        callback = encoding;
+        encoding = undefined;
       }
-      this.destroy();
-      return this;
-    }
-
-    destroy() {
+      if (chunk !== undefined && chunk !== null) {
+        this.write(chunk, encoding);
+      }
+      if (!this.writableEnded) {
+        this.writableEnded = true;
+        this.writable = false;
+        const self = this;
+        Promise.resolve().then(function () { self.emit('finish'); });
+      }
+      // ws's socketOnEnd calls socket.end() to half-close; once we've written our side, close the
+      // host socket so the peer gets a FIN and the connection actually terminates.
       if (this.__socketId) {
         host.netServer().closeSocket(this.__socketId);
         this.__socketId = null;
       }
+      const self = this;
+      Promise.resolve().then(function () { self.__finishClose(false, false); });
+      if (callback) {
+        callback();
+      }
+      return this;
+    }
+
+    destroy(error) {
+      if (this.__socketId) {
+        host.netServer().closeSocket(this.__socketId);
+        this.__socketId = null;
+      }
+      const self = this;
+      Promise.resolve().then(function () {
+        if (error) {
+          self.emit('error', error);
+        }
+        self.__finishClose(!!error, false);
+      });
       return this;
     }
 
@@ -3010,7 +3074,6 @@
     uncork() { return this; }
     ref() { return this; }
     unref() { return this; }
-    get destroyed() { return !this.__socketId; }
   }
 
   class NetServer extends EventEmitter {
@@ -3101,10 +3164,12 @@
         }
         handled++;
       } else if (type === 'close') {
+        // Peer closed (FIN). Emit readable 'end' then the terminal 'close' exactly once, so the ws
+        // socketOnEnd/socketOnClose handlers run and the server WebSocket cleans up the connection.
         const socket = netSocketsById[parts[1]];
         if (socket) {
-          socket.emit('end');
-          socket.emit('close');
+          socket.__socketId = null;
+          socket.__finishClose(false, true);
           delete netSocketsById[parts[1]];
         }
         handled++;
