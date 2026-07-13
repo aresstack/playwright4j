@@ -280,3 +280,40 @@ net.createConnection, http.createServer + WS-Upgrade, Socket-Lifecycle.
 
 **Reihenfolge-Empfehlung:** Phase 4 (TLS) ist unabhängig vom node.exe-Thema und macht
 4 reale Tests grün → vorziehbar. Phase 1/2/5 (launch-server) hängen alle am node.exe-PE.
+
+---
+
+## KNOWN LIMITATION (kein playwright4j-Bug): `shouldRecordTraceWithSources` über connect
+
+**NICHT FIXEN. NICHT SKIPPEN. NICHT `PLAYWRIGHT_JAVA_SRC` (a3f61f1) zurückdrehen.**
+
+`TestBrowserTypeConnect.shouldRecordTraceWithSources` schlägt über `browserType.connect`
+fehl: `expected: <1> but was: <0>` (0 eingebettete `resources/src@*.txt`).
+
+**Das ist KEIN playwright4j-Fehler — es ist Parität mit dem offiziellen Microsoft-Driver.**
+Verifiziert 2026-07-14 (Slice 5b): Derselbe Test gegen den **offiziellen** Microsoft-Node-Driver
+(`com.microsoft.playwright:playwright + driver + driver-bundle 1.59.0`, ohne playwright4j;
+Upstream-Testquellen gegen den offiziellen Driver neu kompiliert), gleiche Konfiguration
+(`BROWSER_CHANNEL=chrome`, lokaler launch-server, `PLAYWRIGHT_JAVA_SRC` gesetzt) → **der
+offizielle Driver scheitert IDENTISCH** mit `expected: <1> but was: <0>`. Ein „Fix" in
+playwright4j würde also vom Upstream-Verhalten ABWEICHEN (Parität verletzen).
+
+**Mechanismus (bei beiden Drivern):** Über connect ist die Stack-Sammlung auf zwei Prozesse
+gesplittet. Der Java-Client (`TracingImpl`) ruft `tracingStarted`/`zip(includeSources)` über
+die localUtils der **MAIN-Connection** (`L_main`, Client) — `BrowserTypeImpl.connect` erzeugt die
+Remote-Connection mit `this.connection.localUtils`. Aber `addStackToTracingNoReply`
+(`Connection.java` 172-178) geht an guid `"localUtils"` **auf der Remote-Connection** → jsonPipe
+→ localUtils des **launch-servers**, wo keine Session mit dieser `stacksId` existiert → Stacks
+verworfen. Client-`zip` sieht `callStacks==0` (belegt: `zip mode=append sessions=1 inclSrc=true
+cs=0`); der Server-`SerializedFS.zip` bettet nie `.txt`-Sources ein. Lokal (nicht-connect)
+funktioniert es, weil eine Connection/eine localUtils. Upstream-CI läuft vermutlich in anderer
+Konfiguration (heruntergeladenes Chromium statt channel=chrome) und ist dort grün.
+
+**Wann wieder ansehen:** Falls Microsoft das offizielle connect-Sources-Verhalten ändert
+(gleiche Konfiguration → offizieller Driver liefert `1`), dann — und erst dann — ist ein
+playwright4j-seitiger Angleich sinnvoll. Solange der offizielle Driver hier `0` liefert:
+ehrlich rot lassen, als Upstream-Parität einstufen.
+
+**Orthogonale, bereits gelandete Fixes:** `542c88e` (Buffer.writeUIntBE — Remote-Video saveAs,
+echter playwright4j-Bug, grün), `a3f61f1` (PLAYWRIGHT_JAVA_SRC-Harness, lokale Sources grün),
+`2701560` (Fast-Fail nicht unterstützter Engines).
