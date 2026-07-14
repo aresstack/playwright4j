@@ -29,9 +29,6 @@ browser type.
 Supported and validated:
 
 - Google Chrome via `BROWSER_CHANNEL=chrome`
-
-Expected Chromium channel support, pending release smoke validation:
-
 - Microsoft Edge via `BROWSER_CHANNEL=msedge`
 
 Not supported in this release:
