@@ -45,8 +45,14 @@ GPG_PASSPHRASE    -> ORG_GRADLE_PROJECT_signingInMemoryKeyPassword
 
 Never put these in `gradle.properties` in the repo.
 
-`publishingType = 'USER_MANAGED'` means the deployment is uploaded to the Central Portal and then
-**released manually** from the portal UI (it is not auto-published).
+**These are organization secrets — they must be granted to this repository.** In GitHub → the
+`aresstack` org → Settings → Secrets and variables → Actions, each of the four secrets must have
+`aresstack/playwright4j` in its repository access (or be visible to all repos). If they are not
+granted, `${{ secrets.* }}` resolves to an empty string and the release fails with
+`signing task ... has no configured signatory` (and, later, Central Portal auth errors).
+
+`publishingType = 'AUTOMATIC'` means the deployment is uploaded to the Central Portal **and
+released automatically** — no manual step in the portal UI.
 
 ## Local validation (no credentials, no signing)
 
@@ -66,4 +72,4 @@ Central Portal.
   `workflow_dispatch`, or locally `./gradlew :playwright-java-contract-tests:knownLimitationsCheck`)
   and review the uploaded reports — but this does not block the release.
 - Then create the `v<version>` tag. Tagging is a deliberate manual step; the tag push runs the
-  release workflow, which uploads the deployment to the Central Portal for manual release.
+  release workflow, which uploads the deployment to the Central Portal and auto-releases it.

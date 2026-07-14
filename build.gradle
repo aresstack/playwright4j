@@ -25,7 +25,8 @@ if (JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_17)) {
         centralPortal {
             username = findProperty('centralUsername')
             password = findProperty('centralPassword')
-            publishingType = 'USER_MANAGED'
+            // AUTOMATIC = upload AND auto-release on Maven Central (no manual portal step).
+            publishingType = 'AUTOMATIC'
         }
         publishAllProjectsProbablyBreakingProjectIsolation()
     }
