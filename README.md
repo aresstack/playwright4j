@@ -1,8 +1,17 @@
 # Playwright4J
 
-Playwright4J is an experimental Java/GraalVM research runtime for loading and progressively hosting Playwright Core without starting a Node.js runtime.
+Playwright4J is an experimental Java/GraalVM runtime for running the official
+Microsoft Playwright Core JavaScript driver inside the JVM, without requiring a
+Node.js runtime process for the main driver.
 
-The first milestone is intentionally small: a test-driven compatibility harness loads a Node-compatibility bootstrap script, then loads the official Microsoft Playwright Java driver entry script from the Maven Central `com.microsoft.playwright:driver-bundle` artifact and exposes Java host services to JavaScript through GraalVM.
+The project keeps the public Playwright Java API model and executes the upstream
+Playwright Core driver bundle on GraalVM. Missing Node.js and operating-system
+primitives are provided by Java host adapters, such as process launching,
+WebSocket transport, HTTP, filesystem access, streams, crypto, zlib, TLS, and
+selected Node compatibility APIs.
+
+This release is a Chromium milestone. It focuses on Chrome and Microsoft Edge
+through Playwright's Chromium browser type and channel support.
 
 ## Coordinates
 
@@ -14,62 +23,77 @@ package:    com.aresstack.playwright4j
 
 ## Browser support
 
-This release is a Chromium milestone.
+This release supports Chromium-based browsers through Playwright's Chromium
+browser type.
 
 Supported and validated:
+
 - Google Chrome via `BROWSER_CHANNEL=chrome`
 
-Expected / planned Chromium channel:
-- Microsoft Edge via `BROWSER_CHANNEL=msedge` — same Chromium path; pending release smoke
-  validation (see the `channelSmoke` job in CI).
+Expected Chromium channel support, pending release smoke validation:
 
-Not supported:
+- Microsoft Edge via `BROWSER_CHANNEL=msedge`
+
+Not supported in this release:
+
 - Firefox
 - WebKit
 
-Firefox and WebKit currently fail fast with a clear unsupported-engine error instead of
-hanging. Firefox support is planned for a separate branch/version because it requires
-Playwright's Firefox/Juggler pipe transport rather than the Chromium CDP/WebSocket path
-used by this release.
+Firefox and WebKit currently fail fast with a clear unsupported-engine error
+instead of hanging. Firefox support is planned for a separate branch/version
+because it requires Playwright's Firefox/Juggler pipe transport rather than the
+Chromium CDP/WebSocket path used by this release.
 
 ## Current scope
 
-This repository does **not** claim full Playwright compatibility yet. The current goal is to discover and replace Node.js runtime dependencies incrementally:
+The current release validates the GraalVM-based Playwright driver runtime against
+a broad upstream Playwright Java contract-test suite for the Chromium browser
+type.
 
-1. Load `node-compat-bootstrap.js`.
-2. Load `driver/<platform>/package/cli.js` from `com.microsoft.playwright:driver-bundle`.
-3. Capture missing Node/host functionality as explicit test failures.
-4. Replace loud JavaScript stubs with Java-backed host adapters.
-5. Promote proven adapters into a stable `HostPlatform` boundary.
+The runtime currently includes Java-backed compatibility for major Node and host
+facilities needed by Playwright Core, including:
+
+- Chromium process launch and lifecycle handling
+- WebSocket and CDP transport
+- HTTP/HTTPS client behavior
+- filesystem and path operations
+- streams and buffers
+- crypto and zlib primitives
+- TLS/client-certificate handling
+- tracing, HAR, screenshots, downloads, video, and artifact transfer paths
+
+The project is not yet a complete multi-browser Playwright replacement. Firefox
+and WebKit require additional pipe-based browser transports and are intentionally
+out of scope for this first release.
 
 ## Test status
 
-Latest controlled run of the imported official Microsoft Playwright Java upstream test
-suite (`upstreamTest`, Chromium via the `chrome` channel, per-method timeout 45s):
+The final controlled upstream contract-test sweep for this milestone completed
+with:
 
 ```text
-1606 passed / 6 failed / 35 skipped   (144 test classes, ran to completion)
-no hangs, no leaked playwright4j processes
+1606 passed
+6 known failed
+35 skipped
+144 test classes completed
 ```
 
-All 6 failures are documented, non-blocking known limitations — **no known real
-playwright4j runtime bug remains**:
+The known failures are documented limitations:
 
-- **connect trace sources** — `TestBrowserTypeConnect.shouldRecordTraceWithSources`
-  yields 0 embedded sources over `browserType.connect`. The **official Microsoft node
-  driver fails identically** in this configuration (verified), so this is upstream
-  parity, not a playwright4j defect. See `problems.md`.
-- **unsupported browser engines** (4 fixture tests) — WebKit/Firefox are not supported;
-  such launches **fail fast with a clear error** instead of hanging.
-- **OS dark-mode default** — `TestPageEmulateMedia.shouldDefaultToLight` reflects the
-  host OS (Windows Dark Mode) that Chrome inherits without an override; environmental.
+- `TestBrowserTypeConnect.shouldRecordTraceWithSources`
+  - known upstream-parity behavior in the tested configuration (the official
+    Microsoft node driver fails identically); see `problems.md`
+- `TestPageEmulateMedia.shouldDefaultToLight`
+  - host OS color-scheme environment dependency
+- four WebKit fixture tests
+  - unsupported-engine fast-fail behavior
 
-Supported browser: **Chromium** (via the `chrome` / `msedge` channels). WebKit and
-Firefox are intentionally not implemented.
+No known Playwright4J runtime regression remains in the supported Chrome/Edge
+scope of this milestone.
 
-> CI note: a raw `upstreamTest` run reports `BUILD FAILED` because of the 6 known reds.
-> That is honest — do not add silent excludes to the normal test path. For release CI use
-> a separate reported measurement run or an explicit known-limitations check.
+> CI note: a raw `upstreamTest` run reports `BUILD FAILED` because of the 6 known
+> reds. That is honest — do not add silent excludes to the normal test path. The
+> `knownLimitationsCheck` gate is green iff exactly those known reds fail.
 
 ## Architecture sketch
 
@@ -93,7 +117,7 @@ src/test/java/com/aresstack/playwright4j/graal/PlaywrightCoreLoadTest.java
 THIRD-PARTY-NOTICES.md
 ```
 
-`PlaywrightCoreLoadTest` intentionally evaluates the real Playwright CLI entry script from the official Maven Central driver bundle. The current expected failure is the first unsupported CommonJS module boundary, not a JavaScript syntax error.
+`PlaywrightCoreLoadTest` evaluates the real Playwright CLI entry script from the official Maven Central driver bundle on GraalVM. The broad upstream contract coverage lives in the `playwright-java-contract-tests` module (`upstreamTest` / `knownLimitationsCheck`).
 
 ## Run
 
