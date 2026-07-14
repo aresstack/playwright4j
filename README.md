@@ -16,11 +16,14 @@ package:    com.aresstack.playwright4j
 
 This release is a Chromium milestone.
 
-Supported:
+Supported and validated:
 - Google Chrome via `BROWSER_CHANNEL=chrome`
-- Microsoft Edge via `BROWSER_CHANNEL=msedge`
 
-Not supported in this release:
+Expected / planned Chromium channel:
+- Microsoft Edge via `BROWSER_CHANNEL=msedge` — same Chromium path; pending release smoke
+  validation (see the `channelSmoke` job in CI).
+
+Not supported:
 - Firefox
 - WebKit
 

@@ -1,5 +1,5 @@
 param(
-    [string] $RepositoryZipUrl = "https://github.com/Miguel0888/playwright-java/archive/refs/heads/main.zip",
+    [string] $RepositoryZipUrl = "https://github.com/microsoft/playwright-java/archive/refs/tags/v1.59.0.zip",
     [string] $UpstreamTestRoot = "playwright-java-contract-tests/src/upstreamTest"
 )
 

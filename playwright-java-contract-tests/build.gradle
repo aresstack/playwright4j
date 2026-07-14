@@ -6,7 +6,6 @@ description = 'Non-published contract tests for the official Playwright Java API
 
 ext.upstreamPlaywrightVersion = findProperty('upstreamPlaywrightVersion') ?: '1.59.0'
 ext.microsoftPlaywrightJavaRepository = 'https://github.com/microsoft/playwright-java'
-// ext.playwrightJavaForkRepository = 'https://github.com/Miguel0888/playwright-java'
 ext.upstreamPlaywrightJavaRepository = microsoftPlaywrightJavaRepository
 ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: "${upstreamPlaywrightJavaRepository}/archive/refs/tags/v${upstreamPlaywrightVersion}.zip"
 

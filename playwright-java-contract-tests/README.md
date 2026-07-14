@@ -30,12 +30,6 @@ By default this uses the official Microsoft repository and the tag matching `ups
 https://github.com/microsoft/playwright-java/archive/refs/tags/v<upstreamPlaywrightVersion>.zip
 ```
 
-A fork can still be used explicitly, for example:
-
-```bash
-gradlew :playwright-java-contract-tests:syncUpstreamPlaywrightJavaTests -PplaywrightJavaTestsZipUrl=https://github.com/Miguel0888/playwright-java/archive/refs/tags/v1.59.0.zip
-```
-
 Override it with:
 
 ```bash
