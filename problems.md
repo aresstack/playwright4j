@@ -317,3 +317,21 @@ ehrlich rot lassen, als Upstream-Parität einstufen.
 **Orthogonale, bereits gelandete Fixes:** `542c88e` (Buffer.writeUIntBE — Remote-Video saveAs,
 echter playwright4j-Bug, grün), `a3f61f1` (PLAYWRIGHT_JAVA_SRC-Harness, lokale Sources grün),
 `2701560` (Fast-Fail nicht unterstützter Engines).
+
+## KNOWN LIMITATION: nicht unterstützte Browser-Engines (WebKit/Firefox)
+
+**NICHT FIXEN (kein Feature-Fix), NICHT SKIPPEN.** Ehrlich rot, aber kein Hänger.
+
+playwright4j ist **Chromium-only** (Channels `chrome`/`msedge`). Fixtures, die WebKit oder
+Firefox anfordern, scheitern **schnell mit klarer Meldung** statt zu hängen (Commit `2701560`):
+`TestFixtureDeviceOption.testPredefinedDeviceParameters` (Device „iPhone 14" → defaultBrowserType
+webkit) und `TestFixtureOptions.*` (`setBrowserName("webkit")`). Meldung: `Unsupported browser
+engine: webkit. playwright4j runs a Chromium-only runtime …`. Der Fast-Fail ist bewusst so — er
+verhindert den früheren Fixture-Setup-Hang, der ganze Sweeps blockierte. Erst wenn WebKit/Firefox
+tatsächlich implementiert werden sollen, ist hier Arbeit nötig.
+
+## KNOWN LIMITATION: `TestPageEmulateMedia.shouldDefaultToLight` (OS-Theme)
+
+**KEIN Treiberdefekt.** Der Test erwartet `prefers-color-scheme: light` als Default; auf einem
+Windows-Host mit **Dark Mode** erbt Chrome ohne Override `dark`. Environment-abhängig. Nicht
+versuchen, Chrome global auf light zu zwingen (das würde vom offiziellen Verhalten abweichen).

@@ -22,6 +22,35 @@ This repository does **not** claim full Playwright compatibility yet. The curren
 4. Replace loud JavaScript stubs with Java-backed host adapters.
 5. Promote proven adapters into a stable `HostPlatform` boundary.
 
+## Test status
+
+Latest controlled run of the imported official Microsoft Playwright Java upstream test
+suite (`upstreamTest`, Chromium via the `chrome` channel, per-method timeout 45s):
+
+```text
+1606 passed / 6 failed / 35 skipped   (144 test classes, ran to completion)
+no hangs, no leaked playwright4j processes
+```
+
+All 6 failures are documented, non-blocking known limitations — **no known real
+playwright4j runtime bug remains**:
+
+- **connect trace sources** — `TestBrowserTypeConnect.shouldRecordTraceWithSources`
+  yields 0 embedded sources over `browserType.connect`. The **official Microsoft node
+  driver fails identically** in this configuration (verified), so this is upstream
+  parity, not a playwright4j defect. See `problems.md`.
+- **unsupported browser engines** (4 fixture tests) — WebKit/Firefox are not supported;
+  such launches **fail fast with a clear error** instead of hanging.
+- **OS dark-mode default** — `TestPageEmulateMedia.shouldDefaultToLight` reflects the
+  host OS (Windows Dark Mode) that Chrome inherits without an override; environmental.
+
+Supported browser: **Chromium** (via the `chrome` / `msedge` channels). WebKit and
+Firefox are intentionally not implemented.
+
+> CI note: a raw `upstreamTest` run reports `BUILD FAILED` because of the 6 known reds.
+> That is honest — do not add silent excludes to the normal test path. For release CI use
+> a separate reported measurement run or an explicit known-limitations check.
+
 ## Architecture sketch
 
 ```text
