@@ -1,14 +1,22 @@
 plugins {
     id 'java-library'
+    id 'maven-publish'
+    id 'signing'
 }
 
-group = 'com.aresstack'
-version = '0.1.0-SNAPSHOT'
+// group/version come from the root project (allprojects); version is overridable via -Pversion
+// for the Maven Central release (see root build.gradle and .github/workflows/release.yml).
 
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)
     }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+tasks.named('javadoc') {
+    options.addStringOption('Xdoclint:none', '-quiet')
 }
 
 
@@ -85,6 +93,14 @@ tasks.register('compileNodeLauncher') {
 sourceSets.main.resources.srcDir(nodeLauncherOutputDir)
 tasks.named('processResources') { dependsOn('compileNodeLauncher') }
 
+// withSourcesJar() includes the resources source dirs, which now contains the generated
+// node-launcher output dir; declare the dependency and keep the compiled launcher binary out of
+// the -sources jar (it belongs only in the main jar).
+tasks.named('sourcesJar') {
+    dependsOn('compileNodeLauncher')
+    exclude 'com/aresstack/playwright4j/launcher/**'
+}
+
 test {
     useJUnitPlatform()
     systemProperty 'playwright4j.chromeSpike', findProperty('playwright4j.chromeSpike') ?: 'false'
@@ -92,4 +108,44 @@ test {
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
     systemProperty 'playwright4j.chrome.headless', findProperty('playwright4j.chrome.headless') ?: 'false'
     systemProperty 'playwright4j.chrome.url', findProperty('playwright4j.chrome.url') ?: 'data:text/html,<title>Playwright4J Chrome Spike</title><h1>Playwright4J Chrome Spike</h1>'
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            pom {
+                name = 'playwright4j'
+                description = 'Experimental Java/GraalVM runtime that runs the official Microsoft Playwright Core driver inside the JVM (Chromium: Chrome/Edge), without a Node.js runtime process.'
+                url = 'https://github.com/aresstack/playwright4j'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'aresstack'
+                        name = 'AresStack'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/aresstack/playwright4j.git'
+                    developerConnection = 'scm:git:ssh://git@github.com:aresstack/playwright4j.git'
+                    url = 'https://github.com/aresstack/playwright4j'
+                }
+            }
+        }
+    }
+}
+
+signing {
+    def signingKey = findProperty('signingInMemoryKey')
+    def signingPassword = findProperty('signingInMemoryKeyPassword')
+    required { gradle.taskGraph.allTasks.any { it.name.toLowerCase().contains('centralportal') || it.name == 'publishAggregationToCentralPortal' } }
+    if (signingKey) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+    }
+    sign publishing.publications.mavenJava
 }

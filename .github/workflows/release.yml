@@ -1,0 +1,50 @@
+name: Release to Maven Central
+
+# Publish is pure Gradle via the Sonatype Central Portal (com.gradleup.nmcp), like
+# aresstack/msdos-game-browser, but on Windows so the native node.exe launcher (MinGW) is
+# built into the published jar. Triggered by a `v*` tag; version is derived from the tag.
+# Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY, GPG_PASSPHRASE.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Derive version from tag
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify native node.exe launcher builds (fail if MinGW missing)
+        shell: pwsh
+        run: |
+          ./gradlew :playwright4j:compileNodeLauncher --no-daemon --stacktrace
+          $exe = "playwright4j/build/generated/node-launcher/com/aresstack/playwright4j/launcher/node.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "node.exe launcher was not built (MinGW gcc missing on the runner); the published jar would lack launch-server support."
+            exit 1
+          }
+
+      - name: Build + sign + publish to Sonatype Central Portal
+        shell: pwsh
+        env:
+          ORG_GRADLE_PROJECT_centralUsername: ${{ secrets.CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_centralPassword: ${{ secrets.CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASSPHRASE }}
+        run: ./gradlew "-Pversion=${{ steps.ver.outputs.version }}" --no-daemon -x test publishAggregationToCentralPortal

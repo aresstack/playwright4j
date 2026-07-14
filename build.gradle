@@ -1,6 +1,47 @@
+// Maven Central release is pure Gradle via the Sonatype Central Portal (com.gradleup.nmcp),
+// mirroring the aresstack/msdos-game-browser setup. Only the `playwright4j` module declares a
+// publication (see playwright4j/build.gradle); the contract-tests module is not published.
+// The release runs from .github/workflows/release.yml on a `v*` tag; version comes from -Pversion.
+buildscript {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+    if (JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_17)) {
+        dependencies {
+            classpath 'com.gradleup.nmcp.aggregation:com.gradleup.nmcp.aggregation.gradle.plugin:1.0.0'
+        }
+    }
+}
+
+plugins {
+    id 'base'
+}
+
+if (JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_17)) {
+    apply plugin: 'com.gradleup.nmcp.aggregation'
+
+    nmcpAggregation {
+        centralPortal {
+            username = findProperty('centralUsername')
+            password = findProperty('centralPassword')
+            publishingType = 'USER_MANAGED'
+        }
+        publishAllProjectsProbablyBreakingProjectIsolation()
+    }
+} else {
+    tasks.register('publishAggregationToCentralPortal') {
+        group = 'publishing'
+        description = 'Requires running Gradle with Java 17 or newer. The release workflow uses Java 21.'
+        doLast {
+            throw new GradleException('publishAggregationToCentralPortal requires running Gradle with Java 17 or newer. Use the release workflow or run Gradle with Java 21.')
+        }
+    }
+}
+
 allprojects {
     group = 'com.aresstack'
-    version = '0.1.0-SNAPSHOT'
+    version = gradle.startParameter.projectProperties['version'] ?: '0.1.0-SNAPSHOT'
 }
 
 subprojects {
