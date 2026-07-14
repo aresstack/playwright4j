@@ -1,10 +1,10 @@
 name: Known Limitations Check
 
+# Heavy end-to-end gate — runs ONLY when a real release is published (i.e. a Maven Central
+# release cut from a GitHub Release), never on push or pull_request.
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-  workflow_dispatch:
+  release:
+    types: [ published ]
 
 jobs:
   known-limitations-check:
