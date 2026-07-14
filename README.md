@@ -12,6 +12,23 @@ artifactId: playwright4j
 package:    com.aresstack.playwright4j
 ```
 
+## Browser support
+
+This release is a Chromium milestone.
+
+Supported:
+- Google Chrome via `BROWSER_CHANNEL=chrome`
+- Microsoft Edge via `BROWSER_CHANNEL=msedge`
+
+Not supported in this release:
+- Firefox
+- WebKit
+
+Firefox and WebKit currently fail fast with a clear unsupported-engine error instead of
+hanging. Firefox support is planned for a separate branch/version because it requires
+Playwright's Firefox/Juggler pipe transport rather than the Chromium CDP/WebSocket path
+used by this release.
+
 ## Current scope
 
 This repository does **not** claim full Playwright compatibility yet. The current goal is to discover and replace Node.js runtime dependencies incrementally:

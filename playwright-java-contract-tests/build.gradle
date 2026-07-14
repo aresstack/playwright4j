@@ -43,6 +43,28 @@ test {
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
 }
 
+// Tiny per-channel smoke (launch -> newPage -> setContent -> evaluate 1+1 -> close) against the
+// playwright4j driver. Channel via -Pplaywright4j.browserChannel or BROWSER_CHANNEL env (chrome/msedge).
+// Used by the push/PR CI to prove Chrome and Edge work without a full sweep.
+tasks.register('channelSmoke', Test) {
+    description = 'Minimal launch/evaluate/close smoke for the configured BROWSER_CHANNEL (chrome/msedge).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.BrowserChannelSmokeTest' }
+
+    environment 'BROWSER', 'chromium'
+    environment 'BROWSER_CHANNEL', findProperty('playwright4j.browserChannel') ?: (System.getenv('BROWSER_CHANNEL') ?: 'chrome')
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+
+    systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
+    systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
+}
+
 tasks.named('processUpstreamTestResources') {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     // The upstream Server serves files via getResourceAsStream("resources" + path), i.e. it

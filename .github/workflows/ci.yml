@@ -1,0 +1,50 @@
+name: CI
+
+# Fast gate for every push / PR: compile + a tiny per-channel smoke for Chrome and Edge.
+# The heavy end-to-end knownLimitationsCheck runs ONLY on a published release (see
+# known-limitations-check.yml), not here.
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-and-smoke:
+    # Windows is the currently validated path (native node.exe launcher + Chrome/Edge channel).
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    env:
+      BROWSER: chromium
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build (compile + assemble, no tests)
+        shell: pwsh
+        run: ./gradlew assemble testClasses --no-daemon --stacktrace
+
+      - name: Chrome smoke (BROWSER_CHANNEL=chrome)
+        shell: pwsh
+        run: ./gradlew :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=chrome --no-daemon --stacktrace
+
+      - name: Edge smoke (BROWSER_CHANNEL=msedge)
+        shell: pwsh
+        run: ./gradlew :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=msedge --rerun-tasks --no-daemon --stacktrace
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright4j-ci-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**
