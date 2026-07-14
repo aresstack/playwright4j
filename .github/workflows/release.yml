@@ -3,7 +3,9 @@ name: Release to Maven Central
 # Publish is pure Gradle via the Sonatype Central Portal (com.gradleup.nmcp), like
 # aresstack/msdos-game-browser, but on Windows so the native node.exe launcher (MinGW) is
 # built into the published jar. Triggered by a `v*` tag; version is derived from the tag.
-# Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY, GPG_PASSPHRASE.
+# The full knownLimitationsCheck gate runs BEFORE publishing — a new red (or a vanished
+# known red) blocks the release. Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD,
+# GPG_PRIVATE_KEY, GPG_PASSPHRASE.
 on:
   push:
     tags:
@@ -12,6 +14,7 @@ on:
 jobs:
   publish:
     runs-on: windows-2022
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -33,12 +36,16 @@ jobs:
       - name: Verify native node.exe launcher builds (fail if MinGW missing)
         shell: pwsh
         run: |
-          ./gradlew :playwright4j:compileNodeLauncher --no-daemon --stacktrace
+          ./gradlew.bat :playwright4j:compileNodeLauncher --no-daemon --stacktrace
           $exe = "playwright4j/build/generated/node-launcher/com/aresstack/playwright4j/launcher/node.exe"
           if (-not (Test-Path $exe)) {
             Write-Error "node.exe launcher was not built (MinGW gcc missing on the runner); the published jar would lack launch-server support."
             exit 1
           }
+
+      - name: Known-limitations gate (must pass before publishing)
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:knownLimitationsCheck --no-daemon --stacktrace
 
       - name: Build + sign + publish to Sonatype Central Portal
         shell: pwsh
@@ -47,4 +54,4 @@ jobs:
           ORG_GRADLE_PROJECT_centralPassword: ${{ secrets.CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew "-Pversion=${{ steps.ver.outputs.version }}" --no-daemon -x test publishAggregationToCentralPortal
+        run: ./gradlew.bat "-Pversion=${{ steps.ver.outputs.version }}" --no-daemon -x test publishAggregationToCentralPortal

@@ -32,7 +32,7 @@ jobs:
       # runs the same suite tolerantly and evaluates the JUnit XMLs. See problems.md / README.
       - name: Run known limitations gate
         shell: pwsh
-        run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck --no-daemon --stacktrace
+        run: ./gradlew.bat :playwright-java-contract-tests:knownLimitationsCheck --no-daemon --stacktrace
 
       - name: Upload test reports
         if: always()

@@ -30,15 +30,15 @@ jobs:
 
       - name: Build (compile + assemble, no tests)
         shell: pwsh
-        run: ./gradlew assemble testClasses --no-daemon --stacktrace
+        run: ./gradlew.bat assemble testClasses --no-daemon --stacktrace
 
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
-        run: ./gradlew :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=chrome --no-daemon --stacktrace
+        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=chrome --no-daemon --stacktrace
 
       - name: Edge smoke (BROWSER_CHANNEL=msedge)
         shell: pwsh
-        run: ./gradlew :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=msedge --rerun-tasks --no-daemon --stacktrace
+        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=msedge --rerun-tasks --no-daemon --stacktrace
 
       - name: Upload reports
         if: always()
