@@ -34,11 +34,15 @@ jobs:
 
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
-        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=chrome --no-daemon --stacktrace
+        env:
+          BROWSER_CHANNEL: chrome
+        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --no-daemon --stacktrace
 
       - name: Edge smoke (BROWSER_CHANNEL=msedge)
         shell: pwsh
-        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke -Pplaywright4j.browserChannel=msedge --rerun-tasks --no-daemon --stacktrace
+        env:
+          BROWSER_CHANNEL: msedge
+        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --rerun-tasks --no-daemon --stacktrace
 
       - name: Upload reports
         if: always()
