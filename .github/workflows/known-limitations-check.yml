@@ -1,0 +1,44 @@
+name: Known Limitations Check
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  known-limitations-check:
+    # Windows is the currently validated path: native node.exe launcher + Chrome channel.
+    runs-on: windows-2022
+    timeout-minutes: 75
+
+    env:
+      BROWSER: chromium
+      BROWSER_CHANNEL: chrome
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      # Green iff exactly the six documented known-limitation reds fail; red on any new red
+      # or a vanished known red. The raw upstreamTest stays honest (no excludes) — this gate
+      # runs the same suite tolerantly and evaluates the JUnit XMLs. See problems.md / README.
+      - name: Run known limitations gate
+        shell: pwsh
+        run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright4j-test-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**
