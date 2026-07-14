@@ -88,9 +88,12 @@ The known failures are documented limitations:
 No known Playwright4J runtime regression remains in the supported Chrome/Edge
 scope of this milestone.
 
-> CI note: a raw `upstreamTest` run reports `BUILD FAILED` because of the 6 known
-> reds. That is honest — do not add silent excludes to the normal test path. The
-> `knownLimitationsCheck` gate is green iff exactly those known reds fail.
+> CI note: the **release gate** is the fast Chrome + Edge channel smokes (launch →
+> page → evaluate → close), which run on Windows CI and must pass before publishing.
+> The full upstream compatibility suite runs separately as a **non-blocking audit**
+> (`knownLimitationsCheck`): green iff exactly the six known reds fail. A raw
+> `upstreamTest` run reports `BUILD FAILED` because of those reds — that is honest;
+> no silent excludes are added to the normal test path.
 
 ## Architecture sketch
 

@@ -21,8 +21,16 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
    (`v0.1.0` → `0.1.0`) and passed to Gradle via `-Pversion`.
 2. It runs on **windows-2022** so the native `node.exe` launcher is compiled (MinGW) into the
    published jar. The workflow fails fast if the launcher was not built.
-3. Gradle builds, signs (in-memory PGP key), and publishes via
+3. **Release gate:** the fast Chrome + Edge channel smokes (`channelSmoke`, launch → page →
+   evaluate → close) must pass before anything is published.
+4. A `publishToMavenLocal` sanity assembles the jar / sources / javadoc / POM.
+5. Gradle builds, signs (in-memory PGP key), and publishes via
    `publishAggregationToCentralPortal`.
+
+The full upstream compatibility suite (`knownLimitationsCheck`) is **not** a blocking release
+gate — it is heavy and environment-sensitive on the standard runner. It runs separately as a
+non-blocking audit (`.github/workflows/known-limitations-check.yml`, on `workflow_dispatch` and
+after a published release) and always uploads its test reports.
 
 ## Credentials (already set as organization GitHub secrets)
 
@@ -52,8 +60,10 @@ Central Portal.
 
 ## Before cutting a release
 
-- Confirm the CI smoke (`ci.yml`: Chrome + Edge `channelSmoke`) is green.
-- Optionally run the known-limitations gate (`known-limitations-check.yml`, or
-  `./gradlew :playwright-java-contract-tests:knownLimitationsCheck`) and confirm only the six
-  documented known reds fail.
-- Then create the `v<version>` tag / GitHub Release. Tagging is a deliberate manual step.
+- Confirm the push/PR CI (`ci.yml`: Chrome + Edge `channelSmoke`) is green. The release
+  workflow re-runs the same smokes as its gate before publishing.
+- Optionally trigger the non-blocking audit (`known-limitations-check.yml` via
+  `workflow_dispatch`, or locally `./gradlew :playwright-java-contract-tests:knownLimitationsCheck`)
+  and review the uploaded reports — but this does not block the release.
+- Then create the `v<version>` tag. Tagging is a deliberate manual step; the tag push runs the
+  release workflow, which uploads the deployment to the Central Portal for manual release.

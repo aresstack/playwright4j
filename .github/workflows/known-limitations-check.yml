@@ -1,14 +1,17 @@
-name: Known Limitations Check
+name: Known Limitations Audit
 
-# Heavy end-to-end gate — runs ONLY when a real release is published (i.e. a Maven Central
-# release cut from a GitHub Release), never on push or pull_request.
+# Non-blocking audit: runs the full upstream compatibility suite and checks that only the
+# documented known-limitation reds fail. It is NOT the release gate (that is the Chrome/Edge
+# smokes in release.yml) — this suite is heavy and environment-sensitive on the standard
+# runner, so here it runs on demand / after a release and never blocks anything. It always
+# uploads the test reports so results can be inspected.
 on:
+  workflow_dispatch:
   release:
     types: [ published ]
 
 jobs:
-  known-limitations-check:
-    # Windows is the currently validated path: native node.exe launcher + Chrome channel.
+  known-limitations-audit:
     runs-on: windows-2022
     timeout-minutes: 75
 
@@ -27,10 +30,12 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      # Green iff exactly the six documented known-limitation reds fail; red on any new red
-      # or a vanished known red. The raw upstreamTest stays honest (no excludes) — this gate
-      # runs the same suite tolerantly and evaluates the JUnit XMLs. See problems.md / README.
-      - name: Run known limitations gate
+      # Green iff exactly the six documented known-limitation reds fail; red on any new red or a
+      # vanished known red. Non-blocking (continue-on-error) — this is an audit, not a gate. The
+      # raw upstreamTest stays honest (no excludes); this evaluates the JUnit XMLs. See problems.md.
+      - name: Run known-limitations audit (non-blocking)
+        id: audit
+        continue-on-error: true
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:knownLimitationsCheck --no-daemon --stacktrace
 

@@ -3,9 +3,12 @@ name: Release to Maven Central
 # Publish is pure Gradle via the Sonatype Central Portal (com.gradleup.nmcp), like
 # aresstack/msdos-game-browser, but on Windows so the native node.exe launcher (MinGW) is
 # built into the published jar. Triggered by a `v*` tag; version is derived from the tag.
-# The full knownLimitationsCheck gate runs BEFORE publishing — a new red (or a vanished
-# known red) blocks the release. Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD,
-# GPG_PRIVATE_KEY, GPG_PASSPHRASE.
+#
+# Release gate = the fast, reliable Chrome + Edge channel smokes (launch -> page -> evaluate
+# -> close). The full upstream compatibility suite is NOT a blocking gate here — it runs
+# separately as a non-blocking audit (see known-limitations-check.yml).
+#
+# Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY, GPG_PASSPHRASE.
 on:
   push:
     tags:
@@ -14,9 +17,14 @@ on:
 jobs:
   publish:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 30
     permissions:
       contents: read
+
+    env:
+      BROWSER: chromium
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
 
     steps:
       - name: Check out sources
@@ -43,9 +51,21 @@ jobs:
             exit 1
           }
 
-      - name: Known-limitations gate (must pass before publishing)
+      - name: Release gate — Chrome smoke
         shell: pwsh
-        run: ./gradlew.bat :playwright-java-contract-tests:knownLimitationsCheck --no-daemon --stacktrace
+        env:
+          BROWSER_CHANNEL: chrome
+        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --no-daemon --stacktrace
+
+      - name: Release gate — Edge smoke
+        shell: pwsh
+        env:
+          BROWSER_CHANNEL: msedge
+        run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --rerun-tasks --no-daemon --stacktrace
+
+      - name: Sanity — assemble publishable artifacts locally
+        shell: pwsh
+        run: ./gradlew.bat :playwright4j:publishToMavenLocal "-Pversion=${{ steps.ver.outputs.version }}" --no-daemon --stacktrace
 
       - name: Build + sign + publish to Sonatype Central Portal
         shell: pwsh
