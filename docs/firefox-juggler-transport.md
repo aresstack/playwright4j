@@ -97,12 +97,18 @@ read fd3 / write fd4 from Java. On Windows this is not a ProcessBuilder capabili
    driver launches `firefox-1511` with `-no-remote -headless -profile <dir> -juggler-pipe -silent`,
    stdio `["ignore","pipe","pipe","pipe","pipe"]`, `\0`-delimited JSON over fd3 (write) / fd4 (read),
    ready on stdout, clean graceful close. Environment/binary confirmed good.
-2. **Native fd 3/4 launcher.** A Windows helper (extend the `node-launcher.c` approach) that:
-   creates two anonymous pipes, marks the child ends inheritable, builds the MSVCRT
-   inherited-handle block so Firefox sees them as **fd 3 (Firefox reads Playwright's commands)** and
-   **fd 4 (Firefox writes events)**, `CreateProcess`es Firefox under a Job Object, and exposes the
-   parent pipe ends back to Java (write→fd3, read←fd4). Byte-transparent — framing (`\0`) is handled
-   in JS by Playwright's PipeTransport; the bridge just moves raw bytes.
+2. **Native fd 3/4 launcher.**
+   - **2a. Standalone spike — DONE & verified 2026-07-15** (`playwright4j/src/main/native/firefox-fd-spike.c`,
+     not built/wired). It creates two anonymous pipes (child ends inheritable, parent ends not),
+     builds the MSVCRT inherited-handle block in `STARTUPINFO.lpReserved2` for fds 0–4
+     (fd3 = `FOPEN|FPIPE` child-read; fd4 = `FOPEN|FPIPE` child-write), `CreateProcessA`es Firefox
+     under a `KILL_ON_JOB_CLOSE` Job Object, writes `Browser.enable`+`Browser.getInfo` (\0-terminated)
+     to fd3 and reads fd4. Result: `Juggler listening to the pipe`, `RECV {"id":1}`,
+     `RECV {"id":2,"result":{"version":"Firefox/148.0.2",...}}`, `HANDSHAKE_OK`, exit 0, reproducible,
+     **no leak** (Job Object kills Firefox on close). The hard Windows fd 3/4 inheritance is proven.
+   - **2b. Productionize** into the real launcher (extend `node-launcher.c`'s Job Object + quoting):
+     expose the parent pipe ends back to Java (write→fd3, read←fd4). Byte-transparent — framing (`\0`)
+     is handled in JS by Playwright's PipeTransport; the bridge just moves raw bytes.
 3. **Java host bridge.** `HostProcessLauncher` gains a `launchPipeBrowser(command, args, workdir)`
    that returns a process id plus readable(fd3)/writable(fd4) channels (mirroring the existing
    launcher's stdout/stderr pump), with clean teardown (Job Object) and no leaks.
