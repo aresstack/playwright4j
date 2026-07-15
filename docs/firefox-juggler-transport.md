@@ -22,15 +22,50 @@ this branch beyond the target test + this doc.**
 
   ```js
   const stdio = launchedProcess.stdio;
-  transport = new PipeTransport(stdio[3], stdio[4]);   // Juggler protocol over fd 3/4
+  transport = new PipeTransport(stdio[3], stdio[4]);   // Juggler over fd 3/4
   ```
 
-  fd3 = readable (browser → Playwright), fd4 = writable (Playwright → browser). This is
-  length-prefixed JSON, distinct from Chromium's CDP/WebSocket.
+- `lib/server/pipeTransport.js` — the exact contract (constructor is `(pipeWrite, pipeRead)`, so
+  **`pipeWrite = stdio[3]`, `pipeRead = stdio[4]`**):
+  - **fd 3 = command channel: Playwright WRITES, Firefox READS.** (`_pipeWrite.write(...)`)
+  - **fd 4 = event channel: Firefox WRITES, Playwright READS.** (`pipeRead.on("data", ...)`)
+  - **Framing = `\0`-delimited JSON:** send is `write(JSON.stringify(msg)); write("\0")`; receive
+    splits on `buffer.indexOf("\0")`. Not length-prefixed, not newline. (This differs from the
+    driver's own length-prefixed stdio protocol and from Chromium CDP.)
 
 Contrast: **Chromium** is launched with `--remote-debugging-*`; playwright4j reroutes it to a
 CDP-over-port/WebSocket transport (`launchChromium` + `HostBackedWebSocketTransport`). Firefox has
 **no port/WebSocket option** — Juggler speaks only over fd 3/4.
+
+## Slice 1 — baseline against the official node driver (verified 2026-07-15)
+
+Ran `firefox.launch()` → `newPage` → `evaluate("1 + 1")` → `close` with the **real playwright-core
+node driver** (bundled `node.exe` + `driver/win32_x64/package`) against the installed
+`firefox-1511`, `DEBUG=pw:browser`/`pw:protocol`. Result: **works** — `version=Firefox/148.0.2`,
+`EVAL_RESULT=2`, clean close.
+
+- Executable: `ms-playwright\firefox-1511\firefox\firefox.exe` (Playwright-managed, not system Firefox).
+- Full launch command:
+
+  ```text
+  firefox.exe -no-remote -headless -profile <TEMP>\playwright_firefoxdev_profile-XXXX -juggler-pipe -silent
+  ```
+
+  (note the extra `-no-remote` and `-silent` beyond firefox.js `defaultArgs`).
+- stdio confirmed: `["ignore", "pipe", "pipe", "pipe", "pipe"]`; transport = `PipeTransport(stdio[3], stdio[4])`.
+- fd3 = Playwright→Firefox (commands), fd4 = Firefox→Playwright (events); `\0`-delimited JSON (as above).
+- Ready signal: `Juggler listening to the pipe` on the child's **stdout**.
+- First handshake: `SEND {"method":"Browser.enable",...,"id":1}` `SEND {"method":"Browser.getInfo","id":2}`
+  → `RECV {"id":1}` `RECV {"id":2,"result":{"version":"Firefox/148.0.2",...}}` → `Browser.createBrowserContext` …
+- Teardown: graceful close (`Browser.removeBrowserContext` etc. over the pipe) → `<process did exit:
+  exitCode=0>`; no force-kill needed. Launched Firefox exited cleanly (0).
+
+Reproduce: extract `driver/win32_x64/**` from the driver-bundle jar, then
+`PLAYWRIGHT_BROWSERS_PATH=%LOCALAPPDATA%\ms-playwright DEBUG=pw:browser node.exe fx-smoke.js`
+(`fx-smoke.js` = `require('./driver/win32_x64/package').firefox.launch(...)`).
+
+**Conclusion:** the environment/binary/bundle are fine; Firefox 1511 + `-juggler-pipe` works with the
+official driver. The only missing piece is our fd 3/4 pipe bridge — Slice 2 is unblocked.
 
 ## The gap in playwright4j
 
@@ -58,13 +93,16 @@ read fd3 / write fd4 from Java. On Windows this is not a ProcessBuilder capabili
 
 ## Implementation plan (slices)
 
-1. **Baseline (investigation task #1).** Run the minimal Firefox smoke against the **official**
-   Microsoft node driver on Windows (Firefox is installed locally at `ms-playwright/firefox-1511`)
-   and capture the exact command line, stdio, and Juggler handshake — a reference for our bridge.
+1. **Baseline (investigation task #1). — DONE** (see "Slice 1 — baseline" above). The official
+   driver launches `firefox-1511` with `-no-remote -headless -profile <dir> -juggler-pipe -silent`,
+   stdio `["ignore","pipe","pipe","pipe","pipe"]`, `\0`-delimited JSON over fd3 (write) / fd4 (read),
+   ready on stdout, clean graceful close. Environment/binary confirmed good.
 2. **Native fd 3/4 launcher.** A Windows helper (extend the `node-launcher.c` approach) that:
    creates two anonymous pipes, marks the child ends inheritable, builds the MSVCRT
-   inherited-handle block so Firefox sees them as fd 3/4, `CreateProcess`es Firefox under a Job
-   Object, and exposes the parent pipe ends back to Java.
+   inherited-handle block so Firefox sees them as **fd 3 (Firefox reads Playwright's commands)** and
+   **fd 4 (Firefox writes events)**, `CreateProcess`es Firefox under a Job Object, and exposes the
+   parent pipe ends back to Java (write→fd3, read←fd4). Byte-transparent — framing (`\0`) is handled
+   in JS by Playwright's PipeTransport; the bridge just moves raw bytes.
 3. **Java host bridge.** `HostProcessLauncher` gains a `launchPipeBrowser(command, args, workdir)`
    that returns a process id plus readable(fd3)/writable(fd4) channels (mirroring the existing
    launcher's stdout/stderr pump), with clean teardown (Job Object) and no leaks.
