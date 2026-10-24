@@ -10,10 +10,18 @@ name: Release to Maven Central
 # separately as a non-blocking audit (see known-limitations-check.yml).
 #
 # Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY, GPG_PASSPHRASE.
+#
+# Dry run: a manual workflow_dispatch, or a pull request that touches this file, runs every gate
+# and the local publishToMavenLocal sanity step, but never publishes. Only a `v*` tag push
+# reaches the Central Portal step.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
 
 jobs:
   publish:
@@ -40,7 +48,12 @@ jobs:
       - name: Derive version from tag
         id: ver
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dryrun" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Verify native node.exe launcher builds (fail if MinGW missing)
         shell: pwsh
@@ -98,6 +111,7 @@ jobs:
         run: ./gradlew.bat :playwright4j:publishToMavenLocal "-Pversion=${{ steps.ver.outputs.version }}" --no-daemon --stacktrace
 
       - name: Build + sign + publish to Sonatype Central Portal
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           ORG_GRADLE_PROJECT_centralUsername: ${{ secrets.CENTRAL_USERNAME }}
