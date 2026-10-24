@@ -1308,24 +1308,25 @@
     };
   }
 
+  function secureRandomBytes(size) {
+    const length = size | 0;
+    if (length <= 0) {
+      return global.Buffer.alloc(0);
+    }
+    return global.Buffer.from(String(host.crypto().randomBytes(length)), 'base64');
+  }
+
   modules.crypto = {
+    // Playwright derives secrets from these (launch-server ws path, GUIDs), so they come from the
+    // host's SecureRandom; Math.random is predictable.
     randomBytes: function (size) {
-      const bytes = global.Buffer.alloc(size);
-
-      for (let index = 0; index < size; index++) {
-        bytes[index] = Math.floor(Math.random() * 256);
-      }
-
-      return bytes;
+      return secureRandomBytes(size);
     },
     createHash: function (algorithm) {
       return createHostHash(algorithm);
     },
     randomUUID: function () {
-      const bytes = global.Buffer.alloc(16);
-      for (let index = 0; index < 16; index++) {
-        bytes[index] = Math.floor(Math.random() * 256);
-      }
+      const bytes = secureRandomBytes(16);
       bytes[6] = (bytes[6] & 0x0f) | 0x40;
       bytes[8] = (bytes[8] & 0x3f) | 0x80;
       const hex = bytes.toString('hex');
