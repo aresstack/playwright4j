@@ -17,9 +17,10 @@ Node.js runtime, native helper executables, or browser downloads.
 - **Official Playwright Java API**: your code uses `com.microsoft.playwright.*`, there is
   no Playwright4J-specific API to learn
 
-> **Version note.** The current release is `0.2.0`. The older release `0.1.0` supports
-> Chrome and Edge only and does not resolve with Maven (its POM declares
-> `org.graalvm.polyglot:js` without `<type>pom</type>`); use `0.2.0` instead.
+> **Version note.** The current release is `0.2.1`. It fixes Firefox
+> `launchPersistentContext()` (persistent profile), which fails in `0.2.0`. The older release
+> `0.1.0` supports Chrome and Edge only and does not resolve with Maven (its POM declares
+> `org.graalvm.polyglot:js` without `<type>pom</type>`); use `0.2.1` instead.
 
 ## Quick start
 
@@ -34,7 +35,7 @@ Gradle:
 
 ```groovy
 dependencies {
-    implementation 'com.aresstack:playwright4j:0.2.0'
+    implementation 'com.aresstack:playwright4j:0.2.1'
     implementation('com.microsoft.playwright:playwright:1.59.0') {
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
@@ -48,7 +49,7 @@ Maven:
 <dependency>
   <groupId>com.aresstack</groupId>
   <artifactId>playwright4j</artifactId>
-  <version>0.2.0</version>
+  <version>0.2.1</version>
 </dependency>
 <dependency>
   <groupId>com.microsoft.playwright</groupId>
@@ -104,7 +105,18 @@ Browser browser = playwright.firefox().launch(
         .setHeadless(true));
 ```
 
-Everything after `launch()` is the regular Playwright API.
+A persistent profile directory works the same way (since `0.2.1`), headed or headless:
+
+```java
+BrowserContext context = playwright.firefox().launchPersistentContext(
+    Paths.get("profiles/firefox"),
+    new BrowserType.LaunchPersistentContextOptions()
+        .setChannel("moz-firefox")
+        .setExecutablePath(Paths.get("C:\\Program Files\\Mozilla Firefox\\firefox.exe"))
+        .setHeadless(false));
+```
+
+Everything after `launch()` / `launchPersistentContext()` is the regular Playwright API.
 
 ## Supported browsers
 
@@ -112,7 +124,7 @@ Everything after `launch()` is the regular Playwright API.
 | --- | --- | --- | --- |
 | Google Chrome | `chromium`, channel `chrome` | CDP | Tested (upstream contract suite + CI smoke) |
 | Microsoft Edge | `chromium`, channel `msedge` | CDP | Tested (upstream contract suite + CI smoke) |
-| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Smoke-tested only, since `0.2.0` |
+| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Smoke-tested only (`launch`, `launchPersistentContext`), since `0.2.0` |
 | WebKit | – | – | Not supported, fails fast with an unsupported-engine error |
 
 "Tested" means Chrome and Edge run against the broad upstream Playwright Java contract
