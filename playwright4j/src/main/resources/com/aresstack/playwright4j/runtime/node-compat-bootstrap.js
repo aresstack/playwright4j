@@ -4111,6 +4111,8 @@
 
   function makeTlsSocket(underlying, engineId, onSecure) {
     const socket = new Duplex({
+      // As Node's TLSSocket: half-open like the stream it wraps (a net socket is not).
+      allowHalfOpen: !!(underlying && underlying.allowHalfOpen),
       read: function () {},
       write: function (chunk, encoding, callback) {
         try {
@@ -4122,6 +4124,29 @@
         } catch (error) {
           callback(error);
         }
+      },
+      // Node's TLS shutdown on end(): once everything written is out, send close_notify and end
+      // the wrapped stream, so the peer sees the TLS stream end (the client-certificate proxy ends
+      // the browser's connection this way after its 503 page). Before the handshake completed
+      // there is no close_notify to send (as with OpenSSL), only the wrapped stream ends.
+      final: function (callback) {
+        let failure;
+        try {
+          if (secured) {
+            const res = JSON.parse(host.tls().shutdown(engineId));
+            if (res.error) {
+              failure = new Error(res.error);
+            } else if (res.net) {
+              underlying.write(global.Buffer.from(res.net, 'base64'));
+            }
+          }
+          if (typeof underlying.end === 'function' && !underlying.destroyed) {
+            underlying.end();
+          }
+        } catch (error) {
+          failure = failure || error;
+        }
+        callback(failure);
       },
       destroy: function (error, callback) {
         host.tls().closeEngine(engineId);

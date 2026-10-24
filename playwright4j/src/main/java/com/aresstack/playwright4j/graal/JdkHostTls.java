@@ -191,6 +191,40 @@ public final class JdkHostTls {
         }
     }
 
+    /**
+     * TLS shutdown of our sending side (Node's TLSSocket end()): closes the outbound side and returns
+     * the close_notify alert to send to the peer, {@code {"net":..}}. Reading goes on until the peer
+     * closes; the engine stays registered until {@link #closeEngine}.
+     */
+    @HostAccess.Export
+    public String shutdown(String engineId) {
+        Engine state = engines.get(engineId);
+        if (state == null) {
+            return error("unknown engine");
+        }
+        try {
+            state.engine.closeOutbound();
+            ByteArrayOutputStream net = new ByteArrayOutputStream();
+            // Not wrapInto: its CLOSED status means the engine is done, which would stop pump from
+            // reading what the peer still sends.
+            while (!state.engine.isOutboundDone()) {
+                ByteBuffer out = ByteBuffer.allocate(state.engine.getSession().getPacketBufferSize());
+                SSLEngineResult result = state.engine.wrap(EMPTY, out);
+                out.flip();
+                byte[] bytes = new byte[out.remaining()];
+                out.get(bytes);
+                net.write(bytes, 0, bytes.length);
+                if (result.bytesProduced() == 0) {
+                    break;
+                }
+            }
+            return "{\"net\":\"" + Base64.getEncoder().encodeToString(net.toByteArray()) + "\"}";
+        } catch (Exception exception) {
+            state.closed = true;
+            return error(exception.getMessage() == null ? "tls error" : exception.getMessage());
+        }
+    }
+
     @HostAccess.Export
     public void closeEngine(String engineId) {
         Engine state = engines.remove(engineId);

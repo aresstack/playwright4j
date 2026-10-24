@@ -10,10 +10,16 @@ import java.io.InputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BooleanSupplier;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.AfterEach;
@@ -267,6 +273,102 @@ final class NodeCompatNetSocketTest {
         assertEquals(List.of(), runtime.unhandledRejections().recorded());
     }
 
+    @Test
+    void endsAServerTlsSocketWithCloseNotifyLikeNode() throws Exception {
+        // Like the client-certificate proxy facing the browser: a TLS server socket over a
+        // connection, answering with end(data). Node sends close_notify and ends the transport, so
+        // the peer reads the data and then the end of the TLS stream instead of waiting.
+        runtime.evaluate("net-test-tls-server.js", ""
+                + "(function () {\n"
+                + "  const test = globalThis.__netTest;\n"
+                + "  const { key, cert } = require('playwright-core/lib/server/utils/crypto').generateSelfSignedCertificate();\n"
+                + "  const tlsServer = require('tls').createServer({ key: key, cert: cert });\n"
+                + "  tlsServer.on('secureConnection', function (tlsSocket) {\n"
+                + "    tlsSocket.on('data', function (data) { test.events.push('tls-data:' + data); tlsSocket.end('bye'); });\n"
+                + "    tlsSocket.on('finish', function () { test.events.push('tls-finish'); });\n"
+                + "    tlsSocket.on('close', function () { test.events.push('tls-close'); });\n"
+                + "  });\n"
+                + "  test.tlsServer = require('net').createServer(function (raw) {\n"
+                + "    raw.on('close', function () { test.events.push('raw-close'); });\n"
+                + "    tlsServer.emit('connection', raw);\n"
+                + "  });\n"
+                + "  test.tlsServer.listen(0, '127.0.0.1', function () { test.tlsPort = test.tlsServer.address().port; });\n"
+                + "})();");
+        pumpUntil("the TLS server to listen", () -> js("__netTest.tlsPort > 0").asBoolean());
+        int tlsPort = js("__netTest.tlsPort").asInt();
+        try {
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(null, new TrustManager[] {new TrustAllManager()}, null);
+            try (SSLSocket client = (SSLSocket) context.getSocketFactory().createSocket("127.0.0.1", tlsPort)) {
+                client.setSoTimeout((int) TIMEOUT_MILLIS);
+                CompletableFuture<String> answer = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        client.getOutputStream().write("hello".getBytes(StandardCharsets.UTF_8));
+                        client.getOutputStream().flush();
+                        // Returns at the server's close_notify; without it the read times out.
+                        return readToEof(client.getInputStream());
+                    } catch (IOException exception) {
+                        return "failed: " + exception;
+                    }
+                });
+                pumpUntil("the client to read the end of the TLS stream", answer::isDone);
+                assertEquals("bye", answer.get());
+            }
+            pumpUntil("both server sockets to close", () -> events().contains("raw-close") && events().contains("tls-close"));
+            List<String> events = events();
+            assertEquals(List.of("tls-data:hello", "tls-finish"), events.subList(0, 2), events.toString());
+            assertEquals(4, events.size(), events.toString());
+        } finally {
+            runtime.evaluate("net-test-tls-server-close.js", "__netTest.tlsServer.close();");
+        }
+        assertNoLeftovers();
+        assertEquals(0, host.tls().openEngineCount(), "TLS engines left open");
+        assertEquals(List.of(), runtime.unhandledRejections().recorded());
+    }
+
+    @Test
+    void endsAClientTlsSocketWithCloseNotifyLikeNode() {
+        // tls.connect over a net socket ends with close_notify and a FIN. The server side reads the
+        // data and 'end', then ends its own side (a TLSSocket over a net socket is not half-open),
+        // so the client sees 'end' too and both close, all engines released.
+        runtime.evaluate("net-test-tls-client.js", ""
+                + "(function () {\n"
+                + "  const test = globalThis.__netTest;\n"
+                + "  const tls = require('tls');\n"
+                + "  const { key, cert } = require('playwright-core/lib/server/utils/crypto').generateSelfSignedCertificate();\n"
+                + "  const tlsServer = tls.createServer({ key: key, cert: cert });\n"
+                + "  tlsServer.on('secureConnection', function (tlsSocket) {\n"
+                + "    tlsSocket.on('data', function (data) { test.events.push('server-data:' + data); });\n"
+                + "    tlsSocket.on('end', function () { test.events.push('server-end'); });\n"
+                + "    tlsSocket.on('close', function () { test.events.push('server-close'); });\n"
+                + "  });\n"
+                + "  test.tlsServer = require('net').createServer(function (raw) { tlsServer.emit('connection', raw); });\n"
+                + "  test.tlsServer.listen(0, '127.0.0.1', function () {\n"
+                + "    const raw = require('net').createConnection({ host: '127.0.0.1', port: test.tlsServer.address().port });\n"
+                + "    raw.on('connect', function () {\n"
+                + "      const client = tls.connect({ socket: raw, servername: 'localhost', rejectUnauthorized: false });\n"
+                + "      client.on('secureConnect', function () { client.end('ping'); });\n"
+                + "      client.on('data', function (data) { test.events.push('client-data:' + data); });\n"
+                + "      client.on('end', function () { test.events.push('client-end'); });\n"
+                + "      client.on('error', function (error) { test.events.push('client-error:' + error.message); });\n"
+                + "      client.on('close', function () { test.events.push('client-close'); });\n"
+                + "    });\n"
+                + "  });\n"
+                + "})();");
+        try {
+            pumpUntil("both TLS sockets to close", () -> events().contains("client-close") && events().contains("server-close"));
+            List<String> events = events();
+            assertTrue(events.indexOf("server-data:ping") >= 0 && events.indexOf("server-data:ping") < events.indexOf("server-end"), events.toString());
+            assertTrue(events.contains("client-end"), events.toString());
+            assertTrue(events.stream().noneMatch(event -> event.startsWith("client-error") || event.startsWith("client-data")), events.toString());
+        } finally {
+            runtime.evaluate("net-test-tls-client-close.js", "__netTest.tlsServer.close();");
+        }
+        assertNoLeftovers();
+        assertEquals(0, host.tls().openEngineCount(), "TLS engines left open");
+        assertEquals(List.of(), runtime.unhandledRejections().recorded());
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     private void assertNoLeftovers() {
@@ -316,6 +418,22 @@ final class NodeCompatNetSocketTest {
             bytes.write(buffer, 0, count);
         }
         return new String(bytes.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    /** Test peer for the shim's self-signed certificate. */
+    private static final class TrustAllManager implements X509TrustManager {
+        @Override
+        public void checkClientTrusted(X509Certificate[] chain, String authType) {
+        }
+
+        @Override
+        public void checkServerTrusted(X509Certificate[] chain, String authType) {
+        }
+
+        @Override
+        public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[0];
+        }
     }
 
     /** A plain TCP client whose input is collected on a background thread. */
