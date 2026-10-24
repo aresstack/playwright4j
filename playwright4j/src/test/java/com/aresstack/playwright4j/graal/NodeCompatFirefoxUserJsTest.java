@@ -95,6 +95,19 @@ final class NodeCompatFirefoxUserJsTest {
     }
 
     @Test
+    void aUserJsPlaywrightWroteThatTheProfileCommentedOutIsTakenOver() throws Exception {
+        run("require('playwright-core/lib/server/bidi/third_party/firefoxPrefs').createProfile("
+                + "{ path: " + js(profile) + ", preferences: {} })");
+        List<String> own = new java.util.ArrayList<>(userJs());
+        own.add(0, "/* Playwright's preferences, switched off:");
+        own.add("*/");
+        Files.write(profile.resolve("user.js"), own, StandardCharsets.ISO_8859_1);
+
+        launch("{}");
+        assertEquals(own, keptBlock(userJs()));
+    }
+
+    @Test
     void aUserJsWithSomeOfPlaywrightsPreferencesIsTakenOver() throws Exception {
         List<String> own = Arrays.asList(
                 "// hand-written, with two preferences Playwright also sets",
@@ -116,6 +129,22 @@ final class NodeCompatFirefoxUserJsTest {
         // A single-quoted string ends at the apostrophe of the END marker.
         assertEquals(List.of("user_pref;", PLAYWRIGHTS_FIRST), betweenEndAndPlaywright("user_pref(\"a\", 'abc);"));
         assertEquals(List.of(PLAYWRIGHTS_FIRST), betweenEndAndPlaywright("user_pref(\"a\", \"/* # // ' \\\" \"); // /*\n# \"\nuser_pref(\"b\", 2); /* */"));
+        // A '/' that starts no comment takes the next character with it.
+        assertEquals(List.of("user_pref;", PLAYWRIGHTS_FIRST), betweenEndAndPlaywright("user_pref(\"a\", 1);\n/\""));
+    }
+
+    @Test
+    void theOwnLinesEndAtANulByteOutsideAComment() throws Exception {
+        // Firefox reads nothing after it, from the profile's own file either (a UTF-16 user.js has one
+        // after its first character); before Playwright's lines it would hide them.
+        assertEquals(List.of(PLAYWRIGHTS_FIRST), betweenEndAndPlaywright("user_pref(\"a\", 1);\0\nuser_pref(\"b\", 2);\n"));
+        assertEquals(List.of("user_pref(\"a\", 1);"), keptBlock(userJs()));
+        assertEquals(List.of("\"", "user_pref;", PLAYWRIGHTS_FIRST), betweenEndAndPlaywright("user_pref(\"a\", \"x\0y\");\n"));
+        assertEquals(List.of("user_pref(\"a\", \"x"), keptBlock(userJs()));
+
+        // In a // comment it only ends the comment.
+        betweenEndAndPlaywright("user_pref(\"a\", 1);\n// x\0user_pref(\"b\", 2);\n");
+        assertEquals(List.of("user_pref(\"a\", 1);", "// x\0user_pref(\"b\", 2);"), keptBlock(userJs()));
     }
 
     private List<String> betweenEndAndPlaywright(String own) throws Exception {

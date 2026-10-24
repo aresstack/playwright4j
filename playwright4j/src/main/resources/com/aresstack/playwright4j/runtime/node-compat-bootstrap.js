@@ -5733,17 +5733,17 @@
   // user.js without the markers. Not the lines of one that Playwright wrote, as plain Playwright and
   // playwright4j up to 0.2.1 did on every launch: it holds Playwright's default preferences, and
   // keeping its lines would keep that launch's firefoxUserPrefs for good. A user.js counts as
-  // Playwright's when it sets at least 90% of the default preferences written now, each in
-  // Playwright's own format (a Playwright update may add or drop a few).
+  // Playwright's when every line is in Playwright's own format (no comment, nothing else) and it
+  // sets at least 90% of the default preferences written now (a Playwright update may add or drop
+  // a few).
   function keptUserJsLines(previous, playwrightDefaults) {
     const lines = previous.split(/\r?\n/);
     const begin = lines.indexOf(KEPT_USER_JS_BEGIN);
     const end = lines.indexOf(KEPT_USER_JS_END);
     if (begin < 0 || end < begin) {
-      const defaultsFound = new Set(lines.map(playwrightUserJsPrefName).filter(function (name) {
-        return playwrightDefaults.has(name);
-      }));
-      if (playwrightDefaults.size >= 20 && defaultsFound.size >= playwrightDefaults.size * 0.9) {
+      const names = lines.filter(function (line) { return line.trim(); }).map(playwrightUserJsPrefName);
+      const defaultsFound = new Set(names.filter(function (name) { return playwrightDefaults.has(name); }));
+      if (names.indexOf(undefined) < 0 && playwrightDefaults.size >= 20 && defaultsFound.size >= playwrightDefaults.size * 0.9) {
         return [];
       }
     }
@@ -5756,17 +5756,26 @@
   // Firefox reads user.js as one text: an unclosed /* comment or string, or a last statement
   // without its ';', at the end of the kept lines would take Playwright's first lines with it
   // (after an error Firefox skips to the next ';'). Firefox only reports such a tail at the end of
-  // a file, so the kept lines stay as they are, and this closes them off after the END marker: it
-  // ends the comment or string, and an unfinished statement fails on a stray keyword and ends at
-  // the ';' after it, so it is not applied, as at the end of the profile's own file.
-  function userJsTailGuard(text) {
+  // a file, so the kept lines stay as they are, and the guard closes them off after the END
+  // marker: it ends the comment or string, and an unfinished statement fails on a stray keyword
+  // and ends at the ';' after it, so it is not applied, as at the end of the profile's own file.
+  // A NUL byte outside a comment ends what Firefox reads (a UTF-16 user.js has one after its
+  // first character): stop is its index, or -1.
+  function scanUserJs(text) {
     let state = 'code';
     let quote = '';
     let pending = false;
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
       const next = text[i + 1];
-      if (state === 'line') {
+      if (c === '\0') {
+        if (state === 'code' || state === 'string') {
+          return { stop: i, guard: '' };
+        }
+        // It ends a comment; after one in a /* comment Firefox skips to the next ';'.
+        pending = pending || state === 'block';
+        state = 'code';
+      } else if (state === 'line') {
         if (c === '\n' || c === '\r') {
           state = 'code';
         }
@@ -5786,6 +5795,10 @@
       } else if (c === '/' && next === '*') {
         state = 'block';
         i++;
+      } else if (c === '/') {
+        // Not a comment: Firefox reports it and takes the next character with it.
+        pending = true;
+        i++;
       } else if (c === '"' || c === "'") {
         state = 'string';
         quote = c;
@@ -5796,7 +5809,10 @@
         pending = true;
       }
     }
-    return (state === 'block' ? '*/\n' : state === 'string' ? quote + '\n' : '') + (pending ? 'user_pref;\n' : '');
+    return {
+      stop: -1,
+      guard: (state === 'block' ? '*/\n' : state === 'string' ? quote + '\n' : '') + (pending ? 'user_pref;\n' : '')
+    };
   }
 
   function patchBidiFirefoxUserJs(BidiFirefox) {
@@ -5820,12 +5836,18 @@
       const playwrightDefaults = new Set(written.split(/\r?\n/).map(playwrightUserJsPrefName).filter(function (name) {
         return name !== undefined && !Object.prototype.hasOwnProperty.call(prefs, name);
       }));
-      const kept = previous ? keptUserJsLines(previous, playwrightDefaults).map(function (line) { return line + '\n'; }).join('') : '';
+      let kept = previous ? keptUserJsLines(previous, playwrightDefaults).map(function (line) { return line + '\n'; }).join('') : '';
+      // Nothing after a NUL byte applies from the profile's own file either; before Playwright's
+      // lines it would hide them, so the kept lines end there.
+      const stop = scanUserJs(kept).stop;
+      if (stop >= 0) {
+        kept = kept.slice(0, stop).replace(/([^\n])$/, '$1\n');
+      }
       // The markers are written even when nothing is kept: without them the next launch would take
       // the lines Playwright wrote now, firefoxUserPrefs included, for the profile's own.
       // The END marker counts for the guard: an open string ends at its apostrophe.
       const block = KEPT_USER_JS_BEGIN + '\n' + kept + KEPT_USER_JS_END + '\n';
-      const text = block + userJsTailGuard(block) + written + '\n';
+      const text = block + scanUserJs(block).guard + written + '\n';
       modules.fs.writeFileSync(userJs, global.Buffer.from(text, 'latin1'));
     };
   }
