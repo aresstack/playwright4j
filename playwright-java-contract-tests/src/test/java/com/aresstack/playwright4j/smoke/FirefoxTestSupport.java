@@ -95,8 +95,16 @@ final class FirefoxTestSupport {
             }
             long now = System.currentTimeMillis();
             if (now >= deadline) {
+                // Describe first, then look again: only processes that still run after being
+                // described count, not ones that ended in the meantime.
+                Map<Long, FirefoxProcess> running = firefoxProcessDetails();
+                leftovers = firefoxPids();
+                leftovers.removeAll(before);
+                if (leftovers.isEmpty()) {
+                    break;
+                }
                 fail("Firefox processes survived browser.close() by " + PROCESS_EXIT_GRACE_MILLIS + " ms: "
-                        + describe(leftovers, firefoxProcessDetails()));
+                        + describe(leftovers, running));
             }
             if (now - start >= SLOW_EXIT_MILLIS && !slow.keySet().containsAll(leftovers)) {
                 for (FirefoxProcess process : describe(leftovers, firefoxProcessDetails())) {
@@ -114,7 +122,8 @@ final class FirefoxTestSupport {
     private static List<FirefoxProcess> describe(Set<Long> pids, Map<Long, FirefoxProcess> running) {
         List<FirefoxProcess> described = new ArrayList<>();
         for (Long pid : pids) {
-            described.add(running.getOrDefault(pid, new FirefoxProcess(pid, -1, "(ended before it could be described)")));
+            described.add(running.getOrDefault(pid,
+                    new FirefoxProcess(pid, -1, "(no details: it ended or started while being listed)")));
         }
         return described;
     }
