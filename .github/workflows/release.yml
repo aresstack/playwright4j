@@ -119,6 +119,10 @@ jobs:
           if (Select-String -Path $pom.FullName -Pattern 'driver-bundle' -Quiet) { Write-Host "POM depends on driver-bundle (ships Node.js binaries)"; $failed = $true }
           if ($failed) { exit 1 }
 
+      - name: Consumer check — resolved Maven dependencies (no Node driver, no native binaries)
+        shell: pwsh
+        run: ./gradlew.bat -p consumer-check checkConsumerDependencies "-Pplaywright4jVersion=${{ steps.ver.outputs.version }}" --no-daemon --stacktrace
+
       - name: Build + sign + publish to Sonatype Central Portal
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         shell: pwsh

@@ -69,8 +69,34 @@ def repackageDriverPackage = tasks.register('repackageDriverPackage', Sync) {
         }
     }
 }
+// driver/package-id.txt: content hash of the package. Driver.driverDir() extracts into a directory
+// named after it, so an upgraded jar never reuses files extracted by an older one.
+def driverPackageIdOutputDir = layout.buildDirectory.dir('generated/driver-package-id')
+def driverPackageId = tasks.register('driverPackageId') {
+    description = 'Writes the SHA-256 content id of the repackaged Playwright Core package.'
+    dependsOn repackageDriverPackage
+    inputs.dir(driverPackageOutputDir)
+    outputs.dir(driverPackageIdOutputDir)
+    doLast {
+        def base = driverPackageOutputDir.get().dir('driver/package').asFile
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        fileTree(base).files.sort { base.toPath().relativize(it.toPath()).toString().replace('\\', '/') }.each { file ->
+            digest.update(base.toPath().relativize(file.toPath()).toString().replace('\\', '/').getBytes('UTF-8'))
+            digest.update((byte) 0)
+            digest.update(file.bytes)
+        }
+        def out = driverPackageIdOutputDir.get().file('driver/package-id.txt').asFile
+        out.parentFile.mkdirs()
+        out.text = digest.digest().encodeHex().toString().substring(0, 32)
+    }
+}
 sourceSets.main.resources.srcDir(repackageDriverPackage)
-tasks.named('sourcesJar') { exclude 'driver/**' }
+sourceSets.main.resources.srcDir(driverPackageIdOutputDir)
+tasks.named('processResources') { dependsOn driverPackageId }
+tasks.named('sourcesJar') {
+    dependsOn driverPackageId
+    exclude 'driver/**'
+}
 
 test {
     useJUnitPlatform()

@@ -76,43 +76,104 @@ public final class Driver {
     }
 
     public Path driverDir() {
-        Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
+        Path root = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
+        Path dir = driverDirFor(root, packageId());
         ensurePackageExtracted(dir);
         return dir;
     }
 
     /**
-     * Some upstream APIs (e.g. trace viewer) read static assets relative to driverDir(), i.e.
-     * {@code driverDir/package/lib/...}. Those assets live inside the bundled driver jar under
-     * {@code driver/package/}. Extract that tree once into driverDir so file-based
-     * access works without a real Node driver installation.
+     * One directory per Playwright Core package content: an upgrade (new package id) never reuses
+     * files extracted by an older playwright4j version.
      */
-    private static void ensurePackageExtracted(Path driverDir) {
-        Path marker = driverDir.resolve("package").resolve(".playwright4j-extracted");
-        if (Files.exists(marker)) {
-            return;
-        }
-        String prefix = com.aresstack.playwright4j.graal.PlaywrightDriverBundleSource.PACKAGE_PREFIX;
-        try {
-            URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
-            if (probe == null) {
-                return;
+    static Path driverDirFor(Path root, String packageId) {
+        return root.resolve(packageId);
+    }
+
+    /**
+     * SHA-256 (prefix) over the repackaged driver/package/** tree, written at build time by
+     * playwright4j's driverPackageId task.
+     */
+    static String packageId() {
+        try (InputStream input = Driver.class.getClassLoader().getResourceAsStream(PACKAGE_ID_RESOURCE)) {
+            if (input == null) {
+                throw new IllegalStateException("Missing " + PACKAGE_ID_RESOURCE + " (playwright4j jar incomplete)");
             }
-            if ("jar".equals(probe.getProtocol())) {
-                URLConnection connection = probe.openConnection();
-                if (connection instanceof java.net.JarURLConnection) {
-                    JarFile jarFile = ((java.net.JarURLConnection) connection).getJarFile();
-                    extractFromJar(jarFile, prefix, driverDir);
-                }
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[256];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                bytes.write(buffer, 0, read);
             }
-            Files.createDirectories(marker.getParent());
-            Files.write(marker, new byte[0]);
+            String id = new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (!id.matches("[0-9a-f]{16,64}")) {
+                throw new IllegalStateException("Invalid " + PACKAGE_ID_RESOURCE + ": " + id);
+            }
+            return id;
         } catch (IOException exception) {
-            throw new IllegalStateException("Cannot extract driver package assets to " + driverDir, exception);
+            throw new IllegalStateException("Cannot read " + PACKAGE_ID_RESOURCE, exception);
         }
     }
 
-    private static void extractFromJar(JarFile jarFile, String prefix, Path driverDir) throws IOException {
+    private static final String PACKAGE_ID_RESOURCE = "driver/package-id.txt";
+    private static final String EXTRACTED_MARKER = ".playwright4j-extracted";
+
+    /**
+     * Some upstream APIs (e.g. trace viewer) read static assets relative to driverDir(), i.e.
+     * {@code driverDir/package/lib/...}. Those assets live on the classpath under
+     * {@code driver/package/}. Extract that tree once into driverDir so file-based access works
+     * without a real Node driver installation. Extraction goes to a temporary sibling directory
+     * that is moved into place, so a half-written tree (crash, concurrent JVM) is never reused.
+     */
+    static void ensurePackageExtracted(Path driverDir) {
+        Path packageDir = driverDir.resolve("package");
+        if (Files.exists(packageDir.resolve(EXTRACTED_MARKER))) {
+            return;
+        }
+        String prefix = com.aresstack.playwright4j.graal.PlaywrightDriverBundleSource.PACKAGE_PREFIX;
+        Path staging = null;
+        try {
+            URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
+            if (probe == null) {
+                throw new IllegalStateException("Missing Playwright Core package resource " + prefix + "cli.js");
+            }
+            Files.createDirectories(driverDir);
+            if (Files.exists(packageDir)) {
+                deleteTree(packageDir); // left over from an interrupted extraction (no marker)
+            }
+            staging = Files.createTempDirectory(driverDir, "package-");
+            if ("jar".equals(probe.getProtocol())) {
+                URLConnection connection = probe.openConnection();
+                connection.setUseCaches(false);
+                if (connection instanceof java.net.JarURLConnection) {
+                    try (JarFile jarFile = ((java.net.JarURLConnection) connection).getJarFile()) {
+                        extractFromJar(jarFile, prefix, staging);
+                    }
+                }
+            } else if ("file".equals(probe.getProtocol())) {
+                // Exploded classpath (IDE / Gradle test runs): copy the resource directory.
+                copyTree(Paths.get(probe.toURI()).getParent(), staging);
+            }
+            Files.write(staging.resolve(EXTRACTED_MARKER), new byte[0]);
+            try {
+                Files.move(staging, packageDir, StandardCopyOption.ATOMIC_MOVE);
+                staging = null;
+            } catch (IOException alreadyThere) {
+                // Another JVM finished first; its complete tree wins.
+                if (!Files.exists(packageDir.resolve(EXTRACTED_MARKER))) {
+                    throw alreadyThere;
+                }
+            }
+        } catch (IOException | java.net.URISyntaxException exception) {
+            throw new IllegalStateException("Cannot extract driver package assets to " + driverDir, exception);
+        } finally {
+            if (staging != null) {
+                deleteTree(staging);
+            }
+        }
+    }
+
+    private static void extractFromJar(JarFile jarFile, String prefix, Path packageDir) throws IOException {
         Enumeration<JarEntry> entries = jarFile.entries();
         while (entries.hasMoreElements()) {
             JarEntry entry = entries.nextElement();
@@ -120,14 +181,37 @@ public final class Driver {
             if (!name.startsWith(prefix) || entry.isDirectory()) {
                 continue;
             }
-            // Map driver/package/X -> driverDir/package/X
-            Path target = driverDir.resolve("package").resolve(name.substring(prefix.length()));
+            // Map driver/package/X -> packageDir/X
+            Path target = packageDir.resolve(name.substring(prefix.length())).normalize();
+            if (!target.startsWith(packageDir)) {
+                continue;
+            }
             if (target.getParent() != null) {
                 Files.createDirectories(target.getParent());
             }
             try (InputStream input = jarFile.getInputStream(entry)) {
                 Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
             }
+        }
+    }
+
+    private static void copyTree(Path source, Path target) throws IOException {
+        try (java.util.stream.Stream<Path> paths = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) paths::iterator) {
+                Path destination = target.resolve(source.relativize(path).toString());
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private static void deleteTree(Path root) {
+        try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+        } catch (IOException ignored) {
         }
     }
 

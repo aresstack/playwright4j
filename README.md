@@ -22,6 +22,47 @@ artifactId: playwright4j
 package:    com.aresstack.playwright4j
 ```
 
+## Using Playwright4J in an application
+
+Use the official Playwright Java API together with Playwright4J, and exclude Microsoft's
+Node-based driver from the API dependency. `driver` would shadow Playwright4J's
+`com.microsoft.playwright.impl.driver.Driver`, and `driver-bundle` (about 200 MB) contains
+`node`/`node.exe` for every platform. Without these excludes the Node binaries are downloaded
+again, even though Playwright4J never runs them.
+
+Gradle:
+
+```groovy
+implementation 'com.aresstack:playwright4j:<version>'
+implementation('com.microsoft.playwright:playwright:1.59.0') {
+    exclude group: 'com.microsoft.playwright', module: 'driver'
+    exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
+}
+```
+
+Maven:
+
+```xml
+<dependency>
+  <groupId>com.aresstack</groupId>
+  <artifactId>playwright4j</artifactId>
+  <version>VERSION</version>
+</dependency>
+<dependency>
+  <groupId>com.microsoft.playwright</groupId>
+  <artifactId>playwright</artifactId>
+  <version>1.59.0</version>
+  <exclusions>
+    <exclusion><groupId>com.microsoft.playwright</groupId><artifactId>driver</artifactId></exclusion>
+    <exclusion><groupId>com.microsoft.playwright</groupId><artifactId>driver-bundle</artifactId></exclusion>
+  </exclusions>
+</dependency>
+```
+
+`consumer-check/` is a standalone build that resolves exactly this setup from Maven and
+fails if the Node driver or any native binary reaches the classpath; CI and the release
+workflow run it.
+
 ## Browser support
 
 Playwright4J drives locally installed browsers; it does not download browsers.

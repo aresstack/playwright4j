@@ -1,0 +1,4 @@
+// Standalone build (not part of the main workspace): resolves com.aresstack:playwright4j the way an
+// application would, from Maven (mavenLocal after publishToMavenLocal), together with the official
+// Playwright Java API. Run: ./gradlew -p consumer-check checkConsumerDependencies -Pplaywright4jVersion=<v>
+rootProject.name = 'playwright4j-consumer-check'

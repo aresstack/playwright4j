@@ -50,8 +50,7 @@ public class TestBrowserTypeConnect extends TestBase {
     String wsEndpoint;
 
     void kill() throws InterruptedException {
-      destroyProcessTree(process);
-      int exitCode = process.waitFor();
+      int exitCode = destroyProcessTree(process);
       // FIXME: 2 tests are failing this check on windows:
       // disconnectedEventShouldBeEmittedWhenBrowserIsClosedOrServerIsClosed
       // shouldThrowWhenUsedAfterIsConnectedReturnsFalse
@@ -61,12 +60,31 @@ public class TestBrowserTypeConnect extends TestBase {
     }
   }
 
-  // playwright4j: the launch-server JVM does not take its browser down when it is killed
-  // (TerminateProcess on Windows), so terminate the browser processes it spawned as well.
-  private static void destroyProcessTree(Process process) {
+  // playwright4j: there is no native launcher (and no Windows job object) any more, and the
+  // launch-server JVM does not take its browser down when it is killed (TerminateProcess on
+  // Windows). Terminate the browser processes it spawned as well, and escalate to a forced kill
+  // after a bounded wait instead of blocking in waitFor() forever.
+  private static final long DESTROY_TIMEOUT_SECONDS = 15;
+
+  private static int destroyProcessTree(Process process) throws InterruptedException {
     List<ProcessHandle> descendants = process.descendants().collect(Collectors.toList());
     process.destroy();
     descendants.forEach(ProcessHandle::destroy);
+    if (!process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
+      process.destroyForcibly();
+      process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+    }
+    for (ProcessHandle descendant : descendants) {
+      try {
+        descendant.onExit().get(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (ExecutionException | java.util.concurrent.TimeoutException e) {
+        descendant.destroyForcibly();
+      }
+    }
+    if (process.isAlive()) {
+      throw new IllegalStateException("launch-server process " + process.pid() + " did not exit");
+    }
+    return process.exitValue();
   }
 
   private static BrowserServer launchBrowserServer(BrowserType browserType) {
@@ -110,8 +128,11 @@ public class TestBrowserTypeConnect extends TestBase {
   void closeBrowser() {
     super.closeBrowser();
     if (browserServer != null) {
-      browserServer.descendants().forEach(ProcessHandle::destroyForcibly);
-      browserServer.destroyForcibly();
+      try {
+        destroyProcessTree(browserServer);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
       browserServer = null;
       wsEndpoint = null;
     }
