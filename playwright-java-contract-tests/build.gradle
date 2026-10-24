@@ -91,7 +91,8 @@ tasks.register('firefoxSmoke', Test) {
     // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
     // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
-    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
+    // Full exception text in the console: the CI log is often the only place a failure is seen.
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
 
 // Diagnostic: prints the automation signals a page can observe (navigator.webdriver, UA, request

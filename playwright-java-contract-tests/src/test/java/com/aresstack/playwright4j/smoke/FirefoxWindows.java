@@ -110,11 +110,16 @@ final class FirefoxWindows {
         return WINDOWS ? windowsViaPowerShell() : windowsViaXdotool();
     }
 
-    private static List<Window> windowsViaPowerShell() throws IOException, InterruptedException {
+    /** Runs a (multi-line) Windows PowerShell script and returns its output; fails on a non-zero exit. */
+    static String powerShell(String script) throws IOException, InterruptedException {
         // -EncodedCommand (UTF-16LE, Base64) passes the multi-line script as one command.
-        String encoded = Base64.getEncoder().encodeToString(ENUM_WINDOWS_SCRIPT.getBytes(StandardCharsets.UTF_16LE));
-        String output = run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+        String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
+        return run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
                 "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded);
+    }
+
+    private static List<Window> windowsViaPowerShell() throws IOException, InterruptedException {
+        String output = powerShell(ENUM_WINDOWS_SCRIPT);
         List<Window> windows = new ArrayList<>();
         for (String line : output.split("\\R")) {
             int tab = line.indexOf('\t');
@@ -220,11 +225,8 @@ final class FirefoxWindows {
      */
     static boolean closeTabWithKeyboard(long pid) throws IOException, InterruptedException {
         if (WINDOWS) {
-            String script = String.format(Locale.ROOT, CLOSE_TAB_SCRIPT, pid);
-            String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
             try {
-                run("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                        "-EncodedCommand", encoded);
+                powerShell(String.format(Locale.ROOT, CLOSE_TAB_SCRIPT, pid));
                 return true;
             } catch (IOException notSent) {
                 return false;
