@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -44,10 +46,16 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         WebSocket webSocket = builder
                 .buildAsync(URI.create(url), connection)
                 .join();
+        String id = register(connection, webSocket);
+        Playwright4JDebug.log("[pw4j-cdp] OPEN " + url);
+        return id;
+    }
+
+    // Package-private for tests, which register a stub WebSocket.
+    String register(Connection connection, WebSocket webSocket) {
         String id = UUID.randomUUID().toString();
         connection.attach(webSocket);
         connections.put(id, connection);
-        Playwright4JDebug.log("[pw4j-cdp] OPEN " + url);
         return id;
     }
 
@@ -131,7 +139,17 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     public void send(String connectionId, String message) {
         Connection connection = connection(connectionId);
         Playwright4JDebug.log("[pw4j-cdp] SEND " + truncate(message));
-        connection.webSocket.sendText(message, true).join();
+        try {
+            connection.webSocket.sendText(message, true).join();
+        } catch (CompletionException | CancellationException exception) {
+            // A killed peer resets the TCP connection, and java.net.http fails the write ("Output
+            // closed") before the listener's onError/onClose has run. Mark the connection closed so
+            // isClosed() agrees with the failed send: the connect transport then drops the send and
+            // surfaces onclose (Browser 'disconnected') instead of failing the call with an I/O
+            // error first. The failure is still thrown, e.g. for the launched browser's CDP pipe.
+            connection.closed = true;
+            throw exception;
+        }
     }
 
     @Override
@@ -200,7 +218,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         return matcher.find() ? matcher.group(1) : null;
     }
 
-    private static final class Connection implements WebSocket.Listener {
+    static final class Connection implements WebSocket.Listener {
 
         private final LinkedBlockingQueue<String> messages = new LinkedBlockingQueue<>();
         private final StringBuilder partialFrame = new StringBuilder();

@@ -151,8 +151,9 @@ the server is the same JVM driver started in `--node-compat` mode
 
 **About native code.** Playwright4J itself ships no native executables: no Node.js, no
 `node.exe` launcher, no geckodriver. The GraalVM dependencies (`org.graalvm.polyglot`,
-Truffle) contain GraalVM's own native support libraries; those are part of GraalVM, not
-helper programs added by this project.
+Truffle) contain GraalVM's own native support libraries, for example `libtruffleattach` in
+`truffle-api`, which the Truffle runtime may load on a stock JDK. Those are part of GraalVM,
+are not downloaded separately and are not used to control a browser.
 
 ## Tests and known limitations
 

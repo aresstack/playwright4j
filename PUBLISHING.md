@@ -62,9 +62,16 @@ released automatically** — no manual step in the portal UI.
 ./gradlew :playwright4j:publishToMavenLocal -Pversion=0.1.0
 ```
 
-This produces the jar / sources / javadoc / POM in your local `~/.m2` and verifies the layout
-(including that neither jar contains a native binary) without contacting the
+This produces the jar / sources / javadoc / POM in your local `~/.m2` without contacting the
 Central Portal.
+
+To check the result like CI does (no native file in the playwright4j jar, no `driver`/`driver-bundle` for
+consumers, POM resolvable by Maven):
+
+```bash
+./gradlew -p consumer-check checkConsumerDependencies -Pplaywright4jVersion=0.1.0
+mvn -B -f consumer-check/pom.xml verify -Dplaywright4j.version=0.1.0
+```
 
 ## Before cutting a release
 

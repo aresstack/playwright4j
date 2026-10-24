@@ -12,7 +12,7 @@ summarizes it.
 | Firefox WebDriver BiDi smoke | Windows CI | yes, release gate |
 | `TestBrowserTypeConnect` (launch-server, connect, reconnect, disconnect) for Chrome and Edge | CI | yes |
 | Jar check: no native binaries in the artifact | CI, release | yes |
-| `consumer-check/`: resolves the published setup and fails if the Node driver or a native binary reaches the classpath | CI, release | yes |
+| `consumer-check/`: resolves the documented setup twice, with Gradle (`build.gradle`) and with Maven from the published POM (`pom.xml`); both fail if `driver` or `driver-bundle` reaches the classpath, the Gradle check also fails on a native file in the jar | CI, release | yes |
 | Full upstream Playwright Java contract suite (`upstreamTest`) | `playwright-java-contract-tests` | no, audit |
 | `knownLimitationsCheck`: green iff exactly the known reds fail | `playwright-java-contract-tests` | no, audit |
 

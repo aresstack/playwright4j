@@ -32,6 +32,11 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat assemble testClasses --no-daemon --stacktrace
 
+      - name: Unit tests (playwright4j module)
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./gradlew.bat :playwright4j:test --no-daemon --stacktrace
+
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
         env:
@@ -74,9 +79,13 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright4j:publishToMavenLocal "-Pversion=0.0.0-ci" --no-daemon --stacktrace
 
-      - name: Consumer check — resolved Maven dependencies (no Node driver, no native binaries)
+      - name: Consumer check — Gradle resolution (no Node driver, no native binaries in the jar)
         shell: pwsh
         run: ./gradlew.bat -p consumer-check checkConsumerDependencies "-Pplaywright4jVersion=0.0.0-ci" --no-daemon --stacktrace
+
+      - name: Consumer check — Maven resolves the published POM (no Node driver)
+        shell: pwsh
+        run: mvn -B -f consumer-check/pom.xml verify "-Dplaywright4j.version=0.0.0-ci"
 
       - name: Upload reports
         if: always()

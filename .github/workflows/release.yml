@@ -24,6 +24,7 @@ on:
       - '.github/workflows/release.yml'
       - 'playwright4j/build.gradle'
       - 'build.gradle'
+      - 'consumer-check/**'
 
 jobs:
   publish:
@@ -119,9 +120,13 @@ jobs:
           if (Select-String -Path $pom.FullName -Pattern 'driver-bundle' -Quiet) { Write-Host "POM depends on driver-bundle (ships Node.js binaries)"; $failed = $true }
           if ($failed) { exit 1 }
 
-      - name: Consumer check — resolved Maven dependencies (no Node driver, no native binaries)
+      - name: Consumer check — Gradle resolution (no Node driver, no native binaries in the jar)
         shell: pwsh
         run: ./gradlew.bat -p consumer-check checkConsumerDependencies "-Pplaywright4jVersion=${{ steps.ver.outputs.version }}" --no-daemon --stacktrace
+
+      - name: Consumer check — Maven resolves the published POM (no Node driver)
+        shell: pwsh
+        run: mvn -B -f consumer-check/pom.xml verify "-Dplaywright4j.version=${{ steps.ver.outputs.version }}"
 
       - name: Build + sign + publish to Sonatype Central Portal
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

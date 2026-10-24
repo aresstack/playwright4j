@@ -118,12 +118,21 @@ public final class Driver {
     private static final String PACKAGE_ID_RESOURCE = "driver/package-id.txt";
     private static final String EXTRACTED_MARKER = ".playwright4j-extracted";
 
+    // FileChannel locks are held per JVM; threads of one JVM must serialize before taking one.
+    private static final Object EXTRACT_LOCK = new Object();
+    private static final long MOVE_RETRY_SECONDS = 10;
+
     /**
      * Some upstream APIs (e.g. trace viewer) read static assets relative to driverDir(), i.e.
      * {@code driverDir/package/lib/...}. Those assets live on the classpath under
      * {@code driver/package/}. Extract that tree once into driverDir so file-based access works
-     * without a real Node driver installation. Extraction goes to a temporary sibling directory
-     * that is moved into place, so a half-written tree (crash, concurrent JVM) is never reused.
+     * without a real Node driver installation.
+     *
+     * <p>The slow path runs under an in-JVM lock plus a file lock on {@code driverDir/.lock}, so
+     * concurrent JVMs (e.g. a test JVM and its launch-server JVMs) never delete a tree another one
+     * just finished. Extraction goes to a sibling staging directory that is moved into place, so a
+     * half-written tree is never reused; the move is retried briefly because on Windows antivirus or
+     * indexer handles on just-written files make the rename fail for a moment.
      */
     static void ensurePackageExtracted(Path driverDir) {
         Path packageDir = driverDir.resolve("package");
@@ -131,17 +140,48 @@ public final class Driver {
             return;
         }
         String prefix = com.aresstack.playwright4j.graal.PlaywrightDriverBundleSource.PACKAGE_PREFIX;
-        Path staging = null;
+        URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
+        if (probe == null) {
+            throw new IllegalStateException("Missing Playwright Core package resource " + prefix + "cli.js");
+        }
         try {
-            URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
-            if (probe == null) {
-                throw new IllegalStateException("Missing Playwright Core package resource " + prefix + "cli.js");
-            }
             Files.createDirectories(driverDir);
-            if (Files.exists(packageDir)) {
-                deleteTree(packageDir); // left over from an interrupted extraction (no marker)
+            synchronized (EXTRACT_LOCK) {
+                try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(driverDir.resolve(".lock"),
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+                     java.nio.channels.FileLock ignored = channel.lock()) {
+                    if (Files.exists(packageDir.resolve(EXTRACTED_MARKER))) {
+                        return; // another JVM finished while we waited for the lock
+                    }
+                    deleteStaleEntries(driverDir, packageDir);
+                    extractLocked(probe, prefix, driverDir, packageDir);
+                }
             }
-            staging = Files.createTempDirectory(driverDir, "package-");
+        } catch (IOException | java.net.URISyntaxException exception) {
+            throw new IllegalStateException("Cannot extract driver package assets to " + driverDir, exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while extracting driver package assets to " + driverDir, exception);
+        }
+    }
+
+    /** Under the lock: a package dir without marker and old staging dirs are leftovers of a crash. */
+    private static void deleteStaleEntries(Path driverDir, Path packageDir) throws IOException {
+        if (Files.exists(packageDir)) {
+            deleteTree(packageDir);
+        }
+        try (java.util.stream.Stream<Path> siblings = Files.list(driverDir)) {
+            siblings.filter(path -> path.getFileName().toString().startsWith("package-"))
+                    .forEach(Driver::deleteTree);
+        }
+    }
+
+    private static void extractLocked(URL probe, String prefix, Path driverDir, Path packageDir)
+            throws IOException, java.net.URISyntaxException, InterruptedException {
+        // Not createTempDirectory: that would make the shared tree rwx------ on POSIX.
+        Path staging = driverDir.resolve("package-" + java.util.UUID.randomUUID()).toAbsolutePath().normalize();
+        Files.createDirectory(staging);
+        try {
             if ("jar".equals(probe.getProtocol())) {
                 URLConnection connection = probe.openConnection();
                 connection.setUseCaches(false);
@@ -154,21 +194,30 @@ public final class Driver {
                 // Exploded classpath (IDE / Gradle test runs): copy the resource directory.
                 copyTree(Paths.get(probe.toURI()).getParent(), staging);
             }
-            Files.write(staging.resolve(EXTRACTED_MARKER), new byte[0]);
-            try {
-                Files.move(staging, packageDir, StandardCopyOption.ATOMIC_MOVE);
-                staging = null;
-            } catch (IOException alreadyThere) {
-                // Another JVM finished first; its complete tree wins.
-                if (!Files.exists(packageDir.resolve(EXTRACTED_MARKER))) {
-                    throw alreadyThere;
-                }
+            if (!Files.isRegularFile(staging.resolve("cli.js"))) {
+                throw new IOException("Extracted Playwright Core package has no cli.js (from " + probe + ")");
             }
-        } catch (IOException | java.net.URISyntaxException exception) {
-            throw new IllegalStateException("Cannot extract driver package assets to " + driverDir, exception);
+            Files.write(staging.resolve(EXTRACTED_MARKER), new byte[0]);
+            moveWithRetry(staging, packageDir);
+            staging = null;
         } finally {
             if (staging != null) {
                 deleteTree(staging);
+            }
+        }
+    }
+
+    private static void moveWithRetry(Path staging, Path packageDir) throws IOException, InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(MOVE_RETRY_SECONDS);
+        while (true) {
+            try {
+                Files.move(staging, packageDir, StandardCopyOption.ATOMIC_MOVE);
+                return;
+            } catch (IOException moveFailed) {
+                if (System.nanoTime() - deadline >= 0) {
+                    throw moveFailed;
+                }
+                Thread.sleep(200);
             }
         }
     }
@@ -181,7 +230,7 @@ public final class Driver {
             if (!name.startsWith(prefix) || entry.isDirectory()) {
                 continue;
             }
-            // Map driver/package/X -> packageDir/X
+            // Map driver/package/X -> packageDir/X (packageDir is absolute and normalized)
             Path target = packageDir.resolve(name.substring(prefix.length())).normalize();
             if (!target.startsWith(packageDir)) {
                 continue;

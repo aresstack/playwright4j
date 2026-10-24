@@ -18,6 +18,7 @@ package com.microsoft.playwright;
 
 import com.microsoft.playwright.impl.driver.Driver;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -67,27 +68,55 @@ public class TestBrowserTypeConnect extends TestBase {
   private static final long DESTROY_TIMEOUT_SECONDS = 15;
 
   private static int destroyProcessTree(Process process) throws InterruptedException {
+    // A pending interrupt (e.g. a JUnit timeout) must not abort the cleanup half-way and leak the
+    // browsers; restore it afterwards.
+    boolean interrupted = Thread.interrupted();
     List<ProcessHandle> descendants = process.descendants().collect(Collectors.toList());
-    // Server first, browsers after it is gone: clients must see the WebSocket close (and emit
-    // 'disconnected') rather than the browser dying underneath a still-running server. On Windows
-    // destroy() is an asynchronous TerminateProcess, so wait for the exit before touching children.
-    process.destroy();
-    if (!process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
-      process.destroyForcibly();
-      process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
-    }
-    descendants.forEach(ProcessHandle::destroy);
-    for (ProcessHandle descendant : descendants) {
-      try {
-        descendant.onExit().get(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
-      } catch (ExecutionException | java.util.concurrent.TimeoutException e) {
-        descendant.destroyForcibly();
+    try {
+      // Server first, browsers after it is gone: clients must see the WebSocket close (and emit
+      // 'disconnected') rather than the browser dying underneath a still-running server. On
+      // Windows destroy() is an asynchronous TerminateProcess, so wait for the exit first.
+      process.destroy();
+      if (!process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
+        process.destroyForcibly();
+        process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+      }
+    } finally {
+      descendants.forEach(ProcessHandle::destroy);
+      for (ProcessHandle descendant : descendants) {
+        try {
+          descendant.onExit().get(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (ExecutionException | java.util.concurrent.TimeoutException | InterruptedException e) {
+          descendant.destroyForcibly();
+        }
+      }
+      if (interrupted) {
+        Thread.currentThread().interrupt();
       }
     }
     if (process.isAlive()) {
       throw new IllegalStateException("launch-server process " + process.pid() + " did not exit");
     }
     return process.exitValue();
+  }
+
+  // playwright4j: servers started by individual tests; any still running after a test (e.g. it
+  // failed before its own kill()) is stopped in stopLeftoverServers().
+  private static final List<Process> startedServers = Collections.synchronizedList(new ArrayList<>());
+
+  @AfterEach
+  void stopLeftoverServers() throws InterruptedException {
+    List<Process> leftovers;
+    synchronized (startedServers) {
+      leftovers = new ArrayList<>(startedServers);
+      startedServers.clear();
+    }
+    for (Process process : leftovers) {
+      if (process != browserServer && process.isAlive()) {
+        log("stopping launch-server " + process.pid() + " left running by the test");
+        destroyProcessTree(process);
+      }
+    }
   }
 
   // playwright4j: bounded server start. The ws:// endpoint must appear on stdout within this time,
@@ -146,6 +175,7 @@ public class TestBrowserTypeConnect extends TestBase {
       BrowserServer result = new BrowserServer();
       result.process = process;
       result.wsEndpoint = endpoint;
+      startedServers.add(process);
       process = null;
       return result;
     } catch (IOException e) {

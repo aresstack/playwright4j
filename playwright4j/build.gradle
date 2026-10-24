@@ -132,6 +132,14 @@ publishing {
                     developerConnection = 'scm:git:ssh://git@github.com:aresstack/playwright4j.git'
                     url = 'https://github.com/aresstack/playwright4j'
                 }
+                // org.graalvm.polyglot:js is a pom-only aggregator on Maven Central (no jar). Gradle
+                // resolves it via the module metadata, but Maven needs <type>pom</type> or it fails
+                // looking for js-<version>.jar. Checked by consumer-check/pom.xml in CI.
+                withXml {
+                    asNode().dependencies.dependency
+                            .findAll { it.groupId.text() == 'org.graalvm.polyglot' && it.artifactId.text() == 'js' }
+                            .each { it.appendNode('type', 'pom') }
+                }
             }
         }
     }

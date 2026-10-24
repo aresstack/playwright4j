@@ -39,7 +39,7 @@ static List<String> forbiddenModules(Configuration configuration) {
 }
 
 tasks.register('checkConsumerDependencies') {
-    description = 'Fails if the resolved consumer classpath pulls in Microsoft\'s Node driver or any native binary.'
+    description = 'Fails if the resolved consumer classpath pulls in Microsoft\'s Node driver or the playwright4j jar contains a native binary.'
     doLast {
         def runtime = configurations.runtimeClasspath
         def modules = runtime.resolvedConfiguration.resolvedArtifacts.collect { it.moduleVersion.id.toString() }.sort()
@@ -62,6 +62,6 @@ tasks.register('checkConsumerDependencies') {
         if (unguarded.isEmpty()) {
             throw new GradleException('Expected the Playwright Java API without excludes to pull in driver-bundle; the check would no longer detect it.')
         }
-        println "OK: no Node driver, no native binaries. Without the excludes the API would add: ${unguarded}"
+        println "OK: no Node driver on the classpath, no native binaries in the playwright4j jar. Without the excludes the API would add: ${unguarded}"
     }
 }
