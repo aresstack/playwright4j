@@ -156,6 +156,14 @@
     };
   }
 
+  // Video recording spawns ffmpeg, which JdkHostProcessLauncher serves with a Java encoder (no
+  // native binary). Playwright's registry first checks that the ffmpeg executable is accessible
+  // (<registry>/ffmpeg-<rev>/ffmpeg-<platform>) and otherwise demands `playwright install ffmpeg`.
+  // Report exactly that registry path as accessible so no ffmpeg download is ever needed.
+  function isJavaBackedFfmpeg(path) {
+    return /(^|[\\/])ffmpeg-\d+[\\/]ffmpeg-(win64\.exe|linux|mac)$/.test(String(path));
+  }
+
   function hostExists(path) {
     try {
       return host.fileSystem().existsSync(String(path));
@@ -469,7 +477,7 @@
       return decodeRead(hostReadFile(path), options);
     },
     accessSync: function (path) {
-      if (!hostExists(path)) {
+      if (!hostExists(path) && !isJavaBackedFfmpeg(path)) {
         throw enoent('access', path);
       }
     },

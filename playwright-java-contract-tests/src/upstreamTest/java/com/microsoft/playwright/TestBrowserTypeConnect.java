@@ -68,12 +68,15 @@ public class TestBrowserTypeConnect extends TestBase {
 
   private static int destroyProcessTree(Process process) throws InterruptedException {
     List<ProcessHandle> descendants = process.descendants().collect(Collectors.toList());
+    // Server first, browsers after it is gone: clients must see the WebSocket close (and emit
+    // 'disconnected') rather than the browser dying underneath a still-running server. On Windows
+    // destroy() is an asynchronous TerminateProcess, so wait for the exit before touching children.
     process.destroy();
-    descendants.forEach(ProcessHandle::destroy);
     if (!process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
       process.destroyForcibly();
       process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
     }
+    descendants.forEach(ProcessHandle::destroy);
     for (ProcessHandle descendant : descendants) {
       try {
         descendant.onExit().get(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
