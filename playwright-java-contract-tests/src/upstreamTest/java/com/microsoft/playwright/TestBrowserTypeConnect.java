@@ -118,7 +118,28 @@ public class TestBrowserTypeConnect extends TestBase {
         destroyProcessTree(process);
       }
     }
+    awaitServerOutputSettled();
     assertNoServerErrors();
+  }
+
+  // playwright4j: browser.close() on a connected browser does not wait for the server to handle
+  // the disconnect, so an error from that cleanup is printed shortly after the test returned. Wait
+  // until the servers' stderr has been quiet for a moment (bounded) before blaming this test.
+  private static final long SERVER_OUTPUT_QUIET_MILLIS = 250;
+  private static final long SERVER_OUTPUT_SETTLE_MAX_MILLIS = 2_000;
+  private static volatile long lastServerOutputNanos;
+
+  private static void awaitServerOutputSettled() throws InterruptedException {
+    long start = System.nanoTime();
+    long quiet = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(SERVER_OUTPUT_QUIET_MILLIS);
+    long max = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(SERVER_OUTPUT_SETTLE_MAX_MILLIS);
+    while (System.nanoTime() - start < max) {
+      long now = System.nanoTime();
+      if (now - start >= quiet && now - lastServerOutputNanos >= quiet) {
+        return;
+      }
+      Thread.sleep(25);
+    }
   }
 
   // playwright4j: Node.js terminates on an unhandled rejection or an uncaught exception; the
@@ -133,6 +154,7 @@ public class TestBrowserTypeConnect extends TestBase {
       try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream(), UTF_8))) {
         String line;
         while ((line = reader.readLine()) != null) {
+          lastServerOutputNanos = System.nanoTime();
           System.err.println(line);
           if (line.startsWith(UnhandledRejections.LOG_PREFIX) || line.startsWith(UnhandledRejections.UNCAUGHT_LOG_PREFIX)) {
             serverErrors.add(line);

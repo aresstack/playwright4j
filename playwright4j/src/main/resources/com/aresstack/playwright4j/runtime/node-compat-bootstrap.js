@@ -1689,15 +1689,33 @@
       return;
     }
     state.bufferProcessing = true;
+    // A write callback that throws (see writeOne) must not strand the chunks behind it: keep
+    // writing and rethrow the first such exception afterwards.
+    let failed = false;
+    let failure;
     try {
       while (!state.writing && !state.corked && !state.destroyed && state.buffered.length > 0) {
-        writeOne(stream, state.buffered.shift());
+        try {
+          writeOne(stream, state.buffered.shift());
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
+        }
       }
     } finally {
       state.bufferProcessing = false;
     }
+    if (failed) {
+      throw failure;
+    }
   }
 
+  // _write usually calls back synchronously here, so the write callback (and whatever it
+  // triggers: 'drain', 'finish', 'close' listeners) runs inside the try below. Only a throw from
+  // _write itself fails the write; one from after the callback ran propagates to the caller (and
+  // from there to the event loop's error reporting) once the bookkeeping is done.
   function writeOne(stream, request) {
     const state = stream._writableState;
     state.writing = true;
@@ -1711,25 +1729,31 @@
       state.length -= request.length;
       state.pendingcb--;
       if (error) {
-        if (request.callback) {
-          request.callback(error);
+        try {
+          if (request.callback) {
+            request.callback(error);
+          }
+        } finally {
+          errorOrDestroyStream(stream, error);
         }
-        errorOrDestroyStream(stream, error);
         return;
       }
-      if (request.callback) {
-        request.callback();
+      try {
+        if (request.callback) {
+          request.callback();
+        }
+      } finally {
+        if (state.needDrain && state.length === 0) {
+          streamNextTick(function () {
+            if (state.needDrain && state.length === 0 && !state.destroyed) {
+              state.needDrain = false;
+              stream.emit('drain');
+            }
+          });
+        }
+        flushWriteBuffer(stream);
+        finishStreamIfDone(stream);
       }
-      if (state.needDrain && state.length === 0) {
-        streamNextTick(function () {
-          if (state.needDrain && state.length === 0 && !state.destroyed) {
-            state.needDrain = false;
-            stream.emit('drain');
-          }
-        });
-      }
-      flushWriteBuffer(stream);
-      finishStreamIfDone(stream);
     };
     try {
       if (typeof stream._write === 'function') {
@@ -1738,6 +1762,9 @@
         onwrite();
       }
     } catch (error) {
+      if (called) {
+        throw error;
+      }
       onwrite(error);
     }
   }
@@ -1778,7 +1805,9 @@
   }
 
   // Once end() was called and every write has called back: run _final, then mark the writable
-  // side finished right before 'finish' is emitted.
+  // side finished, call the end() callbacks and emit 'finish' (Node's order), then auto-destroy.
+  // As in writeOne, only a throw from _final itself fails the stream; a throwing callback or
+  // listener propagates after the stream has still been finished and destroyed.
   function finishStreamIfDone(stream) {
     const state = stream._writableState;
     if (!state.ending || state.finalCalled || state.finished || state.destroyed || state.pendingcb > 0) {
@@ -1792,22 +1821,33 @@
       }
       completed = true;
       if (error) {
-        state.onFinished.splice(0).forEach(function (callback) { callback(error); });
-        errorOrDestroyStream(stream, error);
+        const callbacks = state.onFinished.splice(0);
+        try {
+          callbacks.forEach(function (callback) { callback(error); });
+        } finally {
+          errorOrDestroyStream(stream, error);
+        }
         return;
       }
       if (state.destroyed) {
         return;
       }
       state.finished = true;
-      stream._emitFinish();
-      state.onFinished.splice(0).forEach(function (callback) { callback(); });
-      stream._afterFinish();
+      const callbacks = state.onFinished.splice(0);
+      try {
+        callbacks.forEach(function (callback) { callback(); });
+        stream._emitFinish();
+      } finally {
+        stream._afterFinish();
+      }
     };
     if (typeof stream._final === 'function') {
       try {
         stream._final(done);
       } catch (error) {
+        if (completed) {
+          throw error;
+        }
         done(error);
       }
     } else {
@@ -3679,9 +3719,15 @@
       this.destroy(error);
     }
 
-    // Called for a host 'end' event: the peer sent FIN, nothing more will arrive.
+    // Called for a host 'end' event: the peer sent FIN, nothing more will arrive. Like Node's
+    // onStreamRead (push(null), then read(0)): 'end' follows once the buffer is empty even if
+    // nothing consumes the socket (e.g. the client-certificate proxy's server socket, which only
+    // listens for 'close' until the browser sends its first bytes), so it still ends and closes.
     __peerEnded() {
       this.push(null);
+      if (this._readableBuffer.length === 0) {
+        this._scheduleEnd();
+      }
     }
 
     // Called for a host 'close' event: reading failed (connection reset, or a failed write closed
@@ -3998,7 +4044,8 @@
         socket.removeListener('data', onData);
         const request = parseHttpRequestHead(buffer.subarray(0, headerEnd).toString('latin1'), socket);
         const head = buffer.subarray(headerEnd + 4);
-        if (String(request.headers['upgrade'] || '').toLowerCase() === 'websocket') {
+        // Without an 'upgrade' listener Node (since v10) dispatches the request as a normal one.
+        if (String(request.headers['upgrade'] || '').toLowerCase() === 'websocket' && server.listenerCount('upgrade') > 0) {
           // Like Node's http server: the socket is handed over paused, so bytes arriving before
           // the new owner (ws) attaches its 'data' listener are buffered, not dropped.
           socket.readableFlowing = null;

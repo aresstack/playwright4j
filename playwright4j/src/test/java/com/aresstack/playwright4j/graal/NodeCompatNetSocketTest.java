@@ -162,6 +162,70 @@ final class NodeCompatNetSocketTest {
         assertEquals(List.of(), runtime.unhandledRejections().recorded());
     }
 
+    @Test
+    void closesAnUnreadOutboundSocketWhenThePeerCloses() throws Exception {
+        try (ServerSocket peer = new ServerSocket(0)) {
+            CompletableFuture<Void> closedByPeer = CompletableFuture.runAsync(() -> {
+                try (Socket socket = peer.accept()) {
+                    // FIN right away, before the client has sent or read anything.
+                    socket.shutdownOutput();
+                    readToEof(socket.getInputStream());
+                } catch (IOException exception) {
+                    throw new IllegalStateException(exception);
+                }
+            });
+            // Only 'close' and 'error' listeners, no consumer (like the client-certificate proxy's
+            // server socket before the browser's first bytes): Node still emits 'end', ends its
+            // side (allowHalfOpen=false) and closes.
+            runtime.evaluate("net-test-unread.js", ""
+                    + "(function () {\n"
+                    + "  const test = globalThis.__netTest;\n"
+                    + "  const socket = require('net').createConnection({ host: '127.0.0.1', port: " + peer.getLocalPort() + " });\n"
+                    + "  socket.once('close', function () { test.events.push('client-close'); });\n"
+                    + "  socket.once('error', function (error) { test.events.push('client-error:' + error.message); });\n"
+                    + "})();");
+            pumpUntil("the unread client socket to close", () -> events().contains("client-close"));
+            closedByPeer.get();
+            assertEquals(List.of("client-close"), events());
+        }
+        assertNoLeftovers();
+        assertEquals(List.of(), runtime.unhandledRejections().recorded());
+    }
+
+    @Test
+    void answersAWebSocketUpgradeWithoutUpgradeListenerAsANormalRequest() throws IOException {
+        // Node (since v10) hands an upgrade request nobody takes to the 'request' handler, so the
+        // client gets an answer and the socket is not left paused (e.g. the trace viewer server).
+        runtime.evaluate("http-test.js", ""
+                + "(function () {\n"
+                + "  const test = globalThis.__netTest;\n"
+                + "  test.httpServer = require('http').createServer(function (request, response) {\n"
+                + "    test.events.push('request:' + request.url);\n"
+                + "    response.statusCode = 404;\n"
+                + "    response.end('no websocket here');\n"
+                + "  });\n"
+                + "  test.httpServer.on('connection', function (socket) {\n"
+                + "    socket.on('close', function () { test.events.push('http-socket-close'); });\n"
+                + "  });\n"
+                + "  test.httpServer.listen(0, '127.0.0.1', function () { test.httpPort = test.httpServer.address().port; });\n"
+                + "})();");
+        pumpUntil("the http server to listen", () -> js("__netTest.httpPort > 0").asBoolean());
+        try (Client client = Client.connect(js("__netTest.httpPort").asInt())) {
+            client.write("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                    + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+            pumpUntil("the 404 answer", () -> client.received().endsWith("no websocket here"));
+            assertTrue(client.received().startsWith("HTTP/1.1 404"), client.received());
+            client.socket.shutdownOutput();
+            pumpUntil("the server FIN", client::hasSeenEof);
+            pumpUntil("the server socket 'close'", () -> events().contains("http-socket-close"));
+        } finally {
+            runtime.evaluate("http-test-close.js", "__netTest.httpServer.close();");
+        }
+        assertEquals(List.of("request:/ws", "http-socket-close"), events());
+        assertNoLeftovers();
+        assertEquals(List.of(), runtime.unhandledRejections().recorded());
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     private void assertNoLeftovers() {
