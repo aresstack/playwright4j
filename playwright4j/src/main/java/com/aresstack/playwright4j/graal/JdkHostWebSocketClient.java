@@ -46,10 +46,16 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         WebSocket webSocket = builder
                 .buildAsync(URI.create(url), connection)
                 .join();
+        String id = register(connection, webSocket);
+        Playwright4JDebug.log("[pw4j-cdp] OPEN " + url);
+        return id;
+    }
+
+    // Package-private for tests, which register a stub WebSocket.
+    String register(Connection connection, WebSocket webSocket) {
         String id = UUID.randomUUID().toString();
         connection.attach(webSocket);
         connections.put(id, connection);
-        Playwright4JDebug.log("[pw4j-cdp] OPEN " + url);
         return id;
     }
 
@@ -131,23 +137,18 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     @Override
     @org.graalvm.polyglot.HostAccess.Export
     public void send(String connectionId, String message) {
-        // Like Node's ws (WebSocket#send after close), a send on a closed or broken socket is dropped
-        // instead of thrown: a killed peer resets the TCP connection before the listener sees the
-        // error, and failing the send would reject the caller before the transport has surfaced
-        // onclose, so Playwright would never emit 'disconnected'. Mark the connection closed so the
-        // next drain() reports the close.
-        Connection connection = connections.get(connectionId);
-        if (connection == null || connection.closed) {
-            Playwright4JDebug.log("[pw4j-cdp] DROP (closed) " + truncate(message));
-            return;
-        }
+        Connection connection = connection(connectionId);
         Playwright4JDebug.log("[pw4j-cdp] SEND " + truncate(message));
         try {
             connection.webSocket.sendText(message, true).join();
         } catch (CompletionException | CancellationException exception) {
-            Playwright4JDebug.log("[pw4j-cdp] DROP (" + exception.getCause() + ") " + truncate(message));
+            // A killed peer resets the TCP connection, and java.net.http fails the write ("Output
+            // closed") before the listener's onError/onClose has run. Mark the connection closed so
+            // isClosed() agrees with the failed send: the connect transport then drops the send and
+            // surfaces onclose (Browser 'disconnected') instead of failing the call with an I/O
+            // error first. The failure is still thrown, e.g. for the launched browser's CDP pipe.
             connection.closed = true;
-            connection.webSocket.abort();
+            throw exception;
         }
     }
 
@@ -217,7 +218,7 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
         return matcher.find() ? matcher.group(1) : null;
     }
 
-    private static final class Connection implements WebSocket.Listener {
+    static final class Connection implements WebSocket.Listener {
 
         private final LinkedBlockingQueue<String> messages = new LinkedBlockingQueue<>();
         private final StringBuilder partialFrame = new StringBuilder();

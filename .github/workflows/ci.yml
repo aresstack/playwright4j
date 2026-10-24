@@ -32,6 +32,11 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat assemble testClasses --no-daemon --stacktrace
 
+      - name: Unit tests (playwright4j module)
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./gradlew.bat :playwright4j:test --no-daemon --stacktrace
+
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
         env:

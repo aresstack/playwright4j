@@ -4540,12 +4540,22 @@
       }
 
       send(message) {
-        // ws drops a send after close; the host client does the same for a broken socket.
+        // Like ws (WebSocketTransport.send without a callback), a send on a closed socket is dropped:
+        // Playwright learns about the close through onclose, which drain() surfaces once the host
+        // reports isClosed(), so 'disconnected' is emitted and the pending call rejects with the
+        // close reason instead of an I/O error.
         if (this.__closed) {
           return;
         }
         traceWebSocket('transport-send:' + JSON.stringify(message));
-        host.webSocketClient().send(this.connectionId, JSON.stringify(message));
+        try {
+          host.webSocketClient().send(this.connectionId, JSON.stringify(message));
+        } catch (error) {
+          if (!host.webSocketClient().isClosed(this.connectionId)) {
+            throw error;
+          }
+          traceWebSocket('transport-send-dropped:' + (error && error.message));
+        }
       }
 
       drain() {
