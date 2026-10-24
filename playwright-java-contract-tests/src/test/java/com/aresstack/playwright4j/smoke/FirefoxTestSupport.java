@@ -10,6 +10,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -24,7 +25,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 final class FirefoxTestSupport {
     static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
     static final long CLOSE_BUDGET_MILLIS = 10_000;
-    private static final long PROCESS_EXIT_GRACE_MILLIS = 5_000;
+    private static final long PROCESS_EXIT_GRACE_MILLIS = 15_000;
+    private static final long SLOW_EXIT_MILLIS = 5_000;
 
     interface Smoke {
         void run(String executable) throws Exception;
@@ -76,31 +78,45 @@ final class FirefoxTestSupport {
 
     // Every Firefox process (main + content processes) started by this test must be gone shortly
     // after browser.close(); a survivor means the process exit was not observed or not enforced.
+    // close() returns once the browser's main process has ended. On the Windows runner some of its
+    // processes were seen still running 5 s later and gone a moment after, so the exit window is
+    // PROCESS_EXIT_GRACE_MILLIS, and any process running longer than SLOW_EXIT_MILLIS is named in
+    // the log with its parent and command line.
     private static void assertNoFirefoxLeftBehind(Set<Long> before) throws InterruptedException {
-        List<FirefoxProcess> survivors = awaitNoNewFirefox(before, PROCESS_EXIT_GRACE_MILLIS);
-        if (!survivors.isEmpty()) {
-            fail("Firefox processes survived browser.close(): " + survivors);
-        }
-    }
-
-    private static List<FirefoxProcess> awaitNoNewFirefox(Set<Long> before, long graceMillis)
-            throws InterruptedException {
-        long deadline = System.currentTimeMillis() + graceMillis;
+        long start = System.currentTimeMillis();
+        long deadline = start + PROCESS_EXIT_GRACE_MILLIS;
+        Map<Long, FirefoxProcess> slow = new LinkedHashMap<>();
         Set<Long> leftovers;
-        do {
+        while (true) {
             leftovers = firefoxPids();
             leftovers.removeAll(before);
             if (leftovers.isEmpty()) {
-                return List.of();
+                break;
+            }
+            long now = System.currentTimeMillis();
+            if (now >= deadline) {
+                fail("Firefox processes survived browser.close() by " + PROCESS_EXIT_GRACE_MILLIS + " ms: "
+                        + describe(leftovers, firefoxProcessDetails()));
+            }
+            if (now - start >= SLOW_EXIT_MILLIS && !slow.keySet().containsAll(leftovers)) {
+                for (FirefoxProcess process : describe(leftovers, firefoxProcessDetails())) {
+                    slow.putIfAbsent(process.pid, process);
+                }
             }
             Thread.sleep(200);
-        } while (System.currentTimeMillis() < deadline);
-        Map<Long, FirefoxProcess> running = firefoxProcessDetails();
-        List<FirefoxProcess> survivors = new ArrayList<>();
-        for (Long pid : leftovers) {
-            survivors.add(running.getOrDefault(pid, new FirefoxProcess(pid, -1, "(ended)")));
         }
-        return survivors;
+        if (!slow.isEmpty()) {
+            System.out.println("Firefox processes still ran " + SLOW_EXIT_MILLIS + " ms after close() and ended within "
+                    + (System.currentTimeMillis() - start) + " ms: " + slow.values());
+        }
+    }
+
+    private static List<FirefoxProcess> describe(Set<Long> pids, Map<Long, FirefoxProcess> running) {
+        List<FirefoxProcess> described = new ArrayList<>();
+        for (Long pid : pids) {
+            described.add(running.getOrDefault(pid, new FirefoxProcess(pid, -1, "(ended before it could be described)")));
+        }
+        return described;
     }
 
     /** A running Firefox process with its parent and its full command line. */

@@ -52,6 +52,11 @@ assertions run. It checks:
 - a `user.js` the profile already has keeps its own lines byte for byte across launches, before
   Playwright's preferences, which win for the same preference.
 
+Every Firefox smoke test also checks that no Firefox process started during the test still runs
+15 s after the browser was closed. A survivor fails the test with its pid, parent pid and command
+line; a process still running after 5 s that ends within the 15 s is named the same way in the
+test output. The CI job uploads the `firefoxSmoke` reports and prints failures in the log.
+
 ## Historical upstream contract-test sweep
 
 The final controlled upstream contract-test sweep for this milestone completed

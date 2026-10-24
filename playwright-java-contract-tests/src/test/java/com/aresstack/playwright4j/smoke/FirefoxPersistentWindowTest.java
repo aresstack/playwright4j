@@ -389,8 +389,6 @@ public class FirefoxPersistentWindowTest {
             expectOtherWindows("after closing the persistent context", otherRoots, otherWindows);
         } finally {
             if (other != null) {
-                System.out.println("Separately started Firefox before it is stopped: launcher " + other.pid()
-                        + ", tree " + treePids(Set.of(other.pid())));
                 stopProcessTree(other);
             }
             deleteRecursively(userDataDir);
