@@ -17,13 +17,9 @@ Node.js runtime, native helper executables, or browser downloads.
 - **Official Playwright Java API**: your code uses `com.microsoft.playwright.*`, there is
   no Playwright4J-specific API to learn
 
-> **Version note.** This README describes the upcoming release `0.2.0`, which is not
-> published yet. It adds Firefox over WebDriver BiDi and the Node-free `launch-server`.
-> Until `0.2.0` is on Maven Central, build from source.
->
-> The older release `0.1.0` supports Chrome and Edge only, and it does not resolve with
-> Maven: its POM declares the GraalJS dependency `org.graalvm.polyglot:js` without
-> `<type>pom</type>`. `0.2.0` fixes this.
+> **Version note.** The current release is `0.2.0`. The older release `0.1.0` supports
+> Chrome and Edge only and does not resolve with Maven (its POM declares
+> `org.graalvm.polyglot:js` without `<type>pom</type>`); use `0.2.0` instead.
 
 ## Quick start
 
