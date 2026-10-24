@@ -26,6 +26,7 @@ import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.assertClosedPr
 import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.deleteRecursively;
 import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.runGuarded;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -46,6 +47,9 @@ public class FirefoxPersistentWindowTest {
             "// Einstellungen f\u00fcr diesen Test",
             "user_pref(\"playwright4j.test.kept\", \"\u00e4\u00f6\u00fc\");",
             "user_pref(\"browser.startup.page\", 3);",
+            // Firefox accepts a comment left open at the end of a file; it must not swallow
+            // Playwright's lines that follow the profile's own.
+            "/* switched off, and the comment is never closed: user_pref(\"playwright4j.test.off\", 1);",
             "");
 
     private static final String FORM = "<input><button onclick=\"document.getElementById('out').textContent = "
@@ -107,7 +111,7 @@ public class FirefoxPersistentWindowTest {
         Path userDataDir = Files.createTempDirectory("playwright4j-firefox-windows");
         // A user.js the profile already has: its own lines survive Playwright's rewrite byte for byte
         // (here in ISO-8859-1, as an older editor saves it), and for a preference Playwright sets
-        // (start page) Playwright's value wins.
+        // (start page) Playwright's value wins, also over the comment the profile leaves open.
         Path userJs = userDataDir.resolve("user.js");
         Files.write(userJs, String.join("\r\n", OWN_USER_JS).getBytes(StandardCharsets.ISO_8859_1));
         try (Playwright playwright = Playwright.create()) {
@@ -170,6 +174,7 @@ public class FirefoxPersistentWindowTest {
                 context.close();
                 assertClosedPromptly("persistent context.close()", start);
             }
+            assertPrefsApplied(userDataDir);
 
             context = launch(playwright, executable, userDataDir);
             try {
@@ -399,17 +404,27 @@ public class FirefoxPersistentWindowTest {
     private static void assertUserJs(Path userJs) throws java.io.IOException {
         // Read byte for byte: the profile's own lines are ISO-8859-1, Playwright's are UTF-8.
         List<String> lines = List.of(new String(Files.readAllBytes(userJs), StandardCharsets.ISO_8859_1).split("\r?\n"));
-        for (String own : OWN_USER_JS.subList(0, 2)) {
+        for (String own : OWN_USER_JS.subList(0, OWN_USER_JS.size() - 1)) {
             assertEquals(1, lines.stream().filter(own::equals).count(), "the profile's own line is kept once: " + own + " in " + lines);
         }
-        assertTrue(lines.indexOf(OWN_USER_JS.get(1)) < lines.indexOf("user_pref(\"browser.startup.page\", 0);"),
-                "the profile's own lines come before Playwright's, which win: " + lines);
-        assertEquals(List.of("user_pref(\"browser.startup.page\", 0);"),
+        // The profile's own start page stays, so it applies again on a launch that no longer sets one;
+        // Playwright's comes after it and wins.
+        assertEquals(List.of(OWN_USER_JS.get(2), "user_pref(\"browser.startup.page\", 0);"),
                 lines.stream().filter(l -> l.contains("\"browser.startup.page\"")).collect(Collectors.toList()),
-                "Playwright's start page wins over the profile's");
+                "the profile's own lines come before Playwright's, which win: " + lines);
         assertTrue(lines.contains("user_pref(\"browser.aboutwelcome.enabled\", false);"), "welcome page off: " + lines);
         assertTrue(lines.contains("user_pref(\"browser.tabs.closeWindowWithLastTab\", false);"),
                 "closing the last tab in the UI keeps the window: " + lines);
+    }
+
+    private static void assertPrefsApplied(Path userDataDir) throws java.io.IOException {
+        // What Firefox applied, as it saved it on exit.
+        String prefs = new String(Files.readAllBytes(userDataDir.resolve("prefs.js")), StandardCharsets.ISO_8859_1);
+        assertTrue(prefs.contains(OWN_USER_JS.get(1)), "the profile's own preference applies: " + prefs);
+        assertTrue(prefs.contains("user_pref(\"browser.startup.page\", 0);"), "Playwright's start page applies: " + prefs);
+        assertTrue(prefs.contains("user_pref(\"browser.tabs.closeWindowWithLastTab\", false);"),
+                "Playwright's preferences after the profile's open comment apply: " + prefs);
+        assertFalse(prefs.contains("playwright4j.test.off"), "a line inside the profile's open comment applies: " + prefs);
     }
 
     private static BrowserContext launch(Playwright playwright, String executable, Path userDataDir) {

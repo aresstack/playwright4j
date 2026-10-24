@@ -5687,10 +5687,11 @@
 
   // Playwright's createProfile (third_party/firefoxPrefs.js) rewrites user.js with its own
   // preferences on every launch and drops whatever the file held. The lines of an existing user.js
-  // are kept in a marked block before Playwright's lines, except a line that only sets a preference
-  // Playwright now writes itself: Firefox applies the last value it reads, so Playwright's (or
-  // firefoxUserPrefs) wins. On the next launch only the marked block counts as the profile's own;
-  // the rest is Playwright's from last time. The file is handled as bytes, whatever its encoding.
+  // are kept in a marked block before Playwright's lines: Firefox applies the last value it reads,
+  // so for the same preference Playwright's (or firefoxUserPrefs) wins on this launch, and the
+  // profile's own value applies again on a launch that no longer sets it. On the next launch only
+  // the marked block counts as the profile's own; the rest is Playwright's from last time. The file
+  // is handled as bytes, whatever its encoding.
   // Defaults added to Playwright's list, unless firefoxUserPrefs sets them: no first-run pages it
   // misses (about:welcome onboarding, privacy notice tab), and, for a persistent launch, closing the
   // last tab of a window replaces it with a blank tab instead of closing the window, which for the
@@ -5708,11 +5709,19 @@
   const KEPT_USER_JS_BEGIN = '// playwright4j: the lines below are kept from this profile\'s own user.js on every launch.';
   const KEPT_USER_JS_END = '// playwright4j: end of the kept lines; Playwright\'s preferences follow.';
 
-  // The preference a line sets when the line is exactly one statement (an optional // comment may
-  // follow); undefined for any other line.
-  function userJsPrefName(line) {
-    const match = /^\s*(?:user_|sticky_)?pref\s*\(\s*(["'])((?:(?!\1).)*)\1\s*,(?:[^;"'\/]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*\)\s*;\s*(?:\/\/.*)?$/.exec(line);
-    return match ? match[2] : undefined;
+  // The preference a line sets when the line is exactly as Playwright writes it,
+  // user_pref(<JSON name>, <JSON value>); undefined for any other line.
+  function playwrightUserJsPrefName(line) {
+    const match = /^user_pref\((".*?"), (.*)\);$/.exec(line);
+    if (!match) {
+      return undefined;
+    }
+    try {
+      const name = JSON.parse(match[1]);
+      return line === 'user_pref(' + JSON.stringify(name) + ', ' + JSON.stringify(JSON.parse(match[2])) + ');' ? name : undefined;
+    } catch (notJson) {
+      return undefined;
+    }
   }
 
   function readUserJsBytes(path) {
@@ -5720,16 +5729,74 @@
     return modules.fs.existsSync(path) ? String(modules.fs.readFileSync(path, 'latin1')).replace(/^\xEF\xBB\xBF/, '') : '';
   }
 
-  function keptUserJsLines(previous, written) {
+  // The profile's own lines of the user.js found at launch: the marked block, or every line of a
+  // user.js without the markers. Not the lines of one that Playwright wrote, as plain Playwright and
+  // playwright4j up to 0.2.1 did on every launch: it holds Playwright's default preferences, and
+  // keeping its lines would keep that launch's firefoxUserPrefs for good. A user.js counts as
+  // Playwright's when it sets at least 90% of the default preferences written now, each in
+  // Playwright's own format (a Playwright update may add or drop a few).
+  function keptUserJsLines(previous, playwrightDefaults) {
     const lines = previous.split(/\r?\n/);
     const begin = lines.indexOf(KEPT_USER_JS_BEGIN);
     const end = lines.indexOf(KEPT_USER_JS_END);
+    if (begin < 0 || end < begin) {
+      const defaultsFound = new Set(lines.map(playwrightUserJsPrefName).filter(function (name) {
+        return playwrightDefaults.has(name);
+      }));
+      if (playwrightDefaults.size >= 20 && defaultsFound.size >= playwrightDefaults.size * 0.9) {
+        return [];
+      }
+    }
     const own = begin >= 0 && end > begin ? lines.slice(begin + 1, end) : lines;
-    const writtenNames = new Set(written.split(/\r?\n/).map(userJsPrefName).filter(Boolean));
     return own.filter(function (line) {
-      const name = userJsPrefName(line);
-      return line.trim() && line !== KEPT_USER_JS_BEGIN && line !== KEPT_USER_JS_END && !(name && writtenNames.has(name));
+      return line.trim() && line !== KEPT_USER_JS_BEGIN && line !== KEPT_USER_JS_END;
     });
+  }
+
+  // Firefox reads user.js as one text: an unclosed /* comment or string, or a last statement
+  // without its ';', at the end of the kept lines would take Playwright's first lines with it
+  // (after an error Firefox skips to the next ';'). Firefox only reports such a tail at the end of
+  // a file, so the kept lines stay as they are, and this closes them off after the END marker: it
+  // ends the comment or string, and an unfinished statement fails on a stray keyword and ends at
+  // the ';' after it, so it is not applied, as at the end of the profile's own file.
+  function userJsTailGuard(text) {
+    let state = 'code';
+    let quote = '';
+    let pending = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      const next = text[i + 1];
+      if (state === 'line') {
+        if (c === '\n' || c === '\r') {
+          state = 'code';
+        }
+      } else if (state === 'block') {
+        if (c === '*' && next === '/') {
+          state = 'code';
+          i++;
+        }
+      } else if (state === 'string') {
+        if (c === '\\') {
+          i++;
+        } else if (c === quote) {
+          state = 'code';
+        }
+      } else if (c === '#' || (c === '/' && next === '/')) {
+        state = 'line';
+      } else if (c === '/' && next === '*') {
+        state = 'block';
+        i++;
+      } else if (c === '"' || c === "'") {
+        state = 'string';
+        quote = c;
+        pending = true;
+      } else if (c === ';') {
+        pending = false;
+      } else if (!/\s/.test(c)) {
+        pending = true;
+      }
+    }
+    return (state === 'block' ? '*/\n' : state === 'string' ? quote + '\n' : '') + (pending ? 'user_pref;\n' : '');
   }
 
   function patchBidiFirefoxUserJs(BidiFirefox) {
@@ -5749,15 +5816,17 @@
           options && options[PERSISTENT_LAUNCH_OPTION] ? FIREFOX_PERSISTENT_DEFAULT_PREFS : {},
           (options && options.firefoxUserPrefs) || {});
       await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
-      if (!previous) {
-        return;
-      }
       const written = readUserJsBytes(userJs);
-      const kept = keptUserJsLines(previous, written);
-      if (kept.length) {
-        const text = KEPT_USER_JS_BEGIN + '\n' + kept.join('\n') + '\n' + KEPT_USER_JS_END + '\n' + written + '\n';
-        modules.fs.writeFileSync(userJs, global.Buffer.from(text, 'latin1'));
-      }
+      const playwrightDefaults = new Set(written.split(/\r?\n/).map(playwrightUserJsPrefName).filter(function (name) {
+        return name !== undefined && !Object.prototype.hasOwnProperty.call(prefs, name);
+      }));
+      const kept = previous ? keptUserJsLines(previous, playwrightDefaults).map(function (line) { return line + '\n'; }).join('') : '';
+      // The markers are written even when nothing is kept: without them the next launch would take
+      // the lines Playwright wrote now, firefoxUserPrefs included, for the profile's own.
+      // The END marker counts for the guard: an open string ends at its apostrophe.
+      const block = KEPT_USER_JS_BEGIN + '\n' + kept + KEPT_USER_JS_END + '\n';
+      const text = block + userJsTailGuard(block) + written + '\n';
+      modules.fs.writeFileSync(userJs, global.Buffer.from(text, 'latin1'));
     };
   }
 
