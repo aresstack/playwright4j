@@ -985,9 +985,11 @@
     return this;
   };
 
-  EventEmitter.prototype.addListener = function (name, listener) {
-    return this.on(name, listener);
-  };
+  // Like Node, addListener/removeListener are the very same functions as on/off. Playwright's
+  // BidiSession and CDPSession assign `this.off = super.removeListener` (and `this.on =
+  // super.on`); delegating via this.off/this.on would then recurse until the stack overflows,
+  // which broke BrowserContext.close() for Firefox over WebDriver BiDi.
+  EventEmitter.prototype.addListener = EventEmitter.prototype.on;
 
   EventEmitter.prototype.prependListener = function (name, listener) {
     const registry = this.__listeners();
@@ -1025,9 +1027,7 @@
     return this;
   };
 
-  EventEmitter.prototype.removeListener = function (name, listener) {
-    return this.off(name, listener);
-  };
+  EventEmitter.prototype.removeListener = EventEmitter.prototype.off;
 
   EventEmitter.prototype.removeAllListeners = function (name) {
     const registry = this.__listeners();
