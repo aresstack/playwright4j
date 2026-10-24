@@ -1,5 +1,8 @@
 # Playwright4J
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.aresstack/playwright4j.svg)](https://central.sonatype.com/artifact/com.aresstack/playwright4j)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 Playwright4J is an experimental Java/GraalVM runtime for running the official
 Microsoft Playwright Core JavaScript driver inside the JVM, without requiring a
 Node.js runtime process for the main driver.
