@@ -44,6 +44,23 @@ jobs:
           BROWSER_CHANNEL: msedge
         run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --rerun-tasks --no-daemon --stacktrace
 
+      - name: Firefox BiDi smoke (installed Mozilla Firefox, no downloads)
+        shell: pwsh
+        run: |
+          $possible = @(
+            "$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+            "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe",
+            "$env:LOCALAPPDATA\Mozilla Firefox\firefox.exe"
+          )
+          $firefox = $possible | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $firefox) {
+            Write-Host 'No installed Firefox on this runner; run experimental smoke on a Windows machine with Firefox.'
+          } else {
+            $env:FIREFOX_EXECUTABLE = $firefox
+            ./gradlew.bat :playwright-java-contract-tests:firefoxBiDiSmoke --no-daemon --stacktrace
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4

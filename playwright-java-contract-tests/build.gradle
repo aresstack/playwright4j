@@ -42,6 +42,22 @@ test {
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
 }
 
+tasks.register('firefoxBiDiSmoke', Test) {
+    description = 'Launch and validate locally installed Firefox using experimental moz-firefox WebDriver BiDi.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest' }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+    environment 'FIREFOX_EXECUTABLE', System.getenv('FIREFOX_EXECUTABLE') ?: ''
+    systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
+}
+
 // Tiny per-channel smoke (launch -> newPage -> setContent -> evaluate 1+1 -> close) against the
 // playwright4j driver. Channel via -Pplaywright4j.browserChannel or BROWSER_CHANNEL env (chrome/msedge).
 // Used by the push/PR CI to prove Chrome and Edge work without a full sweep.

@@ -764,7 +764,7 @@
     child.emit('close', code, null);
   }
 
-  function createSpawnedProcess(processId, endpoint) {
+  function createSpawnedProcess(processId, endpoint, engine) {
     const child = new EventEmitter();
     child.pid = Math.floor(Math.random() * 1000000) + 1;
     child.killed = false;
@@ -799,11 +799,12 @@
     };
     Promise.resolve().then(function () {
       child.emit('spawn');
-      // Playwright's waitForReadyState waits for Chromium's "DevTools listening on ..." line
-      // on stderr when an explicit --remote-debugging-port is supplied. Our launcher already
-      // discovered the endpoint, so surface it as that line once the consumer is listening.
+      // Emit the original browser's readiness event after the caller subscribes.
       if (endpoint) {
-        child.stderr.emit('data', 'DevTools listening on ' + endpoint + '\n');
+        const prefix = engine === 'firefox-bidi'
+          ? 'WebDriver BiDi listening on '
+          : 'DevTools listening on ';
+        child.stderr.emit('data', prefix + endpoint + '\n');
       }
     });
     return child;
@@ -914,6 +915,17 @@
 
       // A Chromium launch is identified by its remote-debugging transport flag; everything else
       // (notably the ffmpeg video encoder) is a general subprocess fed via stdin.
+      const isFirefoxBiDi = argList.indexOf('--profile') >= 0 && argList.some(function (value) {
+        return value.indexOf('--remote-debugging-port=') === 0;
+      });
+      if (isFirefoxBiDi) {
+        // Use the installed Firefox through Playwright Core's experimental moz-firefox BiDi channel.
+        const result = String(host.processLauncher().launchFirefoxBiDi(String(command), joinedArguments, workingDirectory));
+        const separatorIndex = result.indexOf(ARGUMENT_SEPARATOR);
+        const processId = separatorIndex < 0 ? result : result.substring(0, separatorIndex);
+        const endpoint = separatorIndex < 0 ? '' : result.substring(separatorIndex + 1);
+        return createSpawnedProcess(processId, endpoint, 'firefox-bidi');
+      }
       const isChromium = argList.some(function (value) {
         return value.indexOf('--remote-debugging') === 0;
       });

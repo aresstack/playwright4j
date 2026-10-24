@@ -12,6 +12,10 @@ public interface HostProcessLauncher {
     @HostAccess.Export
     String launchChromium(String command, String arguments, String workingDirectory);
 
+    /** Launch the installed stock Firefox over Playwright's experimental WebDriver BiDi channel. */
+    @HostAccess.Export
+    String launchFirefoxBiDi(String command, String arguments, String workingDirectory);
+
     @HostAccess.Export
     void close(String processId);
 
