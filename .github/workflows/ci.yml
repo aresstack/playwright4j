@@ -100,6 +100,8 @@ jobs:
     # Firefox over WebDriver BiDi (Playwright channel moz-firefox) using the Firefox that is
     # preinstalled on the windows-2022 image. Separate job so Chrome/Edge stay an independent
     # gate while the BiDi lifecycle work lands. The test fails (never skips) without Firefox.
+    # Covers launch() headless and launchPersistentContext() headed with a profile directory
+    # (the GPT Desktop path; headed exercises the Windows launcher-process handoff).
     runs-on: windows-2022
     timeout-minutes: 30
 
