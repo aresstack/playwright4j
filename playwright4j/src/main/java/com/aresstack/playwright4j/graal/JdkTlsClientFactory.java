@@ -7,7 +7,7 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509ExtendedKeyManager;
-import javax.net.ssl.X509TrustManager;
+import javax.net.ssl.X509ExtendedTrustManager;
 import java.io.ByteArrayInputStream;
 import java.net.Socket;
 import java.security.Principal;
@@ -255,13 +255,33 @@ final class JdkTlsClientFactory {
         }
     }
 
-    private static final X509TrustManager TRUST_ALL = new X509TrustManager() {
+    // Must be an X509ExtendedTrustManager: the JDK wraps a plain X509TrustManager and then still
+    // performs endpoint identification itself, so ignoreHTTPSErrors would fail on a hostname
+    // mismatch. The extended variants receive the socket/engine and skip that check, which keeps
+    // hostname verification on for every client that uses the default trust managers.
+    static final X509ExtendedTrustManager TRUST_ALL = new X509ExtendedTrustManager() {
         @Override
         public void checkClientTrusted(X509Certificate[] chain, String authType) {
         }
 
         @Override
         public void checkServerTrusted(X509Certificate[] chain, String authType) {
+        }
+
+        @Override
+        public void checkClientTrusted(X509Certificate[] chain, String authType, Socket socket) {
+        }
+
+        @Override
+        public void checkServerTrusted(X509Certificate[] chain, String authType, Socket socket) {
+        }
+
+        @Override
+        public void checkClientTrusted(X509Certificate[] chain, String authType, SSLEngine engine) {
+        }
+
+        @Override
+        public void checkServerTrusted(X509Certificate[] chain, String authType, SSLEngine engine) {
         }
 
         @Override

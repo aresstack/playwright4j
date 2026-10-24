@@ -29,6 +29,15 @@ public final class JdkHostCrypto {
 
     private final Map<String, PrivateKey> privateKeys = new ConcurrentHashMap<String, PrivateKey>();
     private final AtomicLong ids = new AtomicLong(1);
+    private final java.security.SecureRandom secureRandom = new java.security.SecureRandom();
+
+    /** Base64 of {@code length} bytes from SecureRandom; backs the runtime's crypto.randomBytes. */
+    @HostAccess.Export
+    public String randomBytes(int length) {
+        byte[] bytes = new byte[Math.max(0, length)];
+        secureRandom.nextBytes(bytes);
+        return java.util.Base64.getEncoder().encodeToString(bytes);
+    }
 
     /**
      * Generates an RSA key pair. Returns {@code keyId<UNIT>pkcs1PublicDerBase64<UNIT>pkcs1PrivatePem};
