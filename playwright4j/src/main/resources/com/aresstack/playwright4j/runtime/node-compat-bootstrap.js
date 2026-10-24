@@ -3734,12 +3734,17 @@
     // the socket). Local closes never get here, the socket is unregistered first. Like Node:
     // 'error' (ECONNRESET), then 'close', no 'end'; anything still buffered stays readable. The
     // error is only emitted to existing listeners, an unhandled one must not take the process down.
+    // A socket wrapped by tls.connect does not see the read error in Node, its TLSSocket does (the
+    // client-certificate proxy answers the browser with a 503 page from that TLSSocket's 'error').
     __hostClosed() {
-      if (this.listenerCount('error') > 0) {
-        const error = new Error('read ECONNRESET');
-        error.code = 'ECONNRESET';
-        error.errno = -104;
-        error.syscall = 'read';
+      const error = new Error('read ECONNRESET');
+      error.code = 'ECONNRESET';
+      error.errno = -104;
+      error.syscall = 'read';
+      if (this.__tlsSocket) {
+        this.__tlsSocket.__readFailed(error);
+        this.destroy();
+      } else if (this.listenerCount('error') > 0) {
         this.destroy(error);
       } else {
         this.destroy();
@@ -4137,9 +4142,10 @@
 
     // A per-connection TLS failure must not crash the shared driver: only emit 'error' if someone
     // is listening (an unhandled 'error' would throw out of the pump), then tear down: the socket is
-    // destroyed (engine and transport released, 'close' emitted) like Node's TLSSocket.
+    // destroyed (engine and transport released, 'close' emitted) like Node's TLSSocket. No 'end':
+    // an errored TLSSocket does not emit it, and a pipe would end the other side before the
+    // client-certificate proxy writes its error page there.
     const fail = function (error) {
-      socket.push(null);
       socket.destroy(socket.listenerCount('error') > 0 ? error : undefined);
     };
 
@@ -4179,6 +4185,7 @@
     underlying.on('close', function () { socket.push(null); socket.destroy(); });
     underlying.on('error', function (error) { fail(error); });
     socket.__kickHandshake = function () { feed(''); };
+    socket.__readFailed = fail;
     return socket;
   }
 
@@ -4195,6 +4202,10 @@
       const servername = options.servername || '';
       const engineId = String(host.tls().newClientEngine(tlsOptions, String(servername), alpn, rejectUnauthorized));
       const socket = makeTlsSocket(underlying, engineId, function (s) { s.emit('secureConnect'); });
+      if (underlying instanceof NetSocket) {
+        // Read errors of the TCP connection belong to the TLSSocket (see NetSocket.__hostClosed).
+        underlying.__tlsSocket = socket;
+      }
       if (typeof callback === 'function') {
         socket.on('secureConnect', callback);
       }
@@ -4211,6 +4222,10 @@
         server.on('secureConnection', secureConnectionListener);
       }
       server.on('connection', function (underlying) {
+        // A stream that is already gone never completes a handshake; do not leave an engine behind.
+        if (underlying.destroyed) {
+          return;
+        }
         let engineId;
         try {
           engineId = String(host.tls().newServerEngine(keyPem, certPem, alpn));

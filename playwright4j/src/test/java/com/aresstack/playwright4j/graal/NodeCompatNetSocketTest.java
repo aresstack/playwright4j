@@ -226,6 +226,47 @@ final class NodeCompatNetSocketTest {
         assertEquals(List.of(), runtime.unhandledRejections().recorded());
     }
 
+    @Test
+    void reportsAResetDuringTheTlsHandshakeOnTheTlsSocketOnly() throws Exception {
+        try (ServerSocket peer = new ServerSocket(0)) {
+            CompletableFuture<Integer> resetByPeer = CompletableFuture.supplyAsync(() -> {
+                try (Socket socket = peer.accept()) {
+                    // Take the ClientHello, then reset instead of answering (e.g. a filtering
+                    // middlebox).
+                    int read = socket.getInputStream().read(new byte[16 * 1024]);
+                    socket.setSoLinger(true, 0);
+                    return read;
+                } catch (IOException exception) {
+                    throw new IllegalStateException(exception);
+                }
+            });
+            // Like the client-certificate proxy: tls.connect over a connected net socket. In Node
+            // the read error belongs to the TLSSocket; the wrapped socket emits no 'error'.
+            runtime.evaluate("net-test-tls.js", ""
+                    + "(function () {\n"
+                    + "  const test = globalThis.__netTest;\n"
+                    + "  const raw = require('net').createConnection({ host: '127.0.0.1', port: " + peer.getLocalPort() + " });\n"
+                    + "  raw.on('error', function (error) { test.events.push('raw-error:' + error.code); });\n"
+                    + "  raw.on('close', function () { test.events.push('raw-close'); });\n"
+                    + "  raw.on('connect', function () {\n"
+                    + "    const tlsSocket = require('tls').connect({ socket: raw, servername: 'localhost', rejectUnauthorized: false });\n"
+                    + "    tlsSocket.on('secureConnect', function () { test.events.push('tls-secure'); });\n"
+                    + "    tlsSocket.on('error', function (error) { test.events.push('tls-error:' + error.code); });\n"
+                    + "    tlsSocket.on('close', function () { test.events.push('tls-close'); });\n"
+                    + "  });\n"
+                    + "})();");
+            pumpUntil("the peer to reset the connection", resetByPeer::isDone);
+            assertTrue(resetByPeer.get() > 0, "the peer received no ClientHello");
+            pumpUntil("both sockets to close", () -> events().contains("raw-close") && events().contains("tls-close"));
+            List<String> events = events();
+            assertTrue(events.contains("tls-error:ECONNRESET"), events.toString());
+            assertTrue(events.stream().noneMatch(event -> event.startsWith("raw-error") || event.equals("tls-secure")), events.toString());
+        }
+        assertNoLeftovers();
+        assertEquals(0, host.tls().openEngineCount(), "TLS engines left open");
+        assertEquals(List.of(), runtime.unhandledRejections().recorded());
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     private void assertNoLeftovers() {

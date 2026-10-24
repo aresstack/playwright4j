@@ -68,6 +68,10 @@ final class NodeCompatWebSocketServerTest {
             + "  server.listen(0, '127.0.0.1', '/ws').then(\n"
             + "    function (endpoint) { test.endpoint = endpoint; },\n"
             + "    function (error) { test.events.push('listen-error:' + error.message); });\n"
+            + "  // Raw socket errors (ws handles them itself and closes the WebSocket with 1006).\n"
+            + "  server.server.on('connection', function (socket) {\n"
+            + "    socket.on('error', function (error) { test.events.push('socket-error:' + error.code); });\n"
+            + "  });\n"
             + "})();";
 
     private Playwright4JHost host;
@@ -183,6 +187,7 @@ final class NodeCompatWebSocketServerTest {
             // (ws handles the socket error) and the server WebSocket closes with 1006.
             client.reset();
             awaitServerClose(id, 1006);
+            assertTrue(events().contains("socket-error:ECONNRESET"), events().toString());
         }
         assertNoLeftovers();
     }

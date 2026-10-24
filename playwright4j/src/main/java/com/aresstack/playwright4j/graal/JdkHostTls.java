@@ -203,6 +203,11 @@ public final class JdkHostTls {
         }
     }
 
+    /** Engines not closed yet (diagnostics and tests: every TLS socket must release its engine). */
+    public int openEngineCount() {
+        return engines.size();
+    }
+
     // --- internals ---
 
     private static String withRejectUnauthorized(String tlsOptions, boolean rejectUnauthorized) {
