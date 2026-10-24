@@ -12,8 +12,8 @@ Node.js runtime, native helper executables, or browser downloads.
 
 > **Version note.** The latest published release is `com.aresstack:playwright4j:0.1.0`.
 > It supports Chrome and Edge only. Firefox support and the Node-free `launch-server`
-> described below are on `master` and will ship with the next release. Until then,
-> build from source or use `0.1.0` for Chromium only.
+> described below are not released yet and will ship with the next release. Until
+> then, build from source or use `0.1.0` for Chromium only.
 
 ## Quick start
 
