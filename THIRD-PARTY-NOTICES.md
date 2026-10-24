@@ -3,7 +3,7 @@
 Playwright4J is licensed under the Apache License, Version 2.0 (see `LICENSE`).
 It uses and imports the following third-party materials, all under the Apache License 2.0.
 
-## Microsoft Playwright Java driver bundle (runtime dependency)
+## Microsoft Playwright Java driver bundle (repackaged JavaScript package)
 
 ```text
 Group:    com.microsoft.playwright
@@ -13,9 +13,11 @@ Source:   Maven Central
 License:  Apache License 2.0
 ```
 
-Playwright4J loads `driver/<platform>/package/cli.js` (and related package resources) from this
-dependency on the classpath and evaluates that JavaScript in a GraalVM JavaScript context after
-installing `node-compat-bootstrap.js`. The driver bundle's own resources are not modified.
+At build time Playwright4J copies the platform-independent `driver/<platform>/package/**` tree
+(Playwright Core JavaScript, Apache License 2.0) from this artifact into its own jar as
+`driver/package/**`, unmodified, and evaluates `cli.js` in a GraalVM JavaScript context after
+installing `node-compat-bootstrap.js`. The Node.js executables contained in the artifact are not
+copied, shipped, downloaded or executed; `driver-bundle` is not a published dependency.
 
 ## Imported Microsoft Playwright Java upstream test sources and resources
 

@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-and-smoke:
-    # Windows is the currently validated path (native node.exe launcher + Chrome/Edge channel).
+    # Windows is the currently validated path (Chrome/Edge channel, pure JVM driver).
     runs-on: windows-2022
     timeout-minutes: 30
 
@@ -43,6 +43,30 @@ jobs:
         env:
           BROWSER_CHANNEL: msedge
         run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --rerun-tasks --no-daemon --stacktrace
+
+      - name: BrowserType.connect against launch-server (chrome)
+        shell: pwsh
+        env:
+          BROWSER_CHANNEL: chrome
+        run: ./gradlew.bat :playwright-java-contract-tests:browserTypeConnectTest --no-daemon --stacktrace
+
+      - name: BrowserType.connect against launch-server (msedge)
+        shell: pwsh
+        env:
+          BROWSER_CHANNEL: msedge
+        run: ./gradlew.bat :playwright-java-contract-tests:browserTypeConnectTest --rerun-tasks --no-daemon --stacktrace
+
+      - name: Verify published jar contains no native binaries
+        shell: pwsh
+        run: |
+          ./gradlew.bat :playwright4j:jar --no-daemon
+          $jar = Get-ChildItem playwright4j/build/libs/playwright4j-*.jar | Where-Object { $_.Name -notmatch '(sources|javadoc)' } | Select-Object -First 1
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
+          $bad = $zip.Entries | Where-Object { $_.FullName -match '(?i)(\.(exe|dll|so|dylib|jnilib)$|(^|/)node$)' } | ForEach-Object { $_.FullName }
+          $zip.Dispose()
+          if ($bad) { Write-Error ("Native binaries in $($jar.Name):`n" + ($bad -join "`n")); exit 1 }
+          Write-Host "No native binaries in $($jar.Name)"
 
       - name: Upload reports
         if: always()

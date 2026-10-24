@@ -10,8 +10,9 @@ primitives are provided by Java host adapters, such as process launching,
 WebSocket transport, HTTP, filesystem access, streams, crypto, zlib, TLS, and
 selected Node compatibility APIs.
 
-This release is a Chromium milestone. It focuses on Chrome and Microsoft Edge
-through Playwright's Chromium browser type and channel support.
+Playwright4J ships no native helper binaries: no Node.js, no `node.exe` launcher,
+no geckodriver. The Playwright Core JavaScript package is repackaged into the jar
+without the Node.js executables that Microsoft's `driver-bundle` contains.
 
 ## Coordinates
 
@@ -23,23 +24,22 @@ package:    com.aresstack.playwright4j
 
 ## Browser support
 
-This release supports Chromium-based browsers through Playwright's Chromium
-browser type.
+Playwright4J drives locally installed browsers; it does not download browsers.
 
-Supported and validated:
+| Browser | How | Protocol |
+| --- | --- | --- |
+| Google Chrome | `chromium` browser type, channel `chrome` | CDP |
+| Microsoft Edge | `chromium` browser type, channel `msedge` | CDP |
+| Mozilla Firefox | `firefox` browser type, channel `moz-firefox` (installed Firefox) | WebDriver BiDi |
 
-- Google Chrome via `BROWSER_CHANNEL=chrome`
-- Microsoft Edge via `BROWSER_CHANNEL=msedge`
+Chrome and Edge stay on CDP for now. Firefox runs over WebDriver BiDi via
+Playwright's own BiDi implementation; Firefox exposes its BiDi WebSocket itself,
+so no geckodriver is involved. WebKit is not supported and fails fast with a
+clear unsupported-engine error.
 
-Not supported in this release:
-
-- Firefox
-- WebKit
-
-Firefox and WebKit currently fail fast with a clear unsupported-engine error
-instead of hanging. Firefox support is planned for a separate branch/version
-because it requires Playwright's Firefox/Juggler pipe transport rather than the
-Chromium CDP/WebSocket path used by this release.
+`BrowserType.connect()` against a `launch-server` works without Node.js: the
+server is the same Java GraalJS driver started in `--node-compat` mode
+(`java ... com.aresstack.playwright4j.driver.GraalDriverMain --node-compat cli.js launch-server ...`).
 
 ## Current scope
 
@@ -59,9 +59,9 @@ facilities needed by Playwright Core, including:
 - TLS/client-certificate handling
 - tracing, HAR, screenshots, downloads, video, and artifact transfer paths
 
-The project is not yet a complete multi-browser Playwright replacement. Firefox
-and WebKit require additional pipe-based browser transports and are intentionally
-out of scope for this first release.
+The project is not yet a complete multi-browser Playwright replacement. The
+upstream contract suite below targets Chrome/Edge; Firefox is validated by a
+dedicated WebDriver BiDi smoke test. WebKit is out of scope.
 
 ## Test status
 
@@ -89,7 +89,10 @@ No known Playwright4J runtime regression remains in the supported Chrome/Edge
 scope of this milestone.
 
 > CI note: the **release gate** is the fast Chrome + Edge channel smokes (launch →
-> page → evaluate → close), which run on Windows CI and must pass before publishing.
+> page → evaluate → close) plus the Firefox BiDi smoke, which run on Windows CI and
+> must pass before publishing. CI additionally runs `TestBrowserTypeConnect`
+> (launch-server, connect, reconnect, disconnect) for Chrome and Edge and checks that
+> the jar contains no native binaries.
 > The full upstream compatibility suite runs separately as a **non-blocking audit**
 > (`knownLimitationsCheck`): green iff exactly the six known reds fail. A raw
 > `upstreamTest` run reports `BUILD FAILED` because of those reds — that is honest;
@@ -117,7 +120,7 @@ src/test/java/com/aresstack/playwright4j/graal/PlaywrightCoreLoadTest.java
 THIRD-PARTY-NOTICES.md
 ```
 
-`PlaywrightCoreLoadTest` evaluates the real Playwright CLI entry script from the official Maven Central driver bundle on GraalVM. The broad upstream contract coverage lives in the `playwright-java-contract-tests` module (`upstreamTest` / `knownLimitationsCheck`).
+`PlaywrightCoreLoadTest` evaluates the real Playwright CLI entry script (repackaged from the official Maven Central driver bundle) on GraalVM. The broad upstream contract coverage lives in the `playwright-java-contract-tests` module (`upstreamTest` / `knownLimitationsCheck`).
 
 ## Run
 
@@ -133,10 +136,15 @@ gradle test
 
 ## Upstream Playwright source
 
-The test dependency is pinned in `build.gradle`:
+The upstream driver is pinned in `playwright4j/build.gradle` as a build-time-only input:
 
 ```groovy
-testRuntimeOnly 'com.microsoft.playwright:driver-bundle:1.59.0'
+playwrightDriverBundle 'com.microsoft.playwright:driver-bundle:1.59.0'
 ```
+
+The `repackageDriverPackage` task copies only its platform-independent JavaScript package
+into the jar as `driver/package/**`; the Node.js executables in that artifact are dropped
+and the build fails if any native file ends up in the package. `driver-bundle` is not a
+published dependency of `com.aresstack:playwright4j`.
 
 See `THIRD-PARTY-NOTICES.md` for attribution and license notes.

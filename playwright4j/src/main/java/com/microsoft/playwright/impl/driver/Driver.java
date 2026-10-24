@@ -78,66 +78,13 @@ public final class Driver {
     public Path driverDir() {
         Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
         ensurePackageExtracted(dir);
-        ensureNodeLauncher(dir);
         return dir;
-    }
-
-    /**
-     * Places the native node.exe compatibility launcher (and its config) next to package/, so that
-     * tests which spawn {@code <driverDir>/node.exe <driverDir>/package/cli.js launch-server ...}
-     * directly (e.g. TestBrowserTypeConnect) re-exec our GraalJS driver in --node-compat mode. The
-     * config bakes in this JVM's java executable, classpath and forwarded system properties so the
-     * launcher can start the driver without knowing them. No-op (with a clear error left for launch
-     * time) if the native launcher was not built (non-Windows / no C toolchain at build).
-     */
-    private void ensureNodeLauncher(Path driverDir) {
-        String launcherName = isWindows() ? "node.exe" : "node";
-        try (InputStream launcher = Driver.class.getClassLoader()
-                .getResourceAsStream("com/aresstack/playwright4j/launcher/node.exe")) {
-            if (launcher == null) {
-                return; // Not built on this platform; a launch-server test will fail with ENOENT.
-            }
-            Files.createDirectories(driverDir);
-            Path target = driverDir.resolve(launcherName);
-            // The launcher binary is identical across runs. A test that starts its own launch-server
-            // while a previous one is still running (which holds node.exe open) would otherwise fail
-            // to overwrite it (Windows AccessDeniedException). Only write it when it is missing;
-            // the config (never held open) is rewritten each time so the classpath stays current.
-            if (!Files.exists(target)) {
-                Files.copy(launcher, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-            Files.write(driverDir.resolve("node-launcher.cfg"), nodeLauncherConfigLines());
-        } catch (IOException exception) {
-            throw new IllegalStateException("Cannot install node.exe launcher into " + driverDir, exception);
-        }
-    }
-
-    private java.util.List<String> nodeLauncherConfigLines() {
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        lines.add(javaExecutable());
-        lines.add("-cp");
-        lines.add(System.getProperty("java.class.path"));
-        lines.add("-Djava.net.preferIPv4Stack=true");
-        for (String property : FORWARDED_SYSTEM_PROPERTIES) {
-            String value = System.getProperty(property);
-            if (value != null && !value.trim().isEmpty()) {
-                lines.add("-D" + property + "=" + value);
-            }
-        }
-        // Keep the launch-server child's debug log separate from the parent driver's shared log.
-        if (System.getProperty("playwright4j.debug") != null && !System.getProperty("playwright4j.debug").trim().isEmpty()) {
-            lines.add("-Dplaywright4j.debug.file="
-                    + Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-launchserver.log"));
-        }
-        lines.add("com.aresstack.playwright4j.driver.GraalDriverMain");
-        lines.add("--node-compat");
-        return lines;
     }
 
     /**
      * Some upstream APIs (e.g. trace viewer) read static assets relative to driverDir(), i.e.
      * {@code driverDir/package/lib/...}. Those assets live inside the bundled driver jar under
-     * {@code driver/<platform>/package/}. Extract that tree once into driverDir so file-based
+     * {@code driver/package/}. Extract that tree once into driverDir so file-based
      * access works without a real Node driver installation.
      */
     private static void ensurePackageExtracted(Path driverDir) {
@@ -145,7 +92,7 @@ public final class Driver {
         if (Files.exists(marker)) {
             return;
         }
-        String prefix = "driver/" + platformDirectory() + "/package/";
+        String prefix = com.aresstack.playwright4j.graal.PlaywrightDriverBundleSource.PACKAGE_PREFIX;
         try {
             URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
             if (probe == null) {
@@ -173,7 +120,7 @@ public final class Driver {
             if (!name.startsWith(prefix) || entry.isDirectory()) {
                 continue;
             }
-            // Map driver/<platform>/package/X -> driverDir/package/X
+            // Map driver/package/X -> driverDir/package/X
             Path target = driverDir.resolve("package").resolve(name.substring(prefix.length()));
             if (target.getParent() != null) {
                 Files.createDirectories(target.getParent());
@@ -182,21 +129,6 @@ public final class Driver {
                 Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
             }
         }
-    }
-
-    private static String platformDirectory() {
-        String operatingSystem = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        String architecture = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-        if (operatingSystem.contains("win")) {
-            return "win32_x64";
-        }
-        if (operatingSystem.contains("linux")) {
-            return "aarch64".equals(architecture) ? "linux-arm64" : "linux";
-        }
-        if (operatingSystem.contains("mac os x") || operatingSystem.contains("darwin")) {
-            return "aarch64".equals(architecture) ? "mac-arm64" : "mac";
-        }
-        return "win32_x64";
     }
 
     public Map<String, String> environment() {

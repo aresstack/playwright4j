@@ -50,7 +50,7 @@ public class TestBrowserTypeConnect extends TestBase {
     String wsEndpoint;
 
     void kill() throws InterruptedException {
-      process.destroy();
+      destroyProcessTree(process);
       int exitCode = process.waitFor();
       // FIXME: 2 tests are failing this check on windows:
       // disconnectedEventShouldBeEmittedWhenBrowserIsClosedOrServerIsClosed
@@ -61,15 +61,23 @@ public class TestBrowserTypeConnect extends TestBase {
     }
   }
 
+  // playwright4j: the launch-server JVM does not take its browser down when it is killed
+  // (TerminateProcess on Windows), so terminate the browser processes it spawned as well.
+  private static void destroyProcessTree(Process process) {
+    List<ProcessHandle> descendants = process.descendants().collect(Collectors.toList());
+    process.destroy();
+    descendants.forEach(ProcessHandle::destroy);
+  }
+
   private static BrowserServer launchBrowserServer(BrowserType browserType) {
     try {
       Driver driver = Driver.ensureDriverInstalled(Collections.emptyMap(), false);
       Path dir = driver.driverDir();
-      String node = dir.resolve(isWindows ? "node.exe" : "node").toString();
       String cliJs = dir.resolve("package/cli.js").toString();
-      // We launch node process directly instead of using playwright.sh script as killing the script
-      // process will leave node process running and killing it would be more hassle.
-      ProcessBuilder pb = new ProcessBuilder(node, cliJs, "launch-server", "--browser", browserType.name());
+      // playwright4j: no native node executable. Start the Java GraalJS driver directly in
+      // --node-compat mode, which runs the bundled cli.js like `node cli.js launch-server ...`.
+      ProcessBuilder pb = driver.createProcessBuilder();
+      pb.command().addAll(asList("--node-compat", cliJs, "launch-server", "--browser", browserType.name()));
       pb.directory(dir.toFile());
       pb.redirectError(ProcessBuilder.Redirect.INHERIT);
       BrowserServer result = new BrowserServer();
@@ -102,6 +110,7 @@ public class TestBrowserTypeConnect extends TestBase {
   void closeBrowser() {
     super.closeBrowser();
     if (browserServer != null) {
+      browserServer.descendants().forEach(ProcessHandle::destroyForcibly);
       browserServer.destroyForcibly();
       browserServer = null;
       wsEndpoint = null;

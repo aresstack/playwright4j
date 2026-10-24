@@ -7,6 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 public final class PlaywrightDriverBundleSource {
+    // Platform-independent Playwright Core package, repackaged at build time from Microsoft's
+    // driver-bundle without its bundled Node.js executables (see playwright4j/build.gradle).
+    public static final String PACKAGE_PREFIX = "driver/package/";
+
 
     private final ClassLoader classLoader;
 
@@ -19,7 +23,7 @@ public final class PlaywrightDriverBundleSource {
     }
 
     public String cliScriptResourceName() {
-        return "driver/" + platformDirectory() + "/package/cli.js";
+        return PACKAGE_PREFIX + "cli.js";
     }
 
     public String readCliScript() {
@@ -28,7 +32,7 @@ public final class PlaywrightDriverBundleSource {
 
     @org.graalvm.polyglot.HostAccess.Export
     public String packageResourceName(String packageRelativePath) {
-        return "driver/" + platformDirectory() + "/package/" + packageRelativePath;
+        return PACKAGE_PREFIX + packageRelativePath;
     }
 
     public String readPackageResource(String packageRelativePath) {
@@ -47,33 +51,6 @@ public final class PlaywrightDriverBundleSource {
     @org.graalvm.polyglot.HostAccess.Export
     public String readResource(String resourceName) {
         return readRequiredResource(resourceName);
-    }
-
-    private String platformDirectory() {
-        String operatingSystem = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        String architecture = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-
-        if (operatingSystem.contains("windows")) {
-            return "win32_x64";
-        }
-
-        if (operatingSystem.contains("linux")) {
-            if ("aarch64".equals(architecture)) {
-                return "linux-arm64";
-            }
-
-            return "linux";
-        }
-
-        if (operatingSystem.contains("mac os x") || operatingSystem.contains("darwin")) {
-            if ("aarch64".equals(architecture)) {
-                return "mac-arm64";
-            }
-
-            return "mac";
-        }
-
-        throw new IllegalStateException("Unsupported operating system for Playwright driver bundle: " + operatingSystem);
     }
 
     private String readRequiredResource(String resourceName) {
