@@ -1,4 +1,6 @@
-# Playwright4J
+<h1 align="center">
+  <img src="docs/assets/banner.png" alt="Playwright4J: Java + GraalJS runtime for Playwright Core" width="100%">
+</h1>
 
 Playwright4J runs Microsoft's Playwright Core JavaScript driver inside the JVM using
 GraalJS. It preserves the official Playwright Java API without requiring a separate
