@@ -4540,6 +4540,10 @@
       }
 
       send(message) {
+        // ws drops a send after close; the host client does the same for a broken socket.
+        if (this.__closed) {
+          return;
+        }
         traceWebSocket('transport-send:' + JSON.stringify(message));
         host.webSocketClient().send(this.connectionId, JSON.stringify(message));
       }
@@ -4585,6 +4589,7 @@
       }
 
       close(reason) {
+        this.__closed = true;
         const index = activeTransports.indexOf(this);
         if (index >= 0) {
           activeTransports.splice(index, 1);

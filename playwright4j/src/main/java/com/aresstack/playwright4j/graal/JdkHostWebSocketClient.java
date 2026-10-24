@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -129,9 +131,24 @@ public final class JdkHostWebSocketClient implements HostWebSocketClient {
     @Override
     @org.graalvm.polyglot.HostAccess.Export
     public void send(String connectionId, String message) {
-        Connection connection = connection(connectionId);
+        // Like Node's ws (WebSocket#send after close), a send on a closed or broken socket is dropped
+        // instead of thrown: a killed peer resets the TCP connection before the listener sees the
+        // error, and failing the send would reject the caller before the transport has surfaced
+        // onclose, so Playwright would never emit 'disconnected'. Mark the connection closed so the
+        // next drain() reports the close.
+        Connection connection = connections.get(connectionId);
+        if (connection == null || connection.closed) {
+            Playwright4JDebug.log("[pw4j-cdp] DROP (closed) " + truncate(message));
+            return;
+        }
         Playwright4JDebug.log("[pw4j-cdp] SEND " + truncate(message));
-        connection.webSocket.sendText(message, true).join();
+        try {
+            connection.webSocket.sendText(message, true).join();
+        } catch (CompletionException | CancellationException exception) {
+            Playwright4JDebug.log("[pw4j-cdp] DROP (" + exception.getCause() + ") " + truncate(message));
+            connection.closed = true;
+            connection.webSocket.abort();
+        }
     }
 
     @Override
