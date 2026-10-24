@@ -64,6 +64,24 @@ tasks.register('channelSmoke', Test) {
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
 }
 
+// Firefox over WebDriver BiDi (moz-firefox channel) against an installed Firefox. Point
+// FIREFOX_EXECUTABLE at the firefox binary; PLAYWRIGHT4J_REQUIRE_FIREFOX=true fails instead of skipping.
+tasks.register('firefoxSmoke', Test) {
+    description = 'Launch/evaluate/close smoke for an installed Firefox via WebDriver BiDi (moz-firefox).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest' }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+
+    systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
+}
+
 tasks.named('processUpstreamTestResources') {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     // The upstream Server serves files via getResourceAsStream("resources" + path), i.e. it
