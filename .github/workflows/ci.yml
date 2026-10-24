@@ -138,10 +138,39 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace
 
+      - name: Show failed Firefox tests
+        if: failure()
+        shell: pwsh
+        run: |
+          $results = "playwright-java-contract-tests/build/test-results/firefoxSmoke"
+          Get-ChildItem $results -Filter *.xml -ErrorAction SilentlyContinue | ForEach-Object {
+            [xml]$xml = Get-Content $_.FullName -Raw
+            foreach ($case in $xml.testsuite.testcase) {
+              foreach ($problem in @($case.failure) + @($case.error)) {
+                if ($problem -is [System.Xml.XmlElement]) {
+                  Write-Host "=== $($case.classname) > $($case.name)"
+                  Write-Host $problem.InnerText
+                }
+              }
+            }
+          }
+
       - name: Report leftover Firefox processes
         if: always()
         shell: pwsh
         run: |
-          $left = Get-Process firefox -ErrorAction SilentlyContinue
-          if ($left) { $left | Format-Table Id, StartTime, Path -AutoSize; $left | Stop-Process -Force }
+          $left = Get-CimInstance Win32_Process -Filter "Name='firefox.exe'"
+          if ($left) {
+            $left | Format-List ProcessId, ParentProcessId, CreationDate, CommandLine
+            $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
           else { Write-Host "No Firefox processes left." }
+
+      - name: Upload Firefox smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright4j-firefox-smoke-reports
+          path: |
+            playwright-java-contract-tests/build/reports/tests/firefoxSmoke/**
+            playwright-java-contract-tests/build/test-results/firefoxSmoke/**

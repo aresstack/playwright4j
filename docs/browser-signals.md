@@ -120,6 +120,10 @@ navigation, recorded with `DEBUG=pw:protocol`, compared with the minimal client:
 | `script.addPreloadScript` into the main world for bindings (with `exposeBinding`) | none (injects a few globals on demand) |
 | about 90 prefs in `user.js` on every launch (see `bidi/third_party/firefoxPrefs.js`) | 5 first-run prefs, written once |
 
+Since the change for Firefox tabs and windows (PR #27, not released yet), playwright4j no longer
+creates a window for the first page of a persistent context: like the minimal client, it takes over
+the start tab, and further pages open as tabs.
+
 ### Chrome
 
 | Signal | Chrome without automation | Official driver | playwright4j 0.2.1 |
