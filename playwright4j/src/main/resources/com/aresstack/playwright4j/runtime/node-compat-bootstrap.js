@@ -5355,6 +5355,412 @@
     };
   }
 
+  // Firefox tabs and windows over WebDriver BiDi. Firefox already shows a window with one tab when
+  // its BiDi endpoint starts listening, and reports that tab (browsingContext.contextCreated) while
+  // Playwright subscribes to events. BidiBrowser.connect subscribes before it creates the default
+  // context of a persistent launch, so the event is dropped, and connect then opens a second window
+  // for the first page (browsingContext.create type "window"); every newPage() opens yet another
+  // window. For Firefox:
+  //  - the persistent default context takes over the top-level tabs Firefox started with as its
+  //    pages, together with their realms and load state (whose events were dropped as well);
+  //  - newPage() opens a tab next to a page of the same browser context; only the first page of a
+  //    context without pages gets a window of its own (a persistent context opens a tab);
+  //  - a window keeps at least one tab, but a context may have no pages, as in Playwright. Firefox
+  //    ignores browsingContext.close for its very last tab (success, but no contextDestroyed, so
+  //    page.close() would wait forever), so a blank tab is opened next to it first. In a persistent
+  //    profile (browser.tabs.closeWindowWithLastTab=false, see patchBidiFirefoxUserJs) Firefox
+  //    itself replaces the last tab of a window, closed in its UI or over BiDi, with a blank tab
+  //    (contextDestroyed, then contextCreated in the same window). These blank tabs are hidden:
+  //    not reported as pages, and the next newPage() of the persistent context takes one over. A
+  //    hidden tab the user navigates somewhere becomes a page.
+  function isBidiFirefox(browser) {
+    return !!browser && !!browser.options && browser.options.name === 'firefox';
+  }
+
+  // How long after the last tab of a window closed Firefox's replacement tab is expected.
+  const FIREFOX_REPLACEMENT_TAB_MILLIS = 5000;
+  // What a hidden tab shows until the user navigates it.
+  const FIREFOX_BLANK_TAB_URLS = ['about:blank', 'about:newtab', 'about:home'];
+
+  // Playwright's own BidiBrowser._onBrowsingContextCreated: reports a top-level tab as a page.
+  let reportFirefoxTabAsPage;
+
+  // Per browser: the window of every top-level tab (id -> clientWindow), the hidden blank tabs
+  // (id -> browsingContext.Info), the windows whose last tab just closed (clientWindow -> deadline
+  // for Firefox's replacement tab) and, while keepLastFirefoxTab opens one, the tabs being opened.
+  function firefoxTabs(browser) {
+    if (browser.__playwright4jFirefoxTabs) {
+      return browser.__playwright4jFirefoxTabs;
+    }
+    const tabs = { windows: new Map(), hidden: new Map(), replacing: new Map(), opening: undefined };
+    browser.__playwright4jFirefoxTabs = tabs;
+    // Events of tabs without a page (hidden tabs, or tabs of no browser context) reach only the
+    // browser session.
+    const session = browser._browserSession;
+    session.on('browsingContext.contextDestroyed', function (event) {
+      firefoxTabClosed(browser, event);
+    });
+    session.on('browsingContext.navigationStarted', function (event) {
+      const info = tabs.hidden.get(event.context);
+      if (!info || FIREFOX_BLANK_TAB_URLS.indexOf(event.url) >= 0) {
+        return;
+      }
+      const bidiPage = revealFirefoxTab(browser, info);
+      if (bidiPage) {
+        bidiPage._session.dispatchMessage({ type: 'event', method: 'browsingContext.navigationStarted', params: event });
+      }
+    });
+    // Playwright intercepts HTTP authentication, and every request while a route is set, for all
+    // tabs, but answers only for pages: let Firefox go on with the requests of the other tabs.
+    session.on('network.authRequired', function (event) {
+      if (event.isBlocked) {
+        session.sendMayFail('network.continueWithAuth', { request: event.request.request, action: 'default' });
+      }
+    });
+    session.on('network.beforeRequestSent', function (event) {
+      if (event.isBlocked) {
+        session.sendMayFail('network.continueRequest', { request: event.request.request });
+      }
+    });
+    return tabs;
+  }
+
+  // Reports a hidden or untracked top-level tab as a page (of the persistent default context, for
+  // Firefox's default user context); returns its BidiPage, if any.
+  function revealFirefoxTab(browser, info) {
+    const tabs = firefoxTabs(browser);
+    tabs.hidden.delete(info.context);
+    tabs.windows.set(info.context, info.clientWindow);
+    reportFirefoxTabAsPage.call(browser, Object.assign({}, info, { parent: null }));
+    return browser._bidiPages.get(info.context);
+  }
+
+  function firefoxTabClosed(browser, event) {
+    if (event.parent) {
+      return;
+    }
+    const tabs = firefoxTabs(browser);
+    tabs.windows.delete(event.context);
+    tabs.hidden.delete(event.context);
+    if (!browser._defaultContext || event.userContext !== 'default' || !event.clientWindow) {
+      return;
+    }
+    for (const clientWindow of tabs.windows.values()) {
+      if (clientWindow === event.clientWindow) {
+        return;
+      }
+    }
+    // The last tab of its window: Firefox opens a blank tab in its place next (popup windows close
+    // instead, and the deadline passes).
+    tabs.replacing.set(event.clientWindow, Date.now() + FIREFOX_REPLACEMENT_TAB_MILLIS);
+  }
+
+  function patchBidiBrowserFirefoxTabs(BidiBrowser, BidiBrowserContext) {
+    const originalOnBrowsingContextCreated = BidiBrowser.prototype._onBrowsingContextCreated;
+    reportFirefoxTabAsPage = originalOnBrowsingContextCreated;
+    BidiBrowser.prototype._onBrowsingContextCreated = function (event) {
+      if (!isBidiFirefox(this) || event.parent) {
+        return originalOnBrowsingContextCreated.apply(this, arguments);
+      }
+      const tabs = firefoxTabs(this);
+      tabs.windows.set(event.context, event.clientWindow);
+      if (event.userContext === 'default' && !event.originalOpener) {
+        // The blank tab opened before closing the very last page; its event arrives before the
+        // create response tells its id (see keepLastFirefoxTab).
+        if (tabs.opening) {
+          tabs.opening.set(event.context, event);
+          return;
+        }
+        const replacementUntil = tabs.replacing.get(event.clientWindow);
+        if (replacementUntil !== undefined) {
+          tabs.replacing.delete(event.clientWindow);
+          if (Date.now() < replacementUntil) {
+            tabs.hidden.set(event.context, event);
+            return;
+          }
+        }
+      }
+      return originalOnBrowsingContextCreated.apply(this, arguments);
+    };
+
+    // contextDestroyed of a page arrives on its page session, which hands it to the browser here.
+    const originalOnBrowsingContextDestroyed = BidiBrowser.prototype._onBrowsingContextDestroyed;
+    BidiBrowser.prototype._onBrowsingContextDestroyed = function (event) {
+      const result = originalOnBrowsingContextDestroyed.apply(this, arguments);
+      if (isBidiFirefox(this)) {
+        firefoxTabClosed(this, event);
+      }
+      return result;
+    };
+
+    const originalDoCreateNewPage = BidiBrowserContext.prototype.doCreateNewPage;
+    BidiBrowserContext.prototype.doCreateNewPage = async function () {
+      const browser = this._browser;
+      if (!isBidiFirefox(browser)) {
+        return originalDoCreateNewPage.apply(this, arguments);
+      }
+      if (this === browser._defaultContext) {
+        // The first call comes from BidiBrowser.connect for a persistent launch: take over the
+        // tabs Firefox started with. Later calls take over a hidden blank tab, if there is one.
+        const startup = !this.__playwright4jStartTabsTaken;
+        this.__playwright4jStartTabsTaken = true;
+        const taken = startup ? await takeOverFirefoxStartTabs(this) : await takeOverHiddenFirefoxTab(this);
+        if (taken) {
+          return taken._page;
+        }
+      }
+      const reference = this._bidiPages().find(function (bidiPage) {
+        return !bidiPage._opener;
+      });
+      const { context } = await browser._browserSession.send('browsingContext.create', {
+        type: reference || this === browser._defaultContext ? 'tab' : 'window',
+        referenceContext: reference ? reference._session.sessionId : undefined,
+        userContext: this._browserContextId
+      });
+      // A tab opened just when Firefox replaced the last tab of its window may pass for that
+      // replacement.
+      const hidden = firefoxTabs(browser).hidden.get(context);
+      const bidiPage = browser._bidiPages.get(context) || (hidden && revealFirefoxTab(browser, hidden));
+      return bidiPage._page;
+    };
+  }
+
+  // Reports the top-level tabs Firefox started with (its default user context) as pages of the
+  // persistent default context; returns the first.
+  async function takeOverFirefoxStartTabs(browserContext) {
+    const browser = browserContext._browser;
+    const { contexts } = await browser._browserSession.send('browsingContext.getTree', { maxDepth: 0 });
+    const taken = [];
+    for (const info of contexts) {
+      if (!info.parent && info.userContext === 'default' && !browser._bidiPages.has(info.context)) {
+        const bidiPage = revealFirefoxTab(browser, info);
+        if (bidiPage) {
+          taken.push(bidiPage);
+        }
+      }
+    }
+    await Promise.all(taken.map(restoreTakenOverPage));
+    return taken[0];
+  }
+
+  // Reports a hidden blank tab as a new page of the persistent default context, if there is one.
+  async function takeOverHiddenFirefoxTab(browserContext) {
+    const browser = browserContext._browser;
+    const tabs = firefoxTabs(browser);
+    if (!tabs.hidden.size) {
+      return undefined;
+    }
+    const { contexts } = await browser._browserSession.send('browsingContext.getTree', { maxDepth: 0 });
+    const hidden = contexts.filter(function (info) { return tabs.hidden.has(info.context); });
+    tabs.hidden.forEach(function (info, id) {
+      if (!hidden.some(function (open) { return open.context === id; })) {
+        tabs.hidden.delete(id);
+      }
+    });
+    const blank = hidden.filter(function (info) { return FIREFOX_BLANK_TAB_URLS.indexOf(info.url) >= 0; });
+    // A hidden tab the user has navigated is a page (in case its navigationStarted was missed).
+    for (const info of hidden) {
+      if (blank.indexOf(info) < 0) {
+        const bidiPage = revealFirefoxTab(browser, info);
+        if (bidiPage) {
+          await restoreTakenOverPage(bidiPage);
+        }
+      }
+    }
+    const untouched = blank.find(function (info) { return info.url === 'about:blank'; });
+    if (untouched) {
+      const bidiPage = revealFirefoxTab(browser, untouched);
+      if (bidiPage) {
+        await restoreTakenOverPage(bidiPage);
+        // The tab may be in the background (see keepLastFirefoxTab); select it, as
+        // browsingContext.create does with a new tab.
+        await browser._browserSession.send('browsingContext.activate', { context: untouched.context }).catch(function (error) {
+          traceWebSocket('firefox-activate-hidden-tab-failed:' + (error && error.message));
+        });
+      }
+      return bidiPage;
+    }
+    if (!blank.length) {
+      return undefined;
+    }
+    // Firefox's own replacement tab shows about:newtab, a privileged page that may not navigate to
+    // every URL (data: is refused): open a fresh tab in its place.
+    const replaced = blank[0].context;
+    tabs.hidden.delete(replaced);
+    const { context } = await browser._browserSession.send('browsingContext.create', {
+      type: 'tab',
+      referenceContext: replaced,
+      userContext: 'default'
+    });
+    await browser._browserSession.send('browsingContext.close', { context: replaced }).catch(function (error) {
+      traceWebSocket('firefox-close-replaced-tab-failed:' + (error && error.message));
+    });
+    return browser._bidiPages.get(context);
+  }
+
+  // The realms of a taken-over tab and its load events came before it had a page session. Report
+  // its window realms (the utility world follows on demand) and the lifecycle events its document
+  // has already passed.
+  async function restoreTakenOverPage(bidiPage) {
+    const contextId = bidiPage._session.sessionId;
+    try {
+      const { realms } = await bidiPage._session.send('script.getRealms', { context: contextId, type: 'window' });
+      for (const realm of realms) {
+        bidiPage._onRealmCreated(Object.assign({ context: contextId }, realm));
+      }
+      const main = realms.find(function (realm) { return !realm.sandbox; });
+      if (!main) {
+        return;
+      }
+      const evaluation = await bidiPage._session.send('script.evaluate', {
+        expression: 'document.readyState',
+        target: { realm: main.realm },
+        awaitPromise: false
+      });
+      const readyState = evaluation && evaluation.type === 'success' && evaluation.result ? evaluation.result.value : undefined;
+      const frame = bidiPage._page.mainFrame();
+      if (readyState === 'interactive' || readyState === 'complete') {
+        bidiPage._page.frameManager.frameLifecycleEvent(frame._id, 'domcontentloaded');
+      }
+      if (readyState === 'complete') {
+        bidiPage._page.frameManager.frameLifecycleEvent(frame._id, 'load');
+      }
+    } catch (error) {
+      // The tab closed meanwhile; its page reports that through contextDestroyed.
+      traceWebSocket('firefox-tab-takeover-failed:' + (error && error.message));
+    }
+  }
+
+  // Before the page of Firefox's very last tab is closed, open a blank tab in its window (in the
+  // background, so a beforeunload prompt stays on the closing page) and hide it. It is opened in
+  // Firefox's default user context, so that removing the browser context of the closing page
+  // (launch() with newContext()) does not close it as well.
+  async function keepLastFirefoxTab(bidiPage) {
+    const browser = bidiPage._browserContext._browser;
+    const contextId = bidiPage._session.sessionId;
+    const { contexts } = await browser._browserSession.send('browsingContext.getTree', { maxDepth: 0 });
+    if (contexts.length !== 1 || contexts[0].context !== contextId) {
+      return;
+    }
+    const tabs = firefoxTabs(browser);
+    const opening = new Map();
+    tabs.opening = opening;
+    let keptTab;
+    try {
+      keptTab = (await browser._browserSession.send('browsingContext.create', {
+        type: 'tab',
+        referenceContext: contextId,
+        userContext: 'default',
+        background: true
+      })).context;
+      const clientWindow = contexts[0].clientWindow;
+      tabs.windows.set(keptTab, clientWindow);
+      tabs.hidden.set(keptTab, opening.get(keptTab) || {
+        context: keptTab, url: 'about:blank', userContext: 'default', clientWindow: clientWindow,
+        originalOpener: null, parent: null, children: null
+      });
+    } finally {
+      tabs.opening = undefined;
+      // Another tab opened at the same moment (by the user or a page) is a regular page.
+      opening.forEach(function (event, id) {
+        if (id !== keptTab) {
+          browser._onBrowsingContextCreated(event);
+        }
+      });
+    }
+  }
+
+  function patchBidiPageFirefoxLastTab(BidiPage) {
+    const originalClosePage = BidiPage.prototype.closePage;
+    BidiPage.prototype.closePage = async function () {
+      if (isBidiFirefox(this._browserContext._browser)) {
+        try {
+          await keepLastFirefoxTab(this);
+        } catch (error) {
+          // The browser is going away; the close below reports what happened.
+          traceWebSocket('firefox-keep-last-tab-failed:' + (error && error.message));
+        }
+      }
+      return originalClosePage.apply(this, arguments);
+    };
+  }
+
+  // Playwright's createProfile (third_party/firefoxPrefs.js) rewrites user.js with its own
+  // preferences on every launch and drops whatever the file held. The lines of an existing user.js
+  // are kept in a marked block before Playwright's lines, except a line that only sets a preference
+  // Playwright now writes itself: Firefox applies the last value it reads, so Playwright's (or
+  // firefoxUserPrefs) wins. On the next launch only the marked block counts as the profile's own;
+  // the rest is Playwright's from last time. The file is handled as bytes, whatever its encoding.
+  // Defaults added to Playwright's list, unless firefoxUserPrefs sets them: no first-run pages it
+  // misses (about:welcome onboarding, privacy notice tab), and, for a persistent launch, closing the
+  // last tab of a window replaces it with a blank tab instead of closing the window, which for the
+  // last window would end Firefox and with it the persistent context (see
+  // patchBidiBrowserFirefoxTabs). Not for launch(): there removing a context closes the tabs of its
+  // window, and the window must go with them. Popup windows close with their last tab either way.
+  const FIREFOX_DEFAULT_PREFS = {
+    'browser.aboutwelcome.enabled': false,
+    'toolkit.telemetry.reportingpolicy.firstRun': false
+  };
+  const FIREFOX_PERSISTENT_DEFAULT_PREFS = {
+    'browser.tabs.closeWindowWithLastTab': false
+  };
+  const PERSISTENT_LAUNCH_OPTION = '__playwright4jPersistentLaunch';
+  const KEPT_USER_JS_BEGIN = '// playwright4j: the lines below are kept from this profile\'s own user.js on every launch.';
+  const KEPT_USER_JS_END = '// playwright4j: end of the kept lines; Playwright\'s preferences follow.';
+
+  // The preference a line sets when the line is exactly one statement (an optional // comment may
+  // follow); undefined for any other line.
+  function userJsPrefName(line) {
+    const match = /^\s*(?:user_|sticky_)?pref\s*\(\s*(["'])((?:(?!\1).)*)\1\s*,(?:[^;"'\/]|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*\)\s*;\s*(?:\/\/.*)?$/.exec(line);
+    return match ? match[2] : undefined;
+  }
+
+  function readUserJsBytes(path) {
+    // latin1 maps each byte to one character and back.
+    return modules.fs.existsSync(path) ? String(modules.fs.readFileSync(path, 'latin1')).replace(/^\xEF\xBB\xBF/, '') : '';
+  }
+
+  function keptUserJsLines(previous, written) {
+    const lines = previous.split(/\r?\n/);
+    const begin = lines.indexOf(KEPT_USER_JS_BEGIN);
+    const end = lines.indexOf(KEPT_USER_JS_END);
+    const own = begin >= 0 && end > begin ? lines.slice(begin + 1, end) : lines;
+    const writtenNames = new Set(written.split(/\r?\n/).map(userJsPrefName).filter(Boolean));
+    return own.filter(function (line) {
+      const name = userJsPrefName(line);
+      return line.trim() && line !== KEPT_USER_JS_BEGIN && line !== KEPT_USER_JS_END && !(name && writtenNames.has(name));
+    });
+  }
+
+  function patchBidiFirefoxUserJs(BidiFirefox) {
+    // BrowserType._prepareToLaunch knows whether the launch is persistent, prepareUserDataDir does
+    // not: pass it along on a copy of the launch options.
+    const originalPrepareToLaunch = BidiFirefox.prototype._prepareToLaunch;
+    BidiFirefox.prototype._prepareToLaunch = function (options, isPersistent, userDataDir) {
+      const marked = Object.assign({}, options);
+      marked[PERSISTENT_LAUNCH_OPTION] = !!isPersistent;
+      return originalPrepareToLaunch.call(this, marked, isPersistent, userDataDir);
+    };
+    const originalPrepareUserDataDir = BidiFirefox.prototype.prepareUserDataDir;
+    BidiFirefox.prototype.prepareUserDataDir = async function (options, userDataDir) {
+      const userJs = modules.path.join(String(userDataDir), 'user.js');
+      const previous = readUserJsBytes(userJs);
+      const prefs = Object.assign({}, FIREFOX_DEFAULT_PREFS,
+          options && options[PERSISTENT_LAUNCH_OPTION] ? FIREFOX_PERSISTENT_DEFAULT_PREFS : {},
+          (options && options.firefoxUserPrefs) || {});
+      await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
+      if (!previous) {
+        return;
+      }
+      const written = readUserJsBytes(userJs);
+      const kept = keptUserJsLines(previous, written);
+      if (kept.length) {
+        const text = KEPT_USER_JS_BEGIN + '\n' + kept.join('\n') + '\n' + KEPT_USER_JS_END + '\n' + written + '\n';
+        modules.fs.writeFileSync(userJs, global.Buffer.from(text, 'latin1'));
+      }
+    };
+  }
+
   // On every new document Playwright's BiDi page evaluates "1 + 1" in its utility world only to
   // create that world, and sends it with userActivation: true. Firefox then marks the page as
   // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
@@ -5406,12 +5812,18 @@
 
     if (resourceName.endsWith('/lib/server/bidi/bidiFirefox.js') && exportsObject.BidiFirefox) {
       patchBidiFirefoxProfilePrefs(exportsObject.BidiFirefox);
+      patchBidiFirefoxUserJs(exportsObject.BidiFirefox);
     }
 
     if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {
       patchBidiPageInitialBlankLoad(exportsObject.BidiPage);
       patchBidiPageRequestGC(exportsObject.BidiPage);
       patchBidiPageTouchUtilityWorld(exportsObject.BidiPage, '__playwright_utility_world__');
+      patchBidiPageFirefoxLastTab(exportsObject.BidiPage);
+    }
+
+    if (resourceName.endsWith('/lib/server/bidi/bidiBrowser.js') && exportsObject.BidiBrowser && exportsObject.BidiBrowserContext) {
+      patchBidiBrowserFirefoxTabs(exportsObject.BidiBrowser, exportsObject.BidiBrowserContext);
     }
 
     if (resourceName.endsWith('/lib/utilsBundle.js') && exportsObject.program === undefined) {

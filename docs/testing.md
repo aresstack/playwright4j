@@ -10,6 +10,7 @@ summarizes it.
 | Unit and runtime tests | `./gradlew :playwright4j:test` | yes |
 | Chrome and Edge channel smokes (launch, page, evaluate, close) | Windows CI | yes, release gate |
 | Firefox WebDriver BiDi smoke | Windows CI | yes, release gate |
+| Firefox windows and tabs, counted through the OS (`FirefoxPersistentWindowTest`, part of `firefoxSmoke`) | Windows CI, headed | yes, release gate |
 | `TestBrowserTypeConnect` (launch-server, connect, reconnect, disconnect) for Chrome and Edge | CI | yes |
 | Jar check: no native binaries in the artifact | CI, release | yes |
 | `consumer-check/`: resolves the documented setup twice, with Gradle (`build.gradle`) and with Maven from the published POM (`pom.xml`); both fail if `driver` or `driver-bundle` reaches the classpath, the Gradle check also fails on a native file in the jar | CI, release | yes |
@@ -23,6 +24,33 @@ intentional: no silent excludes are added to the normal test path.
 The upstream contract suite targets the Chromium browser type (Chrome and Edge). Firefox
 is only covered by the BiDi smoke test so far; it has not been run against the full
 contract suite.
+
+## Firefox windows and tabs
+
+`FirefoxPersistentWindowTest` runs headed and counts the real top-level Firefox windows of the
+processes Playwright started, not only `context.pages()`: on Windows with `EnumWindows` (C#
+compiled in memory by PowerShell's `Add-Type`), on Linux with `xdotool` (needs an X display,
+e.g. `xvfb-run`, and Firefox on X11; the `firefoxSmoke` task sets `MOZ_ENABLE_WAYLAND=0`).
+Without either, or with `FIREFOX_HEADLESS=true`, the window counts are skipped and only the page
+assertions run. It checks:
+
+- `launchPersistentContext` takes over the tab Firefox opens at startup: one window, one page,
+  after a cold start and after a restart with the same profile; with a home page set, the first
+  page shows it, so it is that very tab and not one opened next to it;
+- `newPage()` opens a tab in that window; the page in the background tab still takes input;
+- closing the last page leaves the context without pages while the window keeps a blank tab
+  (Firefox never closes its last tab over WebDriver BiDi); the next `newPage()` uses that tab
+  (its document is older than the `newPage()` call);
+- Ctrl+W on the last tab in Firefox's UI keeps the window and the context
+  (`browser.tabs.closeWindowWithLastTab=false` in a persistent profile). The keystroke is only
+  sent once the Firefox window has the keyboard focus; if that fails, or the tab is still shown
+  afterwards, the test fails with `PLAYWRIGHT4J_REQUIRE_FIREFOX=true` (CI) and is skipped
+  otherwise;
+- Firefox ending without `context.close()` closes the context, and the profile starts again;
+- another running Firefox keeps its windows;
+- `browser.newContext()`: the first page gets a window, further pages of that context are tabs;
+- a `user.js` the profile already has keeps its own lines byte for byte across launches, before
+  Playwright's preferences, which win for the same preference.
 
 ## Historical upstream contract-test sweep
 
