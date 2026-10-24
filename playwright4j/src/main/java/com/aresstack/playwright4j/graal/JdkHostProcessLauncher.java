@@ -34,6 +34,8 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     private static final java.util.regex.Pattern DEVTOOLS_STDERR_PATTERN =
             java.util.regex.Pattern.compile("DevTools listening on (ws://\\S+)");
     private static final int STDERR_RING_BUFFER_LINES = 80;
+    private static final java.util.regex.Pattern FIREFOX_BIDI_STDERR_PATTERN =
+            java.util.regex.Pattern.compile("WebDriver BiDi listening on (ws://\\S+)");
 
     private final Map<String, Process> processes = new ConcurrentHashMap<String, Process>();
     private final Map<String, java.io.OutputStream> processStdin = new ConcurrentHashMap<String, java.io.OutputStream>();
@@ -257,6 +259,59 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         String endpoint = readWebSocketEndpoint(commandLine, userDataDirectory, process, stderrBuffer);
         Playwright4JDebug.log("[pw4j-launcher] endpoint=" + endpoint);
         return processId + ARGUMENT_SEPARATOR + endpoint;
+    }
+
+    @Override
+    @HostAccess.Export
+    public String launchFirefoxBiDi(String command, String arguments, String workingDirectory) {
+        List<String> commandLine = new ArrayList<String>();
+        commandLine.add(command);
+        if (arguments != null && !arguments.isEmpty()) {
+            Collections.addAll(commandLine, arguments.split(ARGUMENT_SEPARATOR, -1));
+        }
+        if (!commandLine.contains("--profile") || commandLine.stream()
+                .noneMatch(argument -> argument.startsWith("--remote-debugging-port="))) {
+            throw new IllegalArgumentException("Expected Firefox WebDriver BiDi startup arguments.");
+        }
+
+        OutputRingBuffer stderrBuffer = new OutputRingBuffer(STDERR_RING_BUFFER_LINES);
+        Process process;
+        try {
+            ProcessBuilder builder = new ProcessBuilder(commandLine);
+            if (workingDirectory != null && !workingDirectory.trim().isEmpty()) {
+                builder.directory(new File(workingDirectory));
+            }
+            builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            process = builder.start();
+        } catch (IOException error) {
+            throw new IllegalStateException("Cannot start the installed Firefox: " + commandLine, error);
+        }
+        String processId = UUID.randomUUID().toString();
+        processes.put(processId, process);
+        startOutputGobbler(process.getErrorStream(), stderrBuffer);
+        Playwright4JDebug.log("[pw4j-firefox-bidi] command=" + commandLine);
+
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(DEVTOOLS_PORT_TIMEOUT_SECONDS);
+            while (System.nanoTime() < deadline) {
+                java.util.regex.Matcher matcher = FIREFOX_BIDI_STDERR_PATTERN.matcher(stderrBuffer.snapshot());
+                if (matcher.find()) {
+                    String endpoint = matcher.group(1).trim();
+                    Playwright4JDebug.log("[pw4j-firefox-bidi] endpoint=" + endpoint);
+                    return processId + ARGUMENT_SEPARATOR + endpoint;
+                }
+                if (!process.isAlive()) {
+                    throw new IllegalStateException("Firefox exited before WebDriver BiDi was ready (code "
+                            + process.exitValue() + "). Logs: " + stderrBuffer.snapshot());
+                }
+                sleepBriefly();
+            }
+            throw new IllegalStateException("Timed out waiting for Firefox WebDriver BiDi: "
+                    + stderrBuffer.snapshot());
+        } catch (RuntimeException error) {
+            close(processId);
+            throw error;
+        }
     }
 
     @Override
