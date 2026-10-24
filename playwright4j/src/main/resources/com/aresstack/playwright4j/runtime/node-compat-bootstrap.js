@@ -1539,8 +1539,10 @@
   }
 
   // Node's destroy(): idempotent; marks both sides destroyed at once, runs _destroy(err, cb), then
-  // emits 'error' (at most once per stream) followed by 'close' (once). Node emits both on a later
-  // tick; the base streams here keep their synchronous timing unless emitAsync is set (sockets).
+  // emits the error _destroy called back with (at most once per stream; a _destroy that calls
+  // back without one swallows it) followed by 'close' (once, even if an 'error' without listener
+  // throws). Node emits both on a later tick; the base streams here keep their synchronous timing
+  // unless emitAsync is set (sockets).
   function destroyStream(stream, error, emitAsync) {
     if (isStreamDestroyed(stream)) {
       return stream;
@@ -1564,7 +1566,7 @@
         return;
       }
       completed = true;
-      const failure = laterError || error || null;
+      const failure = laterError || null;
       const emit = function () {
         if (stream._writableState) {
           const wstate = stream._writableState;
@@ -1579,22 +1581,25 @@
         const finishCallbacks = stream._writableState && !stream._writableState.finished
           ? stream._writableState.onFinished.splice(0)
           : [];
-        if (failure && !states.some(function (state) { return state.errorEmitted; })) {
-          states.forEach(function (state) {
-            state.errorEmitted = true;
-            if (!state.errored) {
-              state.errored = failure;
-            }
-          });
-          stream.emit('error', failure);
-        }
         states.forEach(function (state) { state.closed = true; });
-        finishCallbacks.forEach(function (callback) {
-          callback(failure || streamDestroyedError('end'));
-        });
-        if (!states.some(function (state) { return state.closeEmitted; })) {
-          states.forEach(function (state) { state.closeEmitted = true; });
-          emitStreamClose(stream);
+        try {
+          if (failure && !states.some(function (state) { return state.errorEmitted; })) {
+            states.forEach(function (state) {
+              state.errorEmitted = true;
+              if (!state.errored) {
+                state.errored = failure;
+              }
+            });
+            stream.emit('error', failure);
+          }
+        } finally {
+          finishCallbacks.forEach(function (callback) {
+            callback(failure || streamDestroyedError('end'));
+          });
+          if (!states.some(function (state) { return state.closeEmitted; })) {
+            states.forEach(function (state) { state.closeEmitted = true; });
+            emitStreamClose(stream);
+          }
         }
       };
       if (emitAsync) {
@@ -1603,9 +1608,17 @@
         emit();
       }
     };
+    let destroyed = false;
     try {
-      stream._destroy(error || null, done);
+      stream._destroy(error || null, function (laterError) {
+        destroyed = true;
+        done(laterError);
+      });
     } catch (thrown) {
+      if (destroyed) {
+        // Thrown by an 'error'/'close' listener of a synchronous emit, not by _destroy.
+        throw thrown;
+      }
       done(thrown);
     }
     return stream;
@@ -1651,14 +1664,16 @@
     }
     const length = writableChunkLength(state, chunk);
     state.length += length;
-    const ret = state.length < state.highWaterMark;
-    if (!ret) {
-      state.needDrain = true;
-    }
     state.pendingcb++;
     state.buffered.push({ chunk: chunk, encoding: encoding, callback: callback, length: length });
     flushWriteBuffer(stream);
-    // A _write that failed synchronously has destroyed the stream already (ws pauses on false).
+    // As in Node 20+, measured after the write: a chunk _write consumed synchronously does not
+    // count, only bytes still pending. A _write that failed synchronously has destroyed the
+    // stream already (ws pauses the socket on false).
+    const ret = state.length < state.highWaterMark || state.length === 0;
+    if (!ret) {
+      state.needDrain = true;
+    }
     return ret && !state.destroyed;
   }
 
@@ -1916,7 +1931,9 @@
   // 'end' once the stream has ended and nothing is left.
   Readable.prototype._flowBuffered = function () {
     const state = this._readableState;
-    while (state.flowing === true && this._readableBuffer.length > 0) {
+    // Node's read() emits 'data' only until 'error'/'close' was emitted; read() still returns
+    // whatever is buffered (ws drains a destroyed socket that way).
+    while (state.flowing === true && this._readableBuffer.length > 0 && !state.closeEmitted && !state.errorEmitted) {
       this.emit('data', this._readableBuffer.shift());
     }
     if (state.flowing === true && state.ended && this._readableBuffer.length === 0) {
@@ -2096,7 +2113,9 @@
 
   // pipe(destination, { end }) and unpipe(). { end: false } matters: yazl pipes every zip entry
   // into its output stream with it and ends that stream itself after the central directory, so
-  // ending it with the first entry truncates the archive.
+  // ending it with the first entry truncates the archive. Errors are not forwarded (Node doesn't
+  // either): with two sockets piped into each other (client-certificate proxy tunnel) forwarding
+  // recursed until the stack overflowed.
   Readable.prototype.pipe = function (destination, options) {
     const self = this;
     const endDestination = !options || options.end !== false;
@@ -2111,17 +2130,11 @@
         if (endDestination && destination && typeof destination.end === 'function') {
           destination.end();
         }
-      },
-      onerror: function (error) {
-        if (destination && typeof destination.emit === 'function') {
-          destination.emit('error', error);
-        }
       }
     };
     (this._pipes || (this._pipes = [])).push(pipe);
     this.on('data', pipe.ondata);
     this.on('end', pipe.onend);
-    this.on('error', pipe.onerror);
     if (destination && typeof destination.emit === 'function') {
       destination.emit('pipe', self);
     }
@@ -2137,7 +2150,6 @@
       }
       self.removeListener('data', pipe.ondata);
       self.removeListener('end', pipe.onend);
-      self.removeListener('error', pipe.onerror);
       if (pipe.destination && typeof pipe.destination.emit === 'function') {
         pipe.destination.emit('unpipe', self);
       }
@@ -3603,10 +3615,12 @@
         this.once('connect', function () { self._write(chunk, encoding, callback); });
         return;
       }
-      const buffer = global.Buffer.isBuffer(chunk)
-        ? chunk
-        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
-      host.netServer().write(this.__socketId, buffer.toString('base64'));
+      if (this.__socketId) {
+        const buffer = global.Buffer.isBuffer(chunk)
+          ? chunk
+          : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
+        host.netServer().write(this.__socketId, buffer.toString('base64'));
+      }
       callback();
     }
 
@@ -3616,13 +3630,15 @@
         this.once('connect', function () { self._final(callback); });
         return;
       }
-      host.netServer().shutdownOutput(this.__socketId);
+      if (this.__socketId) {
+        host.netServer().shutdownOutput(this.__socketId);
+      }
       callback();
     }
 
     _destroy(error, callback) {
       // A socket destroyed while still connecting is closed when the host reports the outcome.
-      if (!this.connecting) {
+      if (this.__socketId && !this.connecting) {
         host.netServer().closeSocket(this.__socketId);
         delete netSocketsById[this.__socketId];
       }
@@ -3668,15 +3684,32 @@
       this.push(null);
     }
 
-    // Called for a host 'close' event: the connection failed (reset) or was closed underneath us.
-    // Node would emit ECONNRESET here; the host cannot tell a reset from a local close, so the
-    // socket is destroyed without an error (anything still buffered stays readable, as in Node).
+    // Called for a host 'close' event: reading failed (connection reset, or a failed write closed
+    // the socket). Local closes never get here, the socket is unregistered first. Like Node:
+    // 'error' (ECONNRESET), then 'close', no 'end'; anything still buffered stays readable. The
+    // error is only emitted to existing listeners, an unhandled one must not take the process down.
     __hostClosed() {
-      this.destroy();
+      if (this.listenerCount('error') > 0) {
+        const error = new Error('read ECONNRESET');
+        error.code = 'ECONNRESET';
+        error.errno = -104;
+        error.syscall = 'read';
+        this.destroy(error);
+      } else {
+        this.destroy();
+      }
     }
 
     setEncoding() { return this; }
-    setNoDelay() { return this; }
+    setNoDelay(noDelay) {
+      const enable = noDelay === undefined ? true : !!noDelay;
+      if (this.connecting) {
+        this.once('connect', () => this.setNoDelay(enable));
+      } else if (this.__socketId && !this.destroyed) {
+        host.netServer().setNoDelay(this.__socketId, enable);
+      }
+      return this;
+    }
     setKeepAlive() { return this; }
     setTimeout() { return this; }
     ref() { return this; }
@@ -3946,6 +3979,14 @@
       server.on('request', requestListener);
     }
     netServer.on('connection', function (socket) {
+      // Like Node's http server (socketOnError): a socket error before the request was dispatched
+      // destroys the socket. ws attaches its own handler after the upgrade.
+      const onError = function () {
+        socket.destroy();
+      };
+      socket.on('error', onError);
+      // Node's http server defaults to noDelay (small frames must not wait for delayed ACKs).
+      socket.setNoDelay(true);
       server.emit('connection', socket);
       let buffer = global.Buffer.alloc(0);
       const onData = function (chunk) {
@@ -3961,6 +4002,7 @@
           // Like Node's http server: the socket is handed over paused, so bytes arriving before
           // the new owner (ws) attaches its 'data' listener are buffered, not dropped.
           socket.readableFlowing = null;
+          socket.removeListener('error', onError);
           server.emit('upgrade', request, socket, head);
         } else {
           server.emit('request', request, createServerResponse(socket));
@@ -4047,13 +4089,11 @@
     let secured = false;
 
     // A per-connection TLS failure must not crash the shared driver: only emit 'error' if someone
-    // is listening (an unhandled 'error' would throw out of the pump), otherwise just tear down.
+    // is listening (an unhandled 'error' would throw out of the pump), then tear down: the socket is
+    // destroyed (engine and transport released, 'close' emitted) like Node's TLSSocket.
     const fail = function (error) {
-      if (socket.listenerCount && socket.listenerCount('error') > 0) {
-        socket.emit('error', error);
-      }
-      try { host.tls().closeEngine(engineId); } catch (ignored) {}
       socket.push(null);
+      socket.destroy(socket.listenerCount('error') > 0 ? error : undefined);
     };
 
     const process = function (res) {

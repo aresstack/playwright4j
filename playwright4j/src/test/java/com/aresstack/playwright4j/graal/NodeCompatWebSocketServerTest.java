@@ -157,6 +157,37 @@ final class NodeCompatWebSocketServerTest {
     }
 
     @Test
+    void echoesAMessageThatSpansManyTcpChunks() {
+        JdkClient client = JdkClient.connect(this, endpoint);
+        String id = awaitConnection(1);
+        // 1 MiB arrives in many host reads (Receiver writes with backpressure) and goes back out
+        // through the socket's write queue in one large frame.
+        String large = "0123456789abcdef".repeat(64 * 1024);
+
+        assertEquals("echo:" + large, client.roundTrip(this, large));
+        assertEquals("echo:after", client.roundTrip(this, "after"));
+
+        client.closeNormally(this, 1000, "");
+        awaitServerClose(id, 1000);
+        assertNoLeftovers();
+    }
+
+    @Test
+    void closesTheServerWebSocketWhenTheClientResetsTheConnection() throws IOException {
+        try (RawClient client = RawClient.connect(endpoint)) {
+            client.write(client.upgradeRequest());
+            pumpUntil("the upgrade response", client::hasUpgradeResponse);
+            String id = awaitConnection(1);
+
+            // TCP RST instead of FIN: the host read fails, the socket is destroyed with ECONNRESET
+            // (ws handles the socket error) and the server WebSocket closes with 1006.
+            client.reset();
+            awaitServerClose(id, 1006);
+        }
+        assertNoLeftovers();
+    }
+
+    @Test
     void deliversAFrameThatArrivesTogetherWithTheUpgradeRequest() throws IOException {
         try (RawClient client = RawClient.connect(endpoint)) {
             // One TCP write: HTTP upgrade request immediately followed by a masked text frame. The
@@ -474,6 +505,12 @@ final class NodeCompatWebSocketServerTest {
                 }
             }
             return -1;
+        }
+
+        /** Closes with SO_LINGER 0, so the peer gets a RST instead of a FIN. */
+        void reset() throws IOException {
+            socket.setSoLinger(true, 0);
+            socket.close();
         }
 
         @Override

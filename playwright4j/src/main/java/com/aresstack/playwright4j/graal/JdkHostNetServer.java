@@ -152,6 +152,19 @@ public final class JdkHostNetServer {
         }
     }
 
+    /** Node's socket.setNoDelay: disables Nagle's algorithm (ws and the http server enable it). */
+    @HostAccess.Export
+    public void setNoDelay(String socketId, boolean noDelay) {
+        Socket socket = sockets.get(socketId);
+        if (socket != null && !socket.isClosed()) {
+            try {
+                socket.setTcpNoDelay(noDelay);
+            } catch (IOException ignored) {
+                // The connection is gone; the read thread reports it.
+            }
+        }
+    }
+
     @HostAccess.Export
     public void closeSocket(String socketId) {
         Socket socket = sockets.remove(socketId);
