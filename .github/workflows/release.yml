@@ -5,7 +5,8 @@ name: Release to Maven Central
 # built into the published jar. Triggered by a `v*` tag; version is derived from the tag.
 #
 # Release gate = the fast, reliable Chrome + Edge channel smokes (launch -> page -> evaluate
-# -> close). The full upstream compatibility suite is NOT a blocking gate here — it runs
+# -> close) plus the Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and
+# process exit). All three are mandatory; a missing Firefox fails the release. The full upstream compatibility suite is NOT a blocking gate here — it runs
 # separately as a non-blocking audit (see known-limitations-check.yml).
 #
 # Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY, GPG_PASSPHRASE.
@@ -62,6 +63,35 @@ jobs:
         env:
           BROWSER_CHANNEL: msedge
         run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --rerun-tasks --no-daemon --stacktrace
+
+      - name: Locate installed Firefox (fail if missing)
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+            "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe"
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Firefox is not installed on this runner; the Firefox release gate cannot run."
+            exit 1
+          }
+          (Get-Item $exe).VersionInfo.ProductVersion | ForEach-Object { Write-Host "Firefox $_ at $exe" }
+          "FIREFOX_EXECUTABLE=$exe" >> $env:GITHUB_ENV
+
+      - name: Release gate — Firefox smoke (moz-firefox, WebDriver BiDi)
+        shell: pwsh
+        env:
+          PLAYWRIGHT4J_REQUIRE_FIREFOX: "true"
+        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks --no-daemon --stacktrace
+
+      - name: Report leftover Firefox processes
+        if: always()
+        shell: pwsh
+        run: |
+          $left = Get-Process firefox -ErrorAction SilentlyContinue
+          if ($left) { $left | Format-Table Id, StartTime, Path -AutoSize; $left | Stop-Process -Force }
+          else { Write-Host "No Firefox processes left." }
 
       - name: Sanity — assemble publishable artifacts locally
         shell: pwsh
