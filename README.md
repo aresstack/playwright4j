@@ -23,7 +23,7 @@ Node.js runtime, native helper executables, or browser downloads.
 > then, build from source or use `0.1.0` for Chromium only.
 >
 > `0.1.0` does not resolve with Maven: its POM declares the GraalJS dependency
-> `org.graalvm.polyglot:js` without `<type>pom</type>`. Gradle users are not affected.
+> `org.graalvm.polyglot:js` without `<type>pom</type>`.
 > The next release fixes this.
 
 ## Quick start
