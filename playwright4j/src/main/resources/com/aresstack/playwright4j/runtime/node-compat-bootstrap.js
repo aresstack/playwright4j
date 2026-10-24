@@ -961,6 +961,25 @@
     return 'non-chromium';
   }
 
+  // Playwright's BiDi Firefox (bidiFirefox.js) omits two flags its Juggler Firefox always passes.
+  // Without -wait-for-browser a headed firefox.exe on Windows is only the launcher process: it
+  // hands off to the real browser and exits with code 0, which Playwright reports as "Failed to
+  // launch the browser process" while the real browser keeps running and holds the profile lock.
+  // Without -no-remote a headed start may be handed to an already running Firefox instead.
+  function withFirefoxInstanceFlags(argList) {
+    const result = argList.slice();
+    const has = function (flag) {
+      return result.indexOf('-' + flag) >= 0 || result.indexOf('--' + flag) >= 0;
+    };
+    if (!has('no-remote')) {
+      result.unshift('-no-remote');
+    }
+    if (!has('headless') && !has('wait-for-browser')) {
+      result.unshift('-wait-for-browser');
+    }
+    return result;
+  }
+
   modules.child_process = {
     spawn: function (command, args, options) {
       const argList = (args || []).map(function (value) { return String(value); });
@@ -975,7 +994,8 @@
         return value.indexOf('--remote-debugging-port') === 0;
       }) && (argList.indexOf('-profile') >= 0 || argList.indexOf('--profile') >= 0);
       if (isFirefoxBiDi) {
-        const firefoxId = String(host.processLauncher().spawnProcess(String(command), joinedArguments, workingDirectory));
+        const firefoxArguments = withFirefoxInstanceFlags(argList).join(ARGUMENT_SEPARATOR);
+        const firefoxId = String(host.processLauncher().spawnProcess(String(command), firefoxArguments, workingDirectory));
         return createGeneralProcess(firefoxId);
       }
 
@@ -5279,6 +5299,24 @@
     };
   }
 
+  // Firefox sends no browsingContext.load for the initial about:blank of a top-level context it
+  // creates (browsingContext.create), so its main frame only ever reaches "commit". The persistent
+  // launch (launchPersistentContext) waits for "load" on that default page and would hang until its
+  // timeout. A fresh, opener-less about:blank page with no navigation pending is fully loaded, so
+  // report domcontentloaded/load for it once the page is initialized.
+  function patchBidiPageInitialBlankLoad(BidiPage) {
+    const originalInitialize = BidiPage.prototype._initialize;
+    BidiPage.prototype._initialize = async function () {
+      await originalInitialize.apply(this, arguments);
+      const frame = this._page.mainFrame();
+      if (this._opener || !frame || frame.pendingDocument() || frame._url !== 'about:blank') {
+        return;
+      }
+      this._page.frameManager.frameLifecycleEvent(frame._id, 'domcontentloaded');
+      this._page.frameManager.frameLifecycleEvent(frame._id, 'load');
+    };
+  }
+
   function installKnownModuleFallbacks(resourceName, exportsObject) {
     if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
@@ -5306,6 +5344,10 @@
           return target[property];
         }
       });
+    }
+
+    if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {
+      patchBidiPageInitialBlankLoad(exportsObject.BidiPage);
     }
 
     if (resourceName.endsWith('/lib/utilsBundle.js') && exportsObject.program === undefined) {

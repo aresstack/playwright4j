@@ -30,6 +30,22 @@ public class FirefoxBiDiSmokeTest {
 
     @Test
     void launchInstalledFirefoxEvaluateAndClose() throws Throwable {
+        runGuarded(FirefoxBiDiSmokeTest::runSmoke);
+    }
+
+    // The path GPT Desktop uses: a persistent profile directory that survives the browser, with a
+    // visible window by default (FIREFOX_HEADLESS=true to run it headless). A headed start is what
+    // exercises the Windows launcher-process handoff (see -wait-for-browser in the runtime).
+    @Test
+    void launchPersistentContextWithInstalledFirefox() throws Throwable {
+        runGuarded(FirefoxBiDiSmokeTest::runPersistentSmoke);
+    }
+
+    private interface Smoke {
+        void run(String executable) throws Exception;
+    }
+
+    private static void runGuarded(Smoke smoke) throws Throwable {
         String configured = System.getenv("FIREFOX_EXECUTABLE");
         boolean available = configured != null && !configured.trim().isEmpty()
                 && Files.isRegularFile(Paths.get(configured));
@@ -40,7 +56,7 @@ public class FirefoxBiDiSmokeTest {
 
         Set<Long> firefoxBefore = firefoxPids();
         try {
-            runSmoke(configured);
+            smoke.run(configured);
         } catch (Throwable failure) {
             // Also check for leftovers when the smoke itself failed, so a hang does not hide a leak.
             try {
@@ -76,6 +92,45 @@ public class FirefoxBiDiSmokeTest {
                 browser.close();
                 assertClosedPromptly("browser.close()", start);
             }
+        }
+    }
+
+    private static void runPersistentSmoke(String configured) throws Exception {
+        Path userDataDir = Files.createTempDirectory("playwright4j-firefox-profile");
+        try (Playwright playwright = Playwright.create()) {
+            for (int round = 0; round < 2; round++) {
+                BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
+                        .setChannel("moz-firefox")
+                        .setExecutablePath(Paths.get(configured))
+                        .setHeadless("true".equalsIgnoreCase(System.getenv("FIREFOX_HEADLESS")));
+                BrowserContext context = playwright.firefox().launchPersistentContext(userDataDir, options);
+                try {
+                    Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
+                    page.navigate("data:text/html,<title>persistent</title>");
+                    assertEquals("persistent", page.title());
+                    page.setContent("<html><body><h1>Firefox persistent smoke</h1></body></html>");
+                    assertEquals(2, ((Number) page.evaluate("1 + 1")).intValue());
+                    assertEquals("Firefox persistent smoke", page.textContent("h1"));
+                } finally {
+                    long start = System.currentTimeMillis();
+                    context.close();
+                    assertClosedPromptly("persistent context.close()", start);
+                }
+                // The profile must stay on disk so the next launch reuses it.
+                assertTrue(Files.isRegularFile(userDataDir.resolve("prefs.js")),
+                        "Firefox profile was not written to " + userDataDir);
+            }
+        } finally {
+            deleteRecursively(userDataDir);
+        }
+    }
+
+    private static void deleteRecursively(Path dir) throws java.io.IOException {
+        if (!Files.exists(dir)) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> paths = Files.walk(dir)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
         }
     }
 
