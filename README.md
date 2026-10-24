@@ -17,14 +17,13 @@ Node.js runtime, native helper executables, or browser downloads.
 - **Official Playwright Java API**: your code uses `com.microsoft.playwright.*`, there is
   no Playwright4J-specific API to learn
 
-> **Version note.** The latest published release is `com.aresstack:playwright4j:0.1.0`.
-> It supports Chrome and Edge only. Firefox support and the Node-free `launch-server`
-> described below are not released yet and will ship with the next release. Until
-> then, build from source or use `0.1.0` for Chromium only.
+> **Version note.** This README describes the upcoming release `0.2.0`, which is not
+> published yet. It adds Firefox over WebDriver BiDi and the Node-free `launch-server`.
+> Until `0.2.0` is on Maven Central, build from source.
 >
-> `0.1.0` does not resolve with Maven: its POM declares the GraalJS dependency
-> `org.graalvm.polyglot:js` without `<type>pom</type>`.
-> The next release fixes this.
+> The older release `0.1.0` supports Chrome and Edge only, and it does not resolve with
+> Maven: its POM declares the GraalJS dependency `org.graalvm.polyglot:js` without
+> `<type>pom</type>`. `0.2.0` fixes this.
 
 ## Quick start
 
@@ -39,7 +38,7 @@ Gradle:
 
 ```groovy
 dependencies {
-    implementation 'com.aresstack:playwright4j:<version>'
+    implementation 'com.aresstack:playwright4j:0.2.0'
     implementation('com.microsoft.playwright:playwright:1.59.0') {
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
@@ -53,7 +52,7 @@ Maven:
 <dependency>
   <groupId>com.aresstack</groupId>
   <artifactId>playwright4j</artifactId>
-  <version>VERSION</version>
+  <version>0.2.0</version>
 </dependency>
 <dependency>
   <groupId>com.microsoft.playwright</groupId>
@@ -96,7 +95,7 @@ try (Playwright playwright = Playwright.create()) {
 }
 ```
 
-Firefox (next release) uses the `moz-firefox` channel and the path of the installed
+Firefox (since `0.2.0`) uses the `moz-firefox` channel and the path of the installed
 Firefox binary:
 
 ```java
@@ -117,7 +116,7 @@ Everything after `launch()` is the regular Playwright API.
 | --- | --- | --- | --- |
 | Google Chrome | `chromium`, channel `chrome` | CDP | Tested (upstream contract suite + CI smoke) |
 | Microsoft Edge | `chromium`, channel `msedge` | CDP | Tested (upstream contract suite + CI smoke) |
-| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Smoke-tested only, next release |
+| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Smoke-tested only, since `0.2.0` |
 | WebKit | – | – | Not supported, fails fast with an unsupported-engine error |
 
 "Tested" means Chrome and Edge run against the broad upstream Playwright Java contract
@@ -125,7 +124,7 @@ suite. Firefox is covered by a launch/navigate/close smoke test on Windows CI, w
 release gate, but it has **not** been run against the full contract suite. Expect gaps in
 less common Firefox features.
 
-`BrowserType.connect()` to a `launch-server` also works without Node.js (next release):
+`BrowserType.connect()` to a `launch-server` also works without Node.js (since `0.2.0`):
 the server is the same JVM driver started in `--node-compat` mode
 (`java ... com.aresstack.playwright4j.driver.GraalDriverMain --node-compat cli.js launch-server ...`).
 
