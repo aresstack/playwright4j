@@ -29,7 +29,7 @@ public class FirefoxBiDiSmokeTest {
     private static final long PROCESS_EXIT_GRACE_MILLIS = 5_000;
 
     @Test
-    void launchInstalledFirefoxEvaluateAndClose() throws InterruptedException {
+    void launchInstalledFirefoxEvaluateAndClose() throws Throwable {
         String configured = System.getenv("FIREFOX_EXECUTABLE");
         boolean available = configured != null && !configured.trim().isEmpty()
                 && Files.isRegularFile(Paths.get(configured));
@@ -39,6 +39,21 @@ public class FirefoxBiDiSmokeTest {
         Assumptions.assumeTrue(available, "Set FIREFOX_EXECUTABLE to an installed Firefox to run this smoke.");
 
         Set<Long> firefoxBefore = firefoxPids();
+        try {
+            runSmoke(configured);
+        } catch (Throwable failure) {
+            // Also check for leftovers when the smoke itself failed, so a hang does not hide a leak.
+            try {
+                assertNoFirefoxLeftBehind(firefoxBefore);
+            } catch (Throwable leak) {
+                failure.addSuppressed(leak);
+            }
+            throw failure;
+        }
+        assertNoFirefoxLeftBehind(firefoxBefore);
+    }
+
+    private static void runSmoke(String configured) {
         try (Playwright playwright = Playwright.create()) {
             BrowserType.LaunchOptions options = new BrowserType.LaunchOptions()
                     .setChannel("moz-firefox")
@@ -62,7 +77,6 @@ public class FirefoxBiDiSmokeTest {
                 assertClosedPromptly("browser.close()", start);
             }
         }
-        assertNoFirefoxLeftBehind(firefoxBefore);
     }
 
     // Every Firefox process (main + content processes) started by this test must be gone shortly
