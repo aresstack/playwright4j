@@ -8,8 +8,9 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
 
 `com.aresstack:playwright4j:<version>` with:
 
-- the main jar (includes the native `node.exe` launcher resource and `node-compat-bootstrap.js`),
-- `-sources.jar` (without the compiled launcher binary),
+- the main jar (Java classes, `node-compat-bootstrap.js` and the repackaged Playwright Core
+  JavaScript package under `driver/package/`; **no native binaries**),
+- `-sources.jar`,
 - `-javadoc.jar`,
 - a POM with name/description/url, Apache-2.0 license, developer, and SCM metadata,
 - GPG signatures for all of the above.
@@ -19,10 +20,11 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
 1. The release runs from [`.github/workflows/release.yml`](.github/workflows/release.yml) on a
    pushed tag matching `v*` (for example `v0.1.0`). The version is derived from the tag
    (`v0.1.0` → `0.1.0`) and passed to Gradle via `-Pversion`.
-2. It runs on **windows-2022** so the native `node.exe` launcher is compiled (MinGW) into the
-   published jar. The workflow fails fast if the launcher was not built.
+2. It runs on **windows-2022**, where Chrome, Edge and Firefox are preinstalled. No C toolchain
+   is needed; the project contains no native code.
 3. **Release gate:** the fast Chrome + Edge channel smokes (`channelSmoke`, launch → page →
-   evaluate → close) must pass before anything is published.
+   evaluate → close) and the Firefox WebDriver BiDi smoke (`firefoxSmoke`) must pass before
+   anything is published.
 4. A `publishToMavenLocal` sanity assembles the jar / sources / javadoc / POM.
 5. Gradle builds, signs (in-memory PGP key), and publishes via
    `publishAggregationToCentralPortal`.
@@ -60,9 +62,16 @@ released automatically** — no manual step in the portal UI.
 ./gradlew :playwright4j:publishToMavenLocal -Pversion=0.1.0
 ```
 
-This produces the jar / sources / javadoc / POM in your local `~/.m2` and verifies the layout
-(including that `node.exe` is in the main jar but not in the sources jar) without contacting the
+This produces the jar / sources / javadoc / POM in your local `~/.m2` without contacting the
 Central Portal.
+
+To check the result like CI does (no native file in the playwright4j jar, no `driver`/`driver-bundle` for
+consumers, POM resolvable by Maven):
+
+```bash
+./gradlew -p consumer-check checkConsumerDependencies -Pplaywright4jVersion=0.1.0
+mvn -B -f consumer-check/pom.xml verify -Dplaywright4j.version=0.1.0
+```
 
 ## Before cutting a release
 

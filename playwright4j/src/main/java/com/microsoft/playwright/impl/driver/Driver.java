@@ -76,96 +76,153 @@ public final class Driver {
     }
 
     public Path driverDir() {
-        Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
+        Path root = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
+        Path dir = driverDirFor(root, packageId());
         ensurePackageExtracted(dir);
-        ensureNodeLauncher(dir);
         return dir;
     }
 
     /**
-     * Places the native node.exe compatibility launcher (and its config) next to package/, so that
-     * tests which spawn {@code <driverDir>/node.exe <driverDir>/package/cli.js launch-server ...}
-     * directly (e.g. TestBrowserTypeConnect) re-exec our GraalJS driver in --node-compat mode. The
-     * config bakes in this JVM's java executable, classpath and forwarded system properties so the
-     * launcher can start the driver without knowing them. No-op (with a clear error left for launch
-     * time) if the native launcher was not built (non-Windows / no C toolchain at build).
+     * One directory per Playwright Core package content: an upgrade (new package id) never reuses
+     * files extracted by an older playwright4j version.
      */
-    private void ensureNodeLauncher(Path driverDir) {
-        String launcherName = isWindows() ? "node.exe" : "node";
-        try (InputStream launcher = Driver.class.getClassLoader()
-                .getResourceAsStream("com/aresstack/playwright4j/launcher/node.exe")) {
-            if (launcher == null) {
-                return; // Not built on this platform; a launch-server test will fail with ENOENT.
-            }
-            Files.createDirectories(driverDir);
-            Path target = driverDir.resolve(launcherName);
-            // The launcher binary is identical across runs. A test that starts its own launch-server
-            // while a previous one is still running (which holds node.exe open) would otherwise fail
-            // to overwrite it (Windows AccessDeniedException). Only write it when it is missing;
-            // the config (never held open) is rewritten each time so the classpath stays current.
-            if (!Files.exists(target)) {
-                Files.copy(launcher, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-            Files.write(driverDir.resolve("node-launcher.cfg"), nodeLauncherConfigLines());
-        } catch (IOException exception) {
-            throw new IllegalStateException("Cannot install node.exe launcher into " + driverDir, exception);
-        }
-    }
-
-    private java.util.List<String> nodeLauncherConfigLines() {
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        lines.add(javaExecutable());
-        lines.add("-cp");
-        lines.add(System.getProperty("java.class.path"));
-        lines.add("-Djava.net.preferIPv4Stack=true");
-        for (String property : FORWARDED_SYSTEM_PROPERTIES) {
-            String value = System.getProperty(property);
-            if (value != null && !value.trim().isEmpty()) {
-                lines.add("-D" + property + "=" + value);
-            }
-        }
-        // Keep the launch-server child's debug log separate from the parent driver's shared log.
-        if (System.getProperty("playwright4j.debug") != null && !System.getProperty("playwright4j.debug").trim().isEmpty()) {
-            lines.add("-Dplaywright4j.debug.file="
-                    + Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-launchserver.log"));
-        }
-        lines.add("com.aresstack.playwright4j.driver.GraalDriverMain");
-        lines.add("--node-compat");
-        return lines;
+    static Path driverDirFor(Path root, String packageId) {
+        return root.resolve(packageId);
     }
 
     /**
-     * Some upstream APIs (e.g. trace viewer) read static assets relative to driverDir(), i.e.
-     * {@code driverDir/package/lib/...}. Those assets live inside the bundled driver jar under
-     * {@code driver/<platform>/package/}. Extract that tree once into driverDir so file-based
-     * access works without a real Node driver installation.
+     * SHA-256 (prefix) over the repackaged driver/package/** tree, written at build time by
+     * playwright4j's driverPackageId task.
      */
-    private static void ensurePackageExtracted(Path driverDir) {
-        Path marker = driverDir.resolve("package").resolve(".playwright4j-extracted");
-        if (Files.exists(marker)) {
-            return;
-        }
-        String prefix = "driver/" + platformDirectory() + "/package/";
-        try {
-            URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
-            if (probe == null) {
-                return;
+    static String packageId() {
+        try (InputStream input = Driver.class.getClassLoader().getResourceAsStream(PACKAGE_ID_RESOURCE)) {
+            if (input == null) {
+                throw new IllegalStateException("Missing " + PACKAGE_ID_RESOURCE + " (playwright4j jar incomplete)");
             }
-            if ("jar".equals(probe.getProtocol())) {
-                URLConnection connection = probe.openConnection();
-                if (connection instanceof java.net.JarURLConnection) {
-                    JarFile jarFile = ((java.net.JarURLConnection) connection).getJarFile();
-                    extractFromJar(jarFile, prefix, driverDir);
-                }
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[256];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                bytes.write(buffer, 0, read);
             }
-            Files.createDirectories(marker.getParent());
-            Files.write(marker, new byte[0]);
+            String id = new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (!id.matches("[0-9a-f]{16,64}")) {
+                throw new IllegalStateException("Invalid " + PACKAGE_ID_RESOURCE + ": " + id);
+            }
+            return id;
         } catch (IOException exception) {
-            throw new IllegalStateException("Cannot extract driver package assets to " + driverDir, exception);
+            throw new IllegalStateException("Cannot read " + PACKAGE_ID_RESOURCE, exception);
         }
     }
 
-    private static void extractFromJar(JarFile jarFile, String prefix, Path driverDir) throws IOException {
+    private static final String PACKAGE_ID_RESOURCE = "driver/package-id.txt";
+    private static final String EXTRACTED_MARKER = ".playwright4j-extracted";
+
+    // FileChannel locks are held per JVM; threads of one JVM must serialize before taking one.
+    private static final Object EXTRACT_LOCK = new Object();
+    private static final long MOVE_RETRY_SECONDS = 10;
+
+    /**
+     * Some upstream APIs (e.g. trace viewer) read static assets relative to driverDir(), i.e.
+     * {@code driverDir/package/lib/...}. Those assets live on the classpath under
+     * {@code driver/package/}. Extract that tree once into driverDir so file-based access works
+     * without a real Node driver installation.
+     *
+     * <p>The slow path runs under an in-JVM lock plus a file lock on {@code driverDir/.lock}, so
+     * concurrent JVMs (e.g. a test JVM and its launch-server JVMs) never delete a tree another one
+     * just finished. Extraction goes to a sibling staging directory that is moved into place, so a
+     * half-written tree is never reused; the move is retried briefly because on Windows antivirus or
+     * indexer handles on just-written files make the rename fail for a moment.
+     */
+    static void ensurePackageExtracted(Path driverDir) {
+        Path packageDir = driverDir.resolve("package");
+        if (Files.exists(packageDir.resolve(EXTRACTED_MARKER))) {
+            return;
+        }
+        String prefix = com.aresstack.playwright4j.graal.PlaywrightDriverBundleSource.PACKAGE_PREFIX;
+        URL probe = Driver.class.getClassLoader().getResource(prefix + "cli.js");
+        if (probe == null) {
+            throw new IllegalStateException("Missing Playwright Core package resource " + prefix + "cli.js");
+        }
+        try {
+            Files.createDirectories(driverDir);
+            synchronized (EXTRACT_LOCK) {
+                try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(driverDir.resolve(".lock"),
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+                     java.nio.channels.FileLock ignored = channel.lock()) {
+                    if (Files.exists(packageDir.resolve(EXTRACTED_MARKER))) {
+                        return; // another JVM finished while we waited for the lock
+                    }
+                    deleteStaleEntries(driverDir, packageDir);
+                    extractLocked(probe, prefix, driverDir, packageDir);
+                }
+            }
+        } catch (IOException | java.net.URISyntaxException exception) {
+            throw new IllegalStateException("Cannot extract driver package assets to " + driverDir, exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while extracting driver package assets to " + driverDir, exception);
+        }
+    }
+
+    /** Under the lock: a package dir without marker and old staging dirs are leftovers of a crash. */
+    private static void deleteStaleEntries(Path driverDir, Path packageDir) throws IOException {
+        if (Files.exists(packageDir)) {
+            deleteTree(packageDir);
+        }
+        try (java.util.stream.Stream<Path> siblings = Files.list(driverDir)) {
+            siblings.filter(path -> path.getFileName().toString().startsWith("package-"))
+                    .forEach(Driver::deleteTree);
+        }
+    }
+
+    private static void extractLocked(URL probe, String prefix, Path driverDir, Path packageDir)
+            throws IOException, java.net.URISyntaxException, InterruptedException {
+        // Not createTempDirectory: that would make the shared tree rwx------ on POSIX.
+        Path staging = driverDir.resolve("package-" + java.util.UUID.randomUUID()).toAbsolutePath().normalize();
+        Files.createDirectory(staging);
+        try {
+            if ("jar".equals(probe.getProtocol())) {
+                URLConnection connection = probe.openConnection();
+                connection.setUseCaches(false);
+                if (connection instanceof java.net.JarURLConnection) {
+                    try (JarFile jarFile = ((java.net.JarURLConnection) connection).getJarFile()) {
+                        extractFromJar(jarFile, prefix, staging);
+                    }
+                }
+            } else if ("file".equals(probe.getProtocol())) {
+                // Exploded classpath (IDE / Gradle test runs): copy the resource directory.
+                copyTree(Paths.get(probe.toURI()).getParent(), staging);
+            }
+            if (!Files.isRegularFile(staging.resolve("cli.js"))) {
+                throw new IOException("Extracted Playwright Core package has no cli.js (from " + probe + ")");
+            }
+            Files.write(staging.resolve(EXTRACTED_MARKER), new byte[0]);
+            moveWithRetry(staging, packageDir);
+            staging = null;
+        } finally {
+            if (staging != null) {
+                deleteTree(staging);
+            }
+        }
+    }
+
+    private static void moveWithRetry(Path staging, Path packageDir) throws IOException, InterruptedException {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(MOVE_RETRY_SECONDS);
+        while (true) {
+            try {
+                Files.move(staging, packageDir, StandardCopyOption.ATOMIC_MOVE);
+                return;
+            } catch (IOException moveFailed) {
+                if (System.nanoTime() - deadline >= 0) {
+                    throw moveFailed;
+                }
+                Thread.sleep(200);
+            }
+        }
+    }
+
+    private static void extractFromJar(JarFile jarFile, String prefix, Path packageDir) throws IOException {
         Enumeration<JarEntry> entries = jarFile.entries();
         while (entries.hasMoreElements()) {
             JarEntry entry = entries.nextElement();
@@ -173,8 +230,11 @@ public final class Driver {
             if (!name.startsWith(prefix) || entry.isDirectory()) {
                 continue;
             }
-            // Map driver/<platform>/package/X -> driverDir/package/X
-            Path target = driverDir.resolve("package").resolve(name.substring(prefix.length()));
+            // Map driver/package/X -> packageDir/X (packageDir is absolute and normalized)
+            Path target = packageDir.resolve(name.substring(prefix.length())).normalize();
+            if (!target.startsWith(packageDir)) {
+                continue;
+            }
             if (target.getParent() != null) {
                 Files.createDirectories(target.getParent());
             }
@@ -184,19 +244,24 @@ public final class Driver {
         }
     }
 
-    private static String platformDirectory() {
-        String operatingSystem = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        String architecture = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-        if (operatingSystem.contains("win")) {
-            return "win32_x64";
+    private static void copyTree(Path source, Path target) throws IOException {
+        try (java.util.stream.Stream<Path> paths = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) paths::iterator) {
+                Path destination = target.resolve(source.relativize(path).toString());
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
         }
-        if (operatingSystem.contains("linux")) {
-            return "aarch64".equals(architecture) ? "linux-arm64" : "linux";
+    }
+
+    private static void deleteTree(Path root) {
+        try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+        } catch (IOException ignored) {
         }
-        if (operatingSystem.contains("mac os x") || operatingSystem.contains("darwin")) {
-            return "aarch64".equals(architecture) ? "mac-arm64" : "mac";
-        }
-        return "win32_x64";
     }
 
     public Map<String, String> environment() {

@@ -1,0 +1,3 @@
+# Imported upstream Playwright test fixtures are compared byte-for-byte (e.g. simple.json must end
+# in "\n"). Keep them exactly as committed (LF) on Windows checkouts with core.autocrlf=true.
+playwright-java-contract-tests/src/upstreamTest/resources/** -text

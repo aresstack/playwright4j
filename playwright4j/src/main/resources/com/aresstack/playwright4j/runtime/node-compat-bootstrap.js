@@ -156,6 +156,14 @@
     };
   }
 
+  // Video recording spawns ffmpeg, which JdkHostProcessLauncher serves with a Java encoder (no
+  // native binary). Playwright's registry first checks that the ffmpeg executable is accessible
+  // (<registry>/ffmpeg-<rev>/ffmpeg-<platform>) and otherwise demands `playwright install ffmpeg`.
+  // Report exactly that registry path as accessible so no ffmpeg download is ever needed.
+  function isJavaBackedFfmpeg(path) {
+    return /(^|[\\/])ffmpeg-\d+[\\/]ffmpeg-(win64\.exe|linux|mac)$/.test(String(path));
+  }
+
   function hostExists(path) {
     try {
       return host.fileSystem().existsSync(String(path));
@@ -469,7 +477,7 @@
       return decodeRead(hostReadFile(path), options);
     },
     accessSync: function (path) {
-      if (!hostExists(path)) {
+      if (!hostExists(path) && !isJavaBackedFfmpeg(path)) {
         throw enoent('access', path);
       }
     },
@@ -4532,8 +4540,22 @@
       }
 
       send(message) {
+        // Like ws (WebSocketTransport.send without a callback), a send on a closed socket is dropped:
+        // Playwright learns about the close through onclose, which drain() surfaces once the host
+        // reports isClosed(), so 'disconnected' is emitted and the pending call rejects with the
+        // close reason instead of an I/O error.
+        if (this.__closed) {
+          return;
+        }
         traceWebSocket('transport-send:' + JSON.stringify(message));
-        host.webSocketClient().send(this.connectionId, JSON.stringify(message));
+        try {
+          host.webSocketClient().send(this.connectionId, JSON.stringify(message));
+        } catch (error) {
+          if (!host.webSocketClient().isClosed(this.connectionId)) {
+            throw error;
+          }
+          traceWebSocket('transport-send-dropped:' + (error && error.message));
+        }
       }
 
       drain() {
@@ -4577,6 +4599,7 @@
       }
 
       close(reason) {
+        this.__closed = true;
         const index = activeTransports.indexOf(this);
         if (index >= 0) {
           activeTransports.splice(index, 1);

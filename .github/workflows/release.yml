@@ -1,8 +1,8 @@
 name: Release to Maven Central
 
 # Publish is pure Gradle via the Sonatype Central Portal (com.gradleup.nmcp), like
-# aresstack/msdos-game-browser, but on Windows so the native node.exe launcher (MinGW) is
-# built into the published jar. Triggered by a `v*` tag; version is derived from the tag.
+# aresstack/msdos-game-browser, on Windows because the release gate drives the
+# installed Chrome, Edge and Firefox there. Triggered by a `v*` tag; version is derived from the tag.
 #
 # Release gate = the fast, reliable Chrome + Edge channel smokes (launch -> page -> evaluate
 # -> close) plus the Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and
@@ -22,6 +22,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release.yml'
+      - 'playwright4j/build.gradle'
+      - 'build.gradle'
+      - 'consumer-check/**'
 
 jobs:
   publish:
@@ -54,16 +57,6 @@ jobs:
           else
             echo "version=0.0.0-dryrun" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Verify native node.exe launcher builds (fail if MinGW missing)
-        shell: pwsh
-        run: |
-          ./gradlew.bat :playwright4j:compileNodeLauncher --no-daemon --stacktrace
-          $exe = "playwright4j/build/generated/node-launcher/com/aresstack/playwright4j/launcher/node.exe"
-          if (-not (Test-Path $exe)) {
-            Write-Error "node.exe launcher was not built (MinGW gcc missing on the runner); the published jar would lack launch-server support."
-            exit 1
-          }
 
       - name: Release gate — Chrome smoke
         shell: pwsh
@@ -109,6 +102,31 @@ jobs:
       - name: Sanity — assemble publishable artifacts locally
         shell: pwsh
         run: ./gradlew.bat :playwright4j:publishToMavenLocal "-Pversion=${{ steps.ver.outputs.version }}" --no-daemon --stacktrace
+
+      - name: Verify published artifacts contain no native binaries and no driver-bundle dependency
+        shell: pwsh
+        run: |
+          $dir = "$env:USERPROFILE\.m2\repository\com\aresstack\playwright4j\${{ steps.ver.outputs.version }}"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $failed = $false
+          foreach ($jar in Get-ChildItem $dir -Filter *.jar) {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($jar.FullName)
+            $bad = $zip.Entries | Where-Object { $_.FullName -match '(?i)(\.(exe|dll|so|dylib|jnilib)$|(^|/)node$)' } | ForEach-Object { $_.FullName }
+            $zip.Dispose()
+            if ($bad) { Write-Host "Native binaries in $($jar.Name):"; $bad | ForEach-Object { Write-Host "  $_" }; $failed = $true }
+            else { Write-Host "OK: $($jar.Name)" }
+          }
+          $pom = Get-ChildItem $dir -Filter *.pom | Select-Object -First 1
+          if (Select-String -Path $pom.FullName -Pattern 'driver-bundle' -Quiet) { Write-Host "POM depends on driver-bundle (ships Node.js binaries)"; $failed = $true }
+          if ($failed) { exit 1 }
+
+      - name: Consumer check — Gradle resolution (no Node driver, no native binaries in the jar)
+        shell: pwsh
+        run: ./gradlew.bat -p consumer-check checkConsumerDependencies "-Pplaywright4jVersion=${{ steps.ver.outputs.version }}" --no-daemon --stacktrace
+
+      - name: Consumer check — Maven resolves the published POM (no Node driver)
+        shell: pwsh
+        run: mvn -B -f consumer-check/pom.xml verify "-Dplaywright4j.version=${{ steps.ver.outputs.version }}"
 
       - name: Build + sign + publish to Sonatype Central Portal
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

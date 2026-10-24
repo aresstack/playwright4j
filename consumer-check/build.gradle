@@ -1,0 +1,67 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+def playwright4jVersion = findProperty('playwright4jVersion') ?: '0.1.0-SNAPSHOT'
+
+dependencies {
+    implementation "com.aresstack:playwright4j:${playwright4jVersion}"
+    // The documented consumer setup (README "Using Playwright4J"): the Playwright Java API without
+    // Microsoft's Node-based driver. 'driver' would shadow playwright4j's Driver class and
+    // 'driver-bundle' ships node/node.exe for every platform.
+    implementation('com.microsoft.playwright:playwright:1.59.0') {
+        exclude group: 'com.microsoft.playwright', module: 'driver'
+        exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
+    }
+}
+
+// Same API dependency without the excludes, only to prove the check would catch the regression.
+configurations {
+    withoutExcludes { canBeConsumed = false }
+}
+dependencies {
+    withoutExcludes "com.aresstack:playwright4j:${playwright4jVersion}"
+    withoutExcludes 'com.microsoft.playwright:playwright:1.59.0'
+}
+
+// Walks the resolved dependency graph (metadata only, no artifact download).
+static List<String> forbiddenModules(Configuration configuration) {
+    configuration.incoming.resolutionResult.allComponents
+            .collect { it.moduleVersion }
+            .findAll { it != null && it.group == 'com.microsoft.playwright' && it.name in ['driver', 'driver-bundle'] }
+            .collect { it.toString() }
+            .sort()
+}
+
+tasks.register('checkConsumerDependencies') {
+    description = 'Fails if the resolved consumer classpath pulls in Microsoft\'s Node driver or the playwright4j jar contains a native binary.'
+    doLast {
+        def runtime = configurations.runtimeClasspath
+        def modules = runtime.resolvedConfiguration.resolvedArtifacts.collect { it.moduleVersion.id.toString() }.sort()
+        println "Resolved runtime classpath (${modules.size()}):"
+        modules.each { println "  ${it}" }
+
+        def forbidden = forbiddenModules(runtime)
+        if (!forbidden.isEmpty()) {
+            throw new GradleException("Consumer classpath contains Microsoft's Node driver: ${forbidden}")
+        }
+        def p4j = runtime.resolvedConfiguration.resolvedArtifacts.find { it.name == 'playwright4j' }
+        def nativeEntries = zipTree(p4j.file).matching {
+            include '**/*.exe', '**/*.dll', '**/*.so', '**/*.dylib', '**/*.jnilib', '**/node'
+        }.files
+        if (!nativeEntries.isEmpty()) {
+            throw new GradleException("playwright4j jar contains native binaries: ${nativeEntries*.name}")
+        }
+
+        def unguarded = forbiddenModules(configurations.withoutExcludes)
+        if (unguarded.isEmpty()) {
+            throw new GradleException('Expected the Playwright Java API without excludes to pull in driver-bundle; the check would no longer detect it.')
+        }
+        println "OK: no Node driver on the classpath, no native binaries in the playwright4j jar. Without the excludes the API would add: ${unguarded}"
+    }
+}

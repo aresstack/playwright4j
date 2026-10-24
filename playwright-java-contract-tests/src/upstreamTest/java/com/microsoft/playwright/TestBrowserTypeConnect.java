@@ -18,6 +18,7 @@ package com.microsoft.playwright;
 
 import com.microsoft.playwright.impl.driver.Driver;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -50,8 +51,7 @@ public class TestBrowserTypeConnect extends TestBase {
     String wsEndpoint;
 
     void kill() throws InterruptedException {
-      process.destroy();
-      int exitCode = process.waitFor();
+      int exitCode = destroyProcessTree(process);
       // FIXME: 2 tests are failing this check on windows:
       // disconnectedEventShouldBeEmittedWhenBrowserIsClosedOrServerIsClosed
       // shouldThrowWhenUsedAfterIsConnectedReturnsFalse
@@ -61,28 +61,151 @@ public class TestBrowserTypeConnect extends TestBase {
     }
   }
 
+  // playwright4j: there is no native launcher (and no Windows job object) any more, and the
+  // launch-server JVM does not take its browser down when it is killed (TerminateProcess on
+  // Windows). Terminate the browser processes it spawned as well, and escalate to a forced kill
+  // after a bounded wait instead of blocking in waitFor() forever.
+  private static final long DESTROY_TIMEOUT_SECONDS = 15;
+
+  private static int destroyProcessTree(Process process) throws InterruptedException {
+    // A pending interrupt (e.g. a JUnit timeout) must not abort the cleanup half-way and leak the
+    // browsers; restore it afterwards.
+    boolean interrupted = Thread.interrupted();
+    List<ProcessHandle> descendants = process.descendants().collect(Collectors.toList());
+    try {
+      // Server first, browsers after it is gone: clients must see the WebSocket close (and emit
+      // 'disconnected') rather than the browser dying underneath a still-running server. On
+      // Windows destroy() is an asynchronous TerminateProcess, so wait for the exit first.
+      process.destroy();
+      if (!process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
+        process.destroyForcibly();
+        process.waitFor(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+      }
+    } finally {
+      descendants.forEach(ProcessHandle::destroy);
+      for (ProcessHandle descendant : descendants) {
+        try {
+          descendant.onExit().get(DESTROY_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (ExecutionException | java.util.concurrent.TimeoutException | InterruptedException e) {
+          descendant.destroyForcibly();
+        }
+      }
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
+    if (process.isAlive()) {
+      throw new IllegalStateException("launch-server process " + process.pid() + " did not exit");
+    }
+    return process.exitValue();
+  }
+
+  // playwright4j: servers started by individual tests; any still running after a test (e.g. it
+  // failed before its own kill()) is stopped in stopLeftoverServers().
+  private static final List<Process> startedServers = Collections.synchronizedList(new ArrayList<>());
+
+  @AfterEach
+  void stopLeftoverServers() throws InterruptedException {
+    List<Process> leftovers;
+    synchronized (startedServers) {
+      leftovers = new ArrayList<>(startedServers);
+      startedServers.clear();
+    }
+    for (Process process : leftovers) {
+      if (process != browserServer && process.isAlive()) {
+        log("stopping launch-server " + process.pid() + " left running by the test");
+        destroyProcessTree(process);
+      }
+    }
+  }
+
+  // playwright4j: bounded server start. The ws:// endpoint must appear on stdout within this time,
+  // otherwise the server JVM (and any browser it started) is killed and the test fails with the
+  // server's stderr instead of blocking in readLine() forever.
+  private static final long SERVER_START_TIMEOUT_SECONDS = 60;
+
   private static BrowserServer launchBrowserServer(BrowserType browserType) {
+    Process process = null;
     try {
       Driver driver = Driver.ensureDriverInstalled(Collections.emptyMap(), false);
       Path dir = driver.driverDir();
-      String node = dir.resolve(isWindows ? "node.exe" : "node").toString();
       String cliJs = dir.resolve("package/cli.js").toString();
-      // We launch node process directly instead of using playwright.sh script as killing the script
-      // process will leave node process running and killing it would be more hassle.
-      ProcessBuilder pb = new ProcessBuilder(node, cliJs, "launch-server", "--browser", browserType.name());
+      // playwright4j: no native node executable. Start the Java GraalJS driver directly in
+      // --node-compat mode, which runs the bundled cli.js like `node cli.js launch-server ...`.
+      // Pass the fixture's launch options (BROWSER_CHANNEL, headless) via --config, so the
+      // server launches the same installed browser as the other tests instead of a downloaded one.
+      Path config = Files.createTempFile("playwright4j-launch-server", ".json");
+      config.toFile().deleteOnExit();
+      Files.write(config, launchServerConfig().getBytes(UTF_8));
+      ProcessBuilder pb = driver.createProcessBuilder();
+      pb.command().addAll(asList("--node-compat", cliJs, "launch-server", "--browser", browserType.name(),
+        "--config", config.toString()));
       pb.directory(dir.toFile());
       pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-      BrowserServer result = new BrowserServer();
-      result.process = pb.start();
-      BufferedReader input =  new BufferedReader(new InputStreamReader(result.process.getInputStream()));
-      result.wsEndpoint = input.readLine();
-      if (!result.wsEndpoint.startsWith("ws://")) {
-        throw new RuntimeException("Invalid web socket address: " + result.wsEndpoint);
+      long started = System.nanoTime();
+      log("starting launch-server (" + browserType.name() + ", " + launchServerConfig() + ")");
+      process = pb.start();
+      BufferedReader input = new BufferedReader(new InputStreamReader(process.getInputStream(), UTF_8));
+      CompletableFuture<String> firstLine = CompletableFuture.supplyAsync(() -> {
+        try {
+          return input.readLine();
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      });
+      String endpoint;
+      try {
+        endpoint = firstLine.get(SERVER_START_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (java.util.concurrent.TimeoutException e) {
+        throw new PlaywrightException("launch-server printed no ws:// endpoint within "
+          + SERVER_START_TIMEOUT_SECONDS + " s (server stderr is in the test output above)");
+      } catch (ExecutionException e) {
+        throw new PlaywrightException("Failed to read launch-server output", e.getCause());
       }
+      if (endpoint == null) {
+        process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+        throw new PlaywrightException("launch-server exited without a ws:// endpoint"
+          + (process.isAlive() ? "" : " (exit code " + process.exitValue() + ")")
+          + "; server stderr is in the test output above");
+      }
+      if (!endpoint.startsWith("ws://")) {
+        throw new PlaywrightException("Invalid web socket address: " + endpoint);
+      }
+      log("launch-server ready after " + (System.nanoTime() - started) / 1_000_000 + " ms: " + endpoint);
+      BrowserServer result = new BrowserServer();
+      result.process = process;
+      result.wsEndpoint = endpoint;
+      startedServers.add(process);
+      process = null;
       return result;
     } catch (IOException e) {
       throw new PlaywrightException("Failed to launch server", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new PlaywrightException("Interrupted while launching server", e);
+    } finally {
+      if (process != null) {
+        try {
+          destroyProcessTree(process);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
     }
+  }
+
+  private static String launchServerConfig() {
+    BrowserType.LaunchOptions options = createLaunchOptions();
+    StringBuilder json = new StringBuilder("{\"headless\":").append(options.headless == null || options.headless);
+    String channel = options.channel == null ? null : options.channel.toString();
+    if (channel != null && !channel.isEmpty()) {
+      json.append(",\"channel\":\"").append(channel.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+    }
+    return json.append('}').toString();
+  }
+
+  private static void log(String message) {
+    System.err.println("[TestBrowserTypeConnect] " + message);
   }
 
   @Override
@@ -93,7 +216,9 @@ public class TestBrowserTypeConnect extends TestBase {
     BrowserServer r = launchBrowserServer(browserType);
     wsEndpoint = r.wsEndpoint;
     browserServer = r.process;
+    log("connecting to " + wsEndpoint);
     browser = browserType.connect(wsEndpoint);
+    log("connected");
     // Do not actually connect to browser, the tests will do it manually.
   }
 
@@ -102,7 +227,11 @@ public class TestBrowserTypeConnect extends TestBase {
   void closeBrowser() {
     super.closeBrowser();
     if (browserServer != null) {
-      browserServer.destroyForcibly();
+      try {
+        destroyProcessTree(browserServer);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
       browserServer = null;
       wsEndpoint = null;
     }
