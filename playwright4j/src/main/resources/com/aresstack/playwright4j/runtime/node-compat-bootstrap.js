@@ -912,6 +912,18 @@
       const joinedArguments = argList.join(ARGUMENT_SEPARATOR);
       const workingDirectory = options && options.cwd ? String(options.cwd) : global.process.cwd();
 
+      // Firefox over WebDriver BiDi (Playwright's moz-firefox channel) also passes
+      // --remote-debugging-port, but together with a -profile/--profile directory. It is run as a
+      // general subprocess: Playwright itself parses "WebDriver BiDi listening on ws://..." from
+      // stderr and the exit watcher reports the real process exit.
+      const isFirefoxBiDi = argList.some(function (value) {
+        return value.indexOf('--remote-debugging-port') === 0;
+      }) && (argList.indexOf('-profile') >= 0 || argList.indexOf('--profile') >= 0);
+      if (isFirefoxBiDi) {
+        const firefoxId = String(host.processLauncher().spawnProcess(String(command), joinedArguments, workingDirectory));
+        return createGeneralProcess(firefoxId);
+      }
+
       // A Chromium launch is identified by its remote-debugging transport flag; everything else
       // (notably the ffmpeg video encoder) is a general subprocess fed via stdin.
       const isChromium = argList.some(function (value) {
