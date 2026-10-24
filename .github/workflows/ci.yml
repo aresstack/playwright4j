@@ -45,12 +45,14 @@ jobs:
         run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --rerun-tasks --no-daemon --stacktrace
 
       - name: BrowserType.connect against launch-server (chrome)
+        timeout-minutes: 15
         shell: pwsh
         env:
           BROWSER_CHANNEL: chrome
         run: ./gradlew.bat :playwright-java-contract-tests:browserTypeConnectTest --no-daemon --stacktrace
 
       - name: BrowserType.connect against launch-server (msedge)
+        timeout-minutes: 15
         shell: pwsh
         env:
           BROWSER_CHANNEL: msedge

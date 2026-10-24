@@ -87,28 +87,92 @@ public class TestBrowserTypeConnect extends TestBase {
     return process.exitValue();
   }
 
+  // playwright4j: bounded server start. The ws:// endpoint must appear on stdout within this time,
+  // otherwise the server JVM (and any browser it started) is killed and the test fails with the
+  // server's stderr instead of blocking in readLine() forever.
+  private static final long SERVER_START_TIMEOUT_SECONDS = 60;
+
   private static BrowserServer launchBrowserServer(BrowserType browserType) {
+    Process process = null;
     try {
       Driver driver = Driver.ensureDriverInstalled(Collections.emptyMap(), false);
       Path dir = driver.driverDir();
       String cliJs = dir.resolve("package/cli.js").toString();
       // playwright4j: no native node executable. Start the Java GraalJS driver directly in
       // --node-compat mode, which runs the bundled cli.js like `node cli.js launch-server ...`.
+      // Pass the fixture's launch options (BROWSER_CHANNEL, headless) via --config, so the
+      // server launches the same installed browser as the other tests instead of a downloaded one.
+      Path config = Files.createTempFile("playwright4j-launch-server", ".json");
+      config.toFile().deleteOnExit();
+      Files.write(config, launchServerConfig().getBytes(UTF_8));
       ProcessBuilder pb = driver.createProcessBuilder();
-      pb.command().addAll(asList("--node-compat", cliJs, "launch-server", "--browser", browserType.name()));
+      pb.command().addAll(asList("--node-compat", cliJs, "launch-server", "--browser", browserType.name(),
+        "--config", config.toString()));
       pb.directory(dir.toFile());
       pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-      BrowserServer result = new BrowserServer();
-      result.process = pb.start();
-      BufferedReader input =  new BufferedReader(new InputStreamReader(result.process.getInputStream()));
-      result.wsEndpoint = input.readLine();
-      if (!result.wsEndpoint.startsWith("ws://")) {
-        throw new RuntimeException("Invalid web socket address: " + result.wsEndpoint);
+      long started = System.nanoTime();
+      log("starting launch-server (" + browserType.name() + ", " + launchServerConfig() + ")");
+      process = pb.start();
+      BufferedReader input = new BufferedReader(new InputStreamReader(process.getInputStream(), UTF_8));
+      CompletableFuture<String> firstLine = CompletableFuture.supplyAsync(() -> {
+        try {
+          return input.readLine();
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      });
+      String endpoint;
+      try {
+        endpoint = firstLine.get(SERVER_START_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+      } catch (java.util.concurrent.TimeoutException e) {
+        throw new PlaywrightException("launch-server printed no ws:// endpoint within "
+          + SERVER_START_TIMEOUT_SECONDS + " s (server stderr is in the test output above)");
+      } catch (ExecutionException e) {
+        throw new PlaywrightException("Failed to read launch-server output", e.getCause());
       }
+      if (endpoint == null) {
+        process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+        throw new PlaywrightException("launch-server exited without a ws:// endpoint"
+          + (process.isAlive() ? "" : " (exit code " + process.exitValue() + ")")
+          + "; server stderr is in the test output above");
+      }
+      if (!endpoint.startsWith("ws://")) {
+        throw new PlaywrightException("Invalid web socket address: " + endpoint);
+      }
+      log("launch-server ready after " + (System.nanoTime() - started) / 1_000_000 + " ms: " + endpoint);
+      BrowserServer result = new BrowserServer();
+      result.process = process;
+      result.wsEndpoint = endpoint;
+      process = null;
       return result;
     } catch (IOException e) {
       throw new PlaywrightException("Failed to launch server", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new PlaywrightException("Interrupted while launching server", e);
+    } finally {
+      if (process != null) {
+        try {
+          destroyProcessTree(process);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
     }
+  }
+
+  private static String launchServerConfig() {
+    BrowserType.LaunchOptions options = createLaunchOptions();
+    StringBuilder json = new StringBuilder("{\"headless\":").append(options.headless == null || options.headless);
+    String channel = options.channel == null ? null : options.channel.toString();
+    if (channel != null && !channel.isEmpty()) {
+      json.append(",\"channel\":\"").append(channel.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+    }
+    return json.append('}').toString();
+  }
+
+  private static void log(String message) {
+    System.err.println("[TestBrowserTypeConnect] " + message);
   }
 
   @Override
@@ -119,7 +183,9 @@ public class TestBrowserTypeConnect extends TestBase {
     BrowserServer r = launchBrowserServer(browserType);
     wsEndpoint = r.wsEndpoint;
     browserServer = r.process;
+    log("connecting to " + wsEndpoint);
     browser = browserType.connect(wsEndpoint);
+    log("connected");
     // Do not actually connect to browser, the tests will do it manually.
   }
 

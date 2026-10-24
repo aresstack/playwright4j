@@ -174,8 +174,10 @@ tasks.register('browserTypeConnectTest', Test) {
     systemProperty 'playwright4j.debug', findProperty('playwright4j.debug') ?: 'false'
     systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // "started" + standard streams show whether a hang is in the server start, connect() or a
+    // single test case (the launch-server's stderr is inherited into the test output).
     testLogging {
-        events "passed", "failed", "skipped"
+        events "started", "passed", "failed", "skipped", "standard_error"
         exceptionFormat "full"
     }
 }

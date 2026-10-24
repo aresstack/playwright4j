@@ -54,6 +54,10 @@ public final class GraalDriverMain {
         // protocol on stdout here; process.stdout is the caller's real stdout (the ws:// endpoint).
         boolean nodeCompat = args.length > 0 && "--node-compat".equals(args[0]);
 
+        if (nodeCompat) {
+            installNodeCompatTerminationHandler(processLauncher);
+        }
+
         HostDriverPipe driverPipe = nodeCompat
                 ? new RawIoDriverPipe(System.out, System.err)
                 : new StandardIoDriverPipe(System.out, System.err);
@@ -66,7 +70,7 @@ public final class GraalDriverMain {
                 processLauncher,
                 new RecordingMissingHostFunctionReporter());
 
-        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource)) {
+        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource, nodeCompat)) {
             runtime.loadNodeCompatibilityLayer();
             if (nodeCompat) {
                 runNodeCompat(runtime, driverBundleSource, args);
@@ -93,6 +97,27 @@ public final class GraalDriverMain {
      */
     private static void runNodeCompat(GraalPlaywrightRuntime runtime, PlaywrightDriverBundleSource driverBundleSource, String[] args) {
         runtime.evaluate("playwright4j-node-compat.js", "globalThis.__playwright4jNodeCompat = true;");
+        // An unhandled rejection before the command produced any stdout (launch-server: before the
+        // ws:// endpoint) means the command failed: report it and exit 1, as Node.js would. Later
+        // rejections are only reported, so a running server is not torn down by a stray one.
+        runtime.evaluate("playwright4j-node-compat-rejections.js", ""
+                + "(function () {\n"
+                + "  let produced = false;\n"
+                + "  const write = process.stdout.write;\n"
+                + "  process.stdout.write = function () { produced = true; return write.apply(this, arguments); };\n"
+                + "  ['log', 'info'].forEach(function (name) {\n"
+                + "    const original = console[name];\n"
+                + "    console[name] = function () { produced = true; return original.apply(this, arguments); };\n"
+                + "  });\n"
+                + "  Graal.setUnhandledPromiseRejectionHandler(function (reason) {\n"
+                + "    const text = reason && reason.stack ? reason.stack : String(reason);\n"
+                + "    console.error('[playwright4j] unhandled promise rejection: ' + text);\n"
+                + "    if (!produced) {\n"
+                + "      globalThis.__playwright4jExitCode = 1;\n"
+                + "      globalThis.__playwright4jExitRequested = true;\n"
+                + "    }\n"
+                + "  });\n"
+                + "})();");
 
         String[] nodeArgv = new String[args.length];
         nodeArgv[0] = "node";
@@ -115,6 +140,30 @@ public final class GraalDriverMain {
         System.out.flush();
         System.err.flush();
         System.exit(nodeCompatExitCode(runtime));
+    }
+
+    /**
+     * Node's launch-server handles SIGTERM/SIGINT by closing its browsers and exiting with code 0.
+     * The JVM default would exit with 143/130 instead; mirror Node so callers that stop the server
+     * via Process.destroy() (e.g. TestBrowserTypeConnect on Linux/macOS) see a clean exit. On
+     * Windows, Process.destroy() is TerminateProcess and no handler runs.
+     */
+    private static void installNodeCompatTerminationHandler(final JdkHostProcessLauncher processLauncher) {
+        for (String name : new String[] {"TERM", "INT"}) {
+            try {
+                sun.misc.Signal.handle(new sun.misc.Signal(name), signal -> {
+                    try {
+                        processLauncher.closeAll();
+                    } finally {
+                        System.out.flush();
+                        System.err.flush();
+                        Runtime.getRuntime().halt(0);
+                    }
+                });
+            } catch (IllegalArgumentException unsupported) {
+                // Signal not available on this platform (e.g. TERM on Windows).
+            }
+        }
     }
 
     private static boolean nodeCompatExitRequested(GraalPlaywrightRuntime runtime) {

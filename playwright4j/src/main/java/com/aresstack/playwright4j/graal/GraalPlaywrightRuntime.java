@@ -22,6 +22,17 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
     }
 
     public GraalPlaywrightRuntime(Playwright4JHost host, PlaywrightDriverBundleSource driverBundleSource) {
+        this(host, driverBundleSource, false);
+    }
+
+    /**
+     * @param reportUnhandledRejections route unhandled promise rejections to a guest handler
+     *     (installed via {@code Graal.setUnhandledPromiseRejectionHandler}) instead of silently
+     *     dropping them. Used for --node-compat CLI commands such as {@code cli.js launch-server},
+     *     whose action does not await its promise: a failed browser launch would otherwise leave the
+     *     JVM idling forever without ever printing the ws:// endpoint.
+     */
+    public GraalPlaywrightRuntime(Playwright4JHost host, PlaywrightDriverBundleSource driverBundleSource, boolean reportUnhandledRejections) {
         this.context = Context.newBuilder(LANGUAGE_ID)
                 .allowHostAccess(createHostAccess())
                 .allowHostClassLookup(new DenyAllHostClassLookup())
@@ -32,6 +43,7 @@ public final class GraalPlaywrightRuntime implements AutoCloseable {
                 .out(System.err)
                 .err(System.err)
                 .option("js.ecmascript-version", "latest")
+                .option("js.unhandled-rejections", reportUnhandledRejections ? "handler" : "none")
                 .build();
 
         this.context.getBindings(LANGUAGE_ID).putMember("__playwright4jHost", host);
