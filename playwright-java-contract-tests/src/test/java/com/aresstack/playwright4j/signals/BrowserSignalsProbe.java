@@ -58,6 +58,9 @@ import java.util.stream.Collectors;
  *   <li>{@code PROBE_PLAIN}: true starts the binary directly, without Playwright (baseline)</li>
  *   <li>{@code PROBE_FIREFOX_PREFS}: extra prefs, {@code name=value,...}</li>
  *   <li>{@code PROBE_ARGS} / {@code PROBE_IGNORE_DEFAULT_ARGS}: comma-separated browser arguments</li>
+ *   <li>{@code PROBE_RAW_BIDI}: true drives Firefox over WebDriver BiDi without Playwright (session.new,
+ *   optional session.subscribe of {@code PROBE_RAW_SUBSCRIBE}, navigate the start tab);
+ *   {@code PROBE_RAW_CAPABILITIES} is the session.new capabilities JSON</li>
  *   <li>{@code PROBE_NO_VIEWPORT}: true disables Playwright's default 1280x720 viewport emulation</li>
  *   <li>{@code PROBE_EXPOSE_BINDING}: name of a page.exposeBinding to install, as an app would</li>
  *   <li>{@code PROBE_LABEL}: name of the run in the report</li>
@@ -86,9 +89,11 @@ public final class BrowserSignalsProbe {
             String url = "http://127.0.0.1:" + server.getLocalPort() + "/";
 
             long launchedAfter = System.currentTimeMillis() - 1000;
-            Path userDataDir = config.persistent || config.plain ? Files.createTempDirectory("signals-probe-profile") : null;
+            Path userDataDir = config.persistent || config.plain || config.rawBidi ? Files.createTempDirectory("signals-probe-profile") : null;
             try {
-                if (config.plain) {
+                if (config.rawBidi) {
+                    runRawBidiFirefox(config, userDataDir, url, launchedAfter, signals, details);
+                } else if (config.plain) {
                     runPlainBrowser(config, userDataDir, url, launchedAfter, signals, details);
                 } else {
                     runWithPlaywright(config, userDataDir, url, launchedAfter, signals, details);
@@ -109,7 +114,7 @@ public final class BrowserSignalsProbe {
         report.append("# Browser signals: ").append(config.label).append("\n\n");
         report.append("config: browser=").append(config.browser).append(" channel=").append(config.channel)
                 .append(" headless=").append(config.headless).append(" persistent=").append(config.persistent)
-                .append(" plain=").append(config.plain).append(" executable=").append(config.executable)
+                .append(" plain=").append(config.plain).append(" rawBidi=").append(config.rawBidi).append(" executable=").append(config.executable)
                 .append(" firefoxPrefs=").append(config.firefoxPrefs).append(" args=").append(config.args)
                 .append(" ignoreDefaultArgs=").append(config.ignoreDefaultArgs).append(" noViewport=").append(config.noViewport)
                 .append(" exposeBinding=").append(config.exposeBinding).append("\n");
@@ -234,6 +239,140 @@ public final class BrowserSignalsProbe {
             if (!process.waitFor(5, TimeUnit.SECONDS)) {
                 process.descendants().forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly().waitFor(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    // WebDriver BiDi without Playwright: Firefox started with its Remote Agent and driven by a
+    // minimal BiDi client that only opens a session, optionally subscribes, and navigates the
+    // start tab. This separates what the Remote Agent itself exposes from what Playwright's BiDi
+    // layer adds (subscriptions, intercepts, preload scripts, emulation).
+    private void runRawBidiFirefox(Config config, Path userDataDir, String url, long launchedAfter,
+                                   Map<String, String> signals, StringBuilder details) throws Exception {
+        if (!config.firefoxPrefs.isEmpty()) {
+            StringBuilder userJs = new StringBuilder();
+            config.firefoxPrefs.forEach((name, value) -> userJs.append("user_pref(").append(GSON.toJson(name))
+                    .append(", ").append(GSON.toJson(value)).append(");\n"));
+            Files.write(userDataDir.resolve("user.js"), userJs.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        List<String> command = new ArrayList<>();
+        command.add(config.executable);
+        command.add("-no-remote");
+        command.add("-profile");
+        command.add(userDataDir.toString());
+        command.add("--remote-debugging-port=0");
+        command.addAll(config.args);
+        Process process = new ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+        process.getOutputStream().close();
+        CompletableFuture<String> endpoint = new CompletableFuture<>();
+        Thread stderr = new Thread(() -> {
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    int at = line.indexOf("WebDriver BiDi listening on ");
+                    if (at >= 0) {
+                        endpoint.complete(line.substring(at + "WebDriver BiDi listening on ".length()).trim());
+                    }
+                }
+            } catch (IOException ignored) {
+                // Process ended.
+            }
+        }, "signals-probe-firefox-stderr");
+        stderr.setDaemon(true);
+        stderr.start();
+        try (RawBidiClient bidi = RawBidiClient.connect(endpoint.get(60, TimeUnit.SECONDS) + "/session")) {
+            List<String> sent = new ArrayList<>();
+            JsonObject capabilities = config.rawCapabilities == null ? new JsonObject()
+                    : GSON.fromJson(config.rawCapabilities, JsonObject.class);
+            JsonObject newSession = new JsonObject();
+            newSession.add("capabilities", capabilities);
+            bidi.send("session.new", newSession);
+            sent.add("session.new " + newSession);
+            if (!config.rawSubscribe.isEmpty()) {
+                JsonObject subscribe = new JsonObject();
+                subscribe.add("events", GSON.toJsonTree(config.rawSubscribe));
+                bidi.send("session.subscribe", subscribe);
+                sent.add("session.subscribe " + subscribe);
+            }
+            JsonObject tree = bidi.send("browsingContext.getTree", new JsonObject());
+            String context = tree.getAsJsonArray("contexts").get(0).getAsJsonObject().get("context").getAsString();
+            JsonObject navigate = new JsonObject();
+            navigate.addProperty("context", context);
+            navigate.addProperty("url", url);
+            navigate.addProperty("wait", "none");
+            bidi.send("browsingContext.navigate", navigate);
+            sent.add("browsingContext.navigate (start tab) " + url);
+
+            String json = pageReport.get(60, TimeUnit.SECONDS);
+            describeBrowserProcess(config.browser, launchedAfter, signals, details);
+            putPageSignals(json, signals);
+            Thread.sleep(1000);
+            details.append("\n## BiDi commands sent\n\n");
+            for (String line : sent) {
+                details.append("  ").append(line).append('\n');
+            }
+        } finally {
+            process.descendants().forEach(ProcessHandle::destroy);
+            process.destroy();
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
+                process.destroyForcibly().waitFor(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    /** Just enough of a WebDriver BiDi client for {@link #runRawBidiFirefox}: send and await a result. */
+    private static final class RawBidiClient implements java.net.http.WebSocket.Listener, AutoCloseable {
+        private final Map<Integer, CompletableFuture<JsonObject>> pending = new java.util.concurrent.ConcurrentHashMap<>();
+        private final StringBuilder partial = new StringBuilder();
+        private java.net.http.WebSocket socket;
+        private int nextId = 1;
+
+        static RawBidiClient connect(String endpoint) throws Exception {
+            RawBidiClient client = new RawBidiClient();
+            client.socket = java.net.http.HttpClient.newBuilder().proxy(java.net.ProxySelector.of(null)).build()
+                    .newWebSocketBuilder().buildAsync(java.net.URI.create(endpoint), client).get(30, TimeUnit.SECONDS);
+            return client;
+        }
+
+        synchronized JsonObject send(String method, JsonObject params) throws Exception {
+            int id = nextId++;
+            CompletableFuture<JsonObject> result = new CompletableFuture<>();
+            pending.put(id, result);
+            JsonObject message = new JsonObject();
+            message.addProperty("id", id);
+            message.addProperty("method", method);
+            message.add("params", params);
+            socket.sendText(GSON.toJson(message), true).get(30, TimeUnit.SECONDS);
+            JsonObject response = result.get(30, TimeUnit.SECONDS);
+            if (response.has("error")) {
+                throw new IOException(method + " failed: " + response);
+            }
+            return response.getAsJsonObject("result");
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<?> onText(java.net.http.WebSocket webSocket, CharSequence data, boolean last) {
+            partial.append(data);
+            if (last) {
+                JsonObject message = GSON.fromJson(partial.toString(), JsonObject.class);
+                partial.setLength(0);
+                if (message.has("id") && !message.get("id").isJsonNull()) {
+                    CompletableFuture<JsonObject> waiting = pending.remove(message.get("id").getAsInt());
+                    if (waiting != null) {
+                        waiting.complete(message);
+                    }
+                }
+            }
+            webSocket.request(1);
+            return null;
+        }
+
+        @Override
+        public void close() {
+            if (socket != null) {
+                socket.abort();
             }
         }
     }
@@ -416,6 +555,9 @@ public final class BrowserSignalsProbe {
         public boolean persistent = true;
         public boolean plain;
         public boolean noViewport;
+        public boolean rawBidi;
+        public String rawCapabilities;
+        public List<String> rawSubscribe = new ArrayList<>();
         public String exposeBinding;
         public Map<String, Object> firefoxPrefs = new TreeMap<>();
         public List<String> args = new ArrayList<>();
@@ -436,6 +578,9 @@ public final class BrowserSignalsProbe {
             config.persistent = Boolean.parseBoolean(env("PROBE_PERSISTENT", "true"));
             config.plain = Boolean.parseBoolean(env("PROBE_PLAIN", "false"));
             config.noViewport = Boolean.parseBoolean(env("PROBE_NO_VIEWPORT", "false"));
+            config.rawBidi = Boolean.parseBoolean(env("PROBE_RAW_BIDI", "false"));
+            config.rawCapabilities = env("PROBE_RAW_CAPABILITIES", null);
+            config.rawSubscribe = list(env("PROBE_RAW_SUBSCRIBE", null));
             config.exposeBinding = env("PROBE_EXPOSE_BINDING", null);
             for (String pref : list(env("PROBE_FIREFOX_PREFS", null))) {
                 String[] keyValue = pref.split("=", 2);
@@ -478,6 +623,13 @@ public final class BrowserSignalsProbe {
             + " catch (e) { r[name] = 'error: ' + e; } };\n"
             + "  const n = navigator;\n"
             + "  safe('navigator.webdriver', () => String(n.webdriver));\n"
+            // User activation without any input event: set by script.evaluate/callFunction with
+            // userActivation=true from the automation side. Read at load and again after a pause.
+            + "  const activation = () => n.userActivation ? 'hasBeenActive=' + n.userActivation.hasBeenActive"
+            + " + ' isActive=' + n.userActivation.isActive : 'undefined';\n"
+            + "  let inputEvents = 0;\n"
+            + "  ['mousedown', 'keydown', 'pointerdown', 'touchstart'].forEach(t => addEventListener(t, () => inputEvents++, true));\n"
+            + "  safe('userActivation.atLoad', activation);\n"
             + "  safe('navigator.webdriver.in', () => String('webdriver' in n));\n"
             + "  safe('navigator.webdriver.getter', () => {"
             + " const d = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');"
@@ -541,6 +693,10 @@ public final class BrowserSignalsProbe {
             + "  safe('window.suspiciousNames',() => Object.getOwnPropertyNames(window).concat(Object.getOwnPropertyNames(document))"
             + ".filter(k => /playwright|__pw|cdc_|webdriver|selenium|driver|juggler|bidi|binding|marionette/i.test(k))"
             + ".join(', ') || '(none)');\n"
+            + "  await new Promise(resolve => setTimeout(resolve, 2000));\n"
+            + "  safe('userActivation.after2s', activation);\n"
+            + "  safe('inputEvents.after2s', () => String(inputEvents));\n"
+            + "  safe('document.hasFocus.after2s', () => String(document.hasFocus()));\n"
             + "  try { await fetch('/fetch.json', {headers: {'X-Probe': '1'}}); r['fetch'] = 'ok'; }"
             + " catch (e) { r['fetch'] = 'error: ' + e; }\n"
             + "  await fetch('/report', {method: 'POST', headers: {'Content-Type': 'application/json'},"

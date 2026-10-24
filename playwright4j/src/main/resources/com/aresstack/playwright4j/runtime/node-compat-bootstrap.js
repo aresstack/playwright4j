@@ -5355,6 +5355,26 @@
     };
   }
 
+  // On every new document Playwright's BiDi page evaluates "1 + 1" in its utility world only to
+  // create that world, and sends it with userActivation: true. Firefox then marks the page as
+  // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
+  // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
+  // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
+  function patchBidiPageTouchUtilityWorld(BidiPage, utilityWorldName) {
+    if (typeof BidiPage.prototype._touchUtilityWorld !== 'function') {
+      return;
+    }
+    BidiPage.prototype._touchUtilityWorld = async function (context) {
+      await this._session.sendMayFail('script.evaluate', {
+        expression: '1 + 1',
+        target: { context: context, sandbox: utilityWorldName },
+        serializationOptions: { maxObjectDepth: 10, maxDomDepth: 10 },
+        awaitPromise: true,
+        userActivation: false
+      });
+    };
+  }
+
   function installKnownModuleFallbacks(resourceName, exportsObject) {
     if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
@@ -5391,6 +5411,7 @@
     if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {
       patchBidiPageInitialBlankLoad(exportsObject.BidiPage);
       patchBidiPageRequestGC(exportsObject.BidiPage);
+      patchBidiPageTouchUtilityWorld(exportsObject.BidiPage, '__playwright_utility_world__');
     }
 
     if (resourceName.endsWith('/lib/utilsBundle.js') && exportsObject.program === undefined) {

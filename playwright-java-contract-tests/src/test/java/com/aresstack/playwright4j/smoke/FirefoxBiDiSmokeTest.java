@@ -114,6 +114,12 @@ public class FirefoxBiDiSmokeTest {
                     Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
                     page.navigate("data:text/html,<title>persistent</title>");
                     assertEquals("persistent", page.title());
+                    // Loading a page must not grant it user activation without any input (the page
+                    // records the state itself; page.title() is read only after that).
+                    page.navigate("data:text/html,<script>setTimeout(() => document.title = 'activation:'"
+                            + " + navigator.userActivation.hasBeenActive, 500)</script>");
+                    page.waitForTimeout(1500);
+                    assertEquals("activation:false", page.title());
                     page.setContent("<html><body><h1>Firefox persistent smoke</h1></body></html>");
                     assertEquals(2, ((Number) page.evaluate("1 + 1")).intValue());
                     assertEquals("Firefox persistent smoke", page.textContent("h1"));

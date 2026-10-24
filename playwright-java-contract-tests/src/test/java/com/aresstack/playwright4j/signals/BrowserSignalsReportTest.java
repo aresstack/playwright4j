@@ -21,7 +21,7 @@ public class BrowserSignalsReportTest {
     void reportBrowserSignals() throws Exception {
         BrowserSignalsProbe.Config config = BrowserSignalsProbe.Config.fromEnvironment();
         boolean executable = config.executable != null && Files.isRegularFile(Paths.get(config.executable));
-        boolean configured = config.plain || !"chromium".equals(config.browser)
+        boolean configured = config.plain || config.rawBidi || !"chromium".equals(config.browser)
                 ? executable
                 : config.channel != null || executable;
         Assumptions.assumeTrue(configured, "Set FIREFOX_EXECUTABLE (or PROBE_BROWSER=chromium with "

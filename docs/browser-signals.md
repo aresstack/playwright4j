@@ -36,7 +36,9 @@ The report goes to `playwright-java-contract-tests/build/reports/browser-signals
 (or `PROBE_OUT`). Further switches: `PROBE_HEADLESS`, `PROBE_PERSISTENT`, `PROBE_NO_VIEWPORT`,
 `PROBE_EXPOSE_BINDING`, `PROBE_FIREFOX_PREFS`, `PROBE_ARGS`, `PROBE_IGNORE_DEFAULT_ARGS` and
 `PROBE_PLAIN=true` (starts the browser binary from `PROBE_EXECUTABLE` directly, without Playwright,
-as a baseline). On Linux run headed browsers under `xvfb-run`.
+as a baseline) and `PROBE_RAW_BIDI=true` (Firefox with its Remote Agent, driven by a minimal BiDi
+client that only sends `session.new` and navigates the start tab, like enterprise-ai-client does;
+`PROBE_RAW_CAPABILITIES`, `PROBE_RAW_SUBSCRIBE`). On Linux run headed browsers under `xvfb-run`.
 
 ### Reference run with the official driver
 
@@ -84,6 +86,40 @@ all engines (`PageBinding` in `server/page.js`).
 With `setViewportSize(null)` (no viewport emulation) screen and window sizes match the
 non-automated baseline (`screen` 1280x1024, inner 1152x836 inside outer 1152x921).
 
+### Playwright's BiDi layer vs. a minimal BiDi client
+
+Both columns use WebDriver BiDi on the same Firefox with a persistent profile. The minimal client
+does what enterprise-ai-client (wd4j) does: start `firefox -profile <dir> -no-remote
+--remote-debugging-port=<port>` with five first-run prefs in `user.js`, send `session.new` with
+`{"alwaysMatch":{"browserName":"firefox"}}`, navigate the start tab. No subscriptions, intercepts,
+preload scripts or emulation.
+
+| Signal | Firefox without automation | Minimal BiDi client | playwright4j 0.2.1 (with `exposeBinding`) | playwright4j with this change |
+|---|---|---|---|---|
+| `navigator.webdriver` | `false` | `true` | `true` | `true` |
+| `navigator.userActivation` at load, no input events | not active | not active | **active** (`hasBeenActive`, `isActive`) | not active |
+| `window.TestUtils` | undefined | undefined | object | undefined |
+| `screen` / inner / outer | 1280x1024 / 1152x836 / 1152x921 | same as without automation | 1280x720 / 1280x720 / 1152x648 | unchanged (use `setViewportSize(null)`) |
+| `document.hasFocus()` (unfocused window under Xvfb) | `false` | `false` | `true` | `true` |
+| Globals with automation-like names | none | none | `__playwright__binding__`, `__playwright__binding__controller__` | unchanged (from `exposeBinding`) |
+| Request headers (order, values) | baseline | same | same | same |
+
+BiDi commands playwright4j (Playwright 1.59) sends for `launchPersistentContext` and one
+navigation, recorded with `DEBUG=pw:protocol`, compared with the minimal client:
+
+| Playwright's BiDi layer | Minimal client (enterprise-ai-client) |
+|---|---|
+| `session.new` with `unhandledPromptBehavior: ignore`, `webSocketUrl`, `goog:prerenderingDisabled` | `session.new` with `browserName: firefox` |
+| `session.subscribe` to all of `browsingContext`, `network`, `log`, `script`, `input`, globally | none |
+| `network.addIntercept` for `authRequired`, globally | none |
+| `network.addDataCollector` for response bodies up to 20 MB | none |
+| `browser.setDownloadBehavior` (allowed, temp folder) | none |
+| `browsingContext.setViewport` 1280x720, `emulation.setScreenSettingsOverride` 1280x720, `emulation.setScreenOrientationOverride` | none |
+| `browsingContext.create` `type: window` for the first page | reuses the start tab |
+| `script.evaluate "1 + 1"` in a sandbox on every new document, with `userActivation: true` | `script.evaluate` in the main realm only on demand, `userActivation: false` |
+| `script.addPreloadScript` into the main world for bindings (with `exposeBinding`) | none (injects a few globals on demand) |
+| about 90 prefs in `user.js` on every launch (see `bidi/third_party/firefoxPrefs.js`) | 5 first-run prefs, written once |
+
 ### Chrome
 
 | Signal | Chrome without automation | Official driver | playwright4j 0.2.1 |
@@ -111,6 +147,17 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   (`playwright.cfg`) sets this pref. playwright4j now turns it off unless `firefoxUserPrefs` sets it.
   This differs from the official driver, which still exposes `TestUtils`. `page.requestGC()` on
   Firefox then fails with a message that names the pref to set.
+
+**Added by Playwright's BiDi layer, changed here on purpose**
+
+- User activation: on every new document Playwright evaluates `1 + 1` in its utility world only to
+  create that world, with `userActivation: true`. Firefox then reports the page as activated by the
+  user (`navigator.userActivation.hasBeenActive` and `isActive`) without any input event. A normal
+  Firefox, the minimal BiDi client and Chrome over CDP (measured) do not. playwright4j sends this
+  one call with `userActivation: false`. Evaluations and actions the caller asks for keep
+  Playwright's behaviour (`userActivation: true`, like `userGesture` over CDP), so a caller's
+  `page.evaluate` or `locator(...).click()` still activates the page. This differs from the official
+  driver.
 
 **Caused by playwright4j, not page-observable**
 
