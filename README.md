@@ -21,6 +21,10 @@ Node.js runtime, native helper executables, or browser downloads.
 > It supports Chrome and Edge only. Firefox support and the Node-free `launch-server`
 > described below are not released yet and will ship with the next release. Until
 > then, build from source or use `0.1.0` for Chromium only.
+>
+> `0.1.0` does not resolve with Maven: its POM declares the GraalJS dependency
+> `org.graalvm.polyglot:js` without `<type>pom</type>`. Gradle users are not affected.
+> The next release fixes this.
 
 ## Quick start
 
@@ -96,6 +100,8 @@ Firefox (next release) uses the `moz-firefox` channel and the path of the instal
 Firefox binary:
 
 ```java
+import java.nio.file.Paths;
+
 Browser browser = playwright.firefox().launch(
     new BrowserType.LaunchOptions()
         .setChannel("moz-firefox")
