@@ -5,6 +5,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.PlaywrightException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +17,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -83,6 +85,10 @@ public class FirefoxBiDiSmokeTest {
                     page.setContent("<html><body><h1>Firefox BiDi smoke</h1></body></html>");
                     assertEquals(2, ((Number) page.evaluate("1 + 1")).intValue());
                     assertEquals("Firefox BiDi smoke", page.textContent("h1"));
+                    // The BiDi profile must not expose test-only interfaces to web pages.
+                    assertEquals("undefined", page.evaluate("typeof TestUtils"));
+                    PlaywrightException gc = assertThrows(PlaywrightException.class, page::requestGC);
+                    assertTrue(gc.getMessage().contains("dom.testing.testutils.enabled"), gc.getMessage());
                     long start = System.currentTimeMillis();
                     context.close();
                     assertClosedPromptly("context.close()", start);
@@ -108,6 +114,12 @@ public class FirefoxBiDiSmokeTest {
                     Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
                     page.navigate("data:text/html,<title>persistent</title>");
                     assertEquals("persistent", page.title());
+                    // Loading a page must not grant it user activation without any input (the page
+                    // records the state itself; page.title() is read only after that).
+                    page.navigate("data:text/html,<script>setTimeout(() => document.title = 'activation:'"
+                            + " + navigator.userActivation.hasBeenActive, 500)</script>");
+                    page.waitForTimeout(1500);
+                    assertEquals("activation:false", page.title());
                     page.setContent("<html><body><h1>Firefox persistent smoke</h1></body></html>");
                     assertEquals(2, ((Number) page.evaluate("1 + 1")).intValue());
                     assertEquals("Firefox persistent smoke", page.textContent("h1"));

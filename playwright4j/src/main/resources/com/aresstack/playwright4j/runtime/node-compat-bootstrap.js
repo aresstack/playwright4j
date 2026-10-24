@@ -5318,6 +5318,63 @@
     };
   }
 
+  // Playwright's BiDi Firefox profile (third_party/firefoxPrefs.js, taken from Puppeteer) enables
+  // dom.testing.testutils.enabled only for page.requestGC(). That pref exposes a TestUtils global to
+  // every web page, which neither a normal Firefox nor Playwright's own Firefox build (Juggler) has.
+  // Turn it off unless the caller sets it explicitly via firefoxUserPrefs.
+  function patchBidiFirefoxProfilePrefs(BidiFirefox) {
+    const originalPrepareUserDataDir = BidiFirefox.prototype.prepareUserDataDir;
+    BidiFirefox.prototype.prepareUserDataDir = function (options, userDataDir) {
+      const userPrefs = (options && options.firefoxUserPrefs) || {};
+      const amended = Object.assign({}, options, {
+        firefoxUserPrefs: Object.assign({ 'dom.testing.testutils.enabled': false }, userPrefs)
+      });
+      return originalPrepareUserDataDir.call(this, amended, userDataDir);
+    };
+  }
+
+  // BidiPage.requestGC evaluates TestUtils.gc() and reports any failure as "Method not implemented.".
+  // With dom.testing.testutils.enabled off by default (see patchBidiFirefoxProfilePrefs) say how to
+  // turn it back on instead.
+  function patchBidiPageRequestGC(BidiPage) {
+    const originalRequestGC = BidiPage.prototype.requestGC;
+    if (typeof originalRequestGC !== 'function') {
+      return;
+    }
+    BidiPage.prototype.requestGC = async function () {
+      try {
+        return await originalRequestGC.apply(this, arguments);
+      } catch (error) {
+        if (error && error.message === 'Method not implemented.') {
+          throw new Error('page.requestGC() on Firefox needs firefoxUserPrefs '
+            + '{"dom.testing.testutils.enabled": true}. playwright4j turns this pref off by default '
+            + 'because it exposes a TestUtils global to every web page.');
+        }
+        throw error;
+      }
+    };
+  }
+
+  // On every new document Playwright's BiDi page evaluates "1 + 1" in its utility world only to
+  // create that world, and sends it with userActivation: true. Firefox then marks the page as
+  // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
+  // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
+  // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
+  function patchBidiPageTouchUtilityWorld(BidiPage, utilityWorldName) {
+    if (typeof BidiPage.prototype._touchUtilityWorld !== 'function') {
+      return;
+    }
+    BidiPage.prototype._touchUtilityWorld = async function (context) {
+      await this._session.sendMayFail('script.evaluate', {
+        expression: '1 + 1',
+        target: { context: context, sandbox: utilityWorldName },
+        serializationOptions: { maxObjectDepth: 10, maxDomDepth: 10 },
+        awaitPromise: true,
+        userActivation: false
+      });
+    };
+  }
+
   function installKnownModuleFallbacks(resourceName, exportsObject) {
     if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
@@ -5347,8 +5404,14 @@
       });
     }
 
+    if (resourceName.endsWith('/lib/server/bidi/bidiFirefox.js') && exportsObject.BidiFirefox) {
+      patchBidiFirefoxProfilePrefs(exportsObject.BidiFirefox);
+    }
+
     if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {
       patchBidiPageInitialBlankLoad(exportsObject.BidiPage);
+      patchBidiPageRequestGC(exportsObject.BidiPage);
+      patchBidiPageTouchUtilityWorld(exportsObject.BidiPage, '__playwright_utility_world__');
     }
 
     if (resourceName.endsWith('/lib/utilsBundle.js') && exportsObject.program === undefined) {
