@@ -3,8 +3,8 @@
 </h1>
 
 <p align="center">
-  <a href="https://central.sonatype.com/artifact/com.aresstack/playwright4j"><img src="https://img.shields.io/maven-central/v/com.aresstack/playwright4j" alt="Maven Central"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://central.sonatype.com/artifact/com.aresstack/playwright4j"><img src="https://img.shields.io/maven-central/v/com.aresstack/playwright4j.svg" alt="Maven Central"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
 </p>
 
 Playwright4J runs Microsoft's Playwright Core JavaScript driver inside the JVM using
