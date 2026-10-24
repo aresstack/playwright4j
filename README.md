@@ -59,9 +59,15 @@ Maven:
 </dependency>
 ```
 
-`consumer-check/` is a standalone build that resolves exactly this setup from Maven and
-fails if the Node driver or any native binary reaches the classpath; CI and the release
-workflow run it.
+`consumer-check/` resolves exactly this setup from the Maven repository twice, once with
+Gradle (`build.gradle`) and once with Maven from the published POM (`pom.xml`). Both fail if
+Microsoft's `driver` or `driver-bundle` reaches the classpath; the Gradle check also fails if
+the playwright4j jar contains a native file. CI and the release workflow run both.
+
+Note: GraalVM's own `truffle-api` jar (a transitive dependency of GraalJS) contains the
+`libtruffleattach` native library, which the Truffle runtime may load on a stock JDK. It is
+part of GraalVM, not of Playwright4J, and is neither downloaded separately nor used to control
+a browser.
 
 ## Browser support
 
@@ -132,8 +138,8 @@ scope of this milestone.
 > CI note: the **release gate** is the fast Chrome + Edge channel smokes (launch →
 > page → evaluate → close) plus the Firefox BiDi smoke, which run on Windows CI and
 > must pass before publishing. CI additionally runs `TestBrowserTypeConnect`
-> (launch-server, connect, reconnect, disconnect) for Chrome and Edge and checks that
-> the jar contains no native binaries.
+> (launch-server, connect, reconnect, disconnect) for Chrome and Edge, checks that the
+> playwright4j jar contains no native binaries, and runs the Gradle and Maven consumer checks.
 > The full upstream compatibility suite runs separately as a **non-blocking audit**
 > (`knownLimitationsCheck`): green iff exactly the six known reds fail. A raw
 > `upstreamTest` run reports `BUILD FAILED` because of those reds — that is honest;

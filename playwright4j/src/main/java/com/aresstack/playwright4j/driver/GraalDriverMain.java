@@ -143,26 +143,30 @@ public final class GraalDriverMain {
     }
 
     /**
-     * Node's launch-server handles SIGTERM/SIGINT by closing its browsers and exiting with code 0.
-     * The JVM default would exit with 143/130 instead; mirror Node so callers that stop the server
-     * via Process.destroy() (e.g. TestBrowserTypeConnect on Linux/macOS) see a clean exit. On
-     * Windows, Process.destroy() is TerminateProcess and no handler runs.
+     * Like Node's launch-server (Playwright's processLauncher): on SIGTERM close the browsers and
+     * exit 0, on SIGINT close them and exit 130. The JVM default would exit with 143/130 without
+     * closing the browsers first. Callers that stop the server via Process.destroy() (e.g.
+     * TestBrowserTypeConnect on Linux/macOS) thus see a clean exit. On Windows Process.destroy() is
+     * TerminateProcess, which runs no handler; Ctrl+C in a console still arrives as INT.
      */
     private static void installNodeCompatTerminationHandler(final JdkHostProcessLauncher processLauncher) {
-        for (String name : new String[] {"TERM", "INT"}) {
-            try {
-                sun.misc.Signal.handle(new sun.misc.Signal(name), signal -> {
-                    try {
-                        processLauncher.closeAll();
-                    } finally {
-                        System.out.flush();
-                        System.err.flush();
-                        Runtime.getRuntime().halt(0);
-                    }
-                });
-            } catch (IllegalArgumentException unsupported) {
-                // Signal not available on this platform (e.g. TERM on Windows).
-            }
+        installNodeCompatSignalHandler("TERM", 0, processLauncher);
+        installNodeCompatSignalHandler("INT", 130, processLauncher);
+    }
+
+    private static void installNodeCompatSignalHandler(String name, final int exitCode, final JdkHostProcessLauncher processLauncher) {
+        try {
+            sun.misc.Signal.handle(new sun.misc.Signal(name), signal -> {
+                try {
+                    processLauncher.closeAll();
+                } finally {
+                    System.out.flush();
+                    System.err.flush();
+                    Runtime.getRuntime().halt(exitCode);
+                }
+            });
+        } catch (IllegalArgumentException unsupported) {
+            // Signal not supported by this JVM/platform; keep the JVM default.
         }
     }
 

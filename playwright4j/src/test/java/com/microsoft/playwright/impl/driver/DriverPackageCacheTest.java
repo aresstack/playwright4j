@@ -55,8 +55,53 @@ class DriverPackageCacheTest {
 
         assertFalse(Files.exists(dir.resolve("package/partial.js")));
         assertTrue(Files.isRegularFile(dir.resolve("package/cli.js")));
+        assertNoStagingLeft(dir);
+    }
+
+    @Test
+    void concurrentExtractionsShareOneCompleteTree(@TempDir Path root) throws Exception {
+        Path dir = Driver.driverDirFor(root, Driver.packageId());
+        int workers = 4;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(workers);
+        try {
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            java.util.List<java.util.concurrent.Future<?>> results = new java.util.ArrayList<>();
+            for (int i = 0; i < workers; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    Driver.ensurePackageExtracted(dir);
+                    // Every caller must get a complete tree back, never one that is being replaced.
+                    assertTrue(Files.isRegularFile(dir.resolve("package/cli.js")));
+                    assertTrue(Files.isRegularFile(dir.resolve("package/lib/vite/traceViewer/index.html")));
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (java.util.concurrent.Future<?> result : results) {
+                result.get(120, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertNoStagingLeft(dir);
+    }
+
+    @Test
+    void removesStagingLeftByACrashedExtraction(@TempDir Path root) throws Exception {
+        Path dir = Driver.driverDirFor(root, Driver.packageId());
+        Files.createDirectories(dir.resolve("package-crashed/lib"));
+        Files.write(dir.resolve("package-crashed/lib/half.js"), new byte[0]);
+
+        Driver.ensurePackageExtracted(dir);
+
+        assertFalse(Files.exists(dir.resolve("package-crashed")));
+        assertTrue(Files.isRegularFile(dir.resolve("package/cli.js")));
+    }
+
+    private static void assertNoStagingLeft(Path dir) throws Exception {
         try (java.util.stream.Stream<Path> siblings = Files.list(dir)) {
-            assertEquals(1, siblings.count(), "staging directory left behind");
+            assertEquals(0, siblings.filter(path -> path.getFileName().toString().startsWith("package-")).count(),
+                    "staging directory left behind");
         }
     }
 }
