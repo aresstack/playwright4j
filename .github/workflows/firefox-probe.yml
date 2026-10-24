@@ -1,0 +1,48 @@
+name: Experimental Playwright4J Firefox probe
+
+on:
+  push:
+    branches:
+      - experiment/playwright4j-firefox
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firefox-probe:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Check installed Firefox (no browser installs)
+        shell: pwsh
+        run: |
+          $paths = @(
+            "$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+            "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe",
+            "$env:LOCALAPPDATA\Mozilla Firefox\firefox.exe"
+          )
+          $exe = $paths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $exe) { throw "Firefox not installed on runner; no download performed." }
+          Write-Host "Using installed Firefox: $exe"
+      - name: Probe installed Firefox using ONLY Playwright4J
+        shell: pwsh
+        run: |
+          ./gradlew.bat :playwright-java-contract-tests:test --tests com.aresstack.playwright4j.smoke.FirefoxPlaywright4jProbeTest --no-daemon --stacktrace
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-playwright4j-probe
+          path: |
+            playwright-java-contract-tests/build/test-results/test/**
+            playwright-java-contract-tests/build/reports/tests/test/**
