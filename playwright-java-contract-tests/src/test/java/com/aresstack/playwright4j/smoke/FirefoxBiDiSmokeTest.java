@@ -83,6 +83,8 @@ public class FirefoxBiDiSmokeTest {
                     page.setContent("<html><body><h1>Firefox BiDi smoke</h1></body></html>");
                     assertEquals(2, ((Number) page.evaluate("1 + 1")).intValue());
                     assertEquals("Firefox BiDi smoke", page.textContent("h1"));
+                    // The BiDi profile must not expose test-only interfaces to web pages.
+                    assertEquals("undefined", page.evaluate("typeof TestUtils"));
                     long start = System.currentTimeMillis();
                     context.close();
                     assertClosedPromptly("context.close()", start);

@@ -5318,6 +5318,21 @@
     };
   }
 
+  // Playwright's BiDi Firefox profile (third_party/firefoxPrefs.js, taken from Puppeteer) enables
+  // dom.testing.testutils.enabled only for page.requestGC(). That pref exposes a TestUtils global to
+  // every web page, which neither a normal Firefox nor Playwright's own Firefox build (Juggler) has.
+  // Turn it off unless the caller sets it explicitly via firefoxUserPrefs.
+  function patchBidiFirefoxProfilePrefs(BidiFirefox) {
+    const originalPrepareUserDataDir = BidiFirefox.prototype.prepareUserDataDir;
+    BidiFirefox.prototype.prepareUserDataDir = function (options, userDataDir) {
+      const userPrefs = (options && options.firefoxUserPrefs) || {};
+      const amended = Object.assign({}, options, {
+        firefoxUserPrefs: Object.assign({ 'dom.testing.testutils.enabled': false }, userPrefs)
+      });
+      return originalPrepareUserDataDir.call(this, amended, userDataDir);
+    };
+  }
+
   function installKnownModuleFallbacks(resourceName, exportsObject) {
     if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
@@ -5345,6 +5360,10 @@
           return target[property];
         }
       });
+    }
+
+    if (resourceName.endsWith('/lib/server/bidi/bidiFirefox.js') && exportsObject.BidiFirefox) {
+      patchBidiFirefoxProfilePrefs(exportsObject.BidiFirefox);
     }
 
     if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {

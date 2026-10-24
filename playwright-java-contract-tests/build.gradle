@@ -88,6 +88,30 @@ tasks.register('firefoxSmoke', Test) {
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
 }
 
+// Diagnostic: prints the automation signals a page can observe (navigator.webdriver, UA, request
+// headers, injected globals, browser command line) for a browser launched through playwright4j.
+// Firefox: FIREFOX_EXECUTABLE. Chrome/Edge: PROBE_BROWSER=chromium plus PROBE_CHANNEL or
+// PROBE_EXECUTABLE. See docs/browser-signals.md for comparing against the official driver.
+tasks.register('browserSignals', Test) {
+    description = 'Reports page-observable automation signals of a playwright4j-launched browser.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.signals.BrowserSignalsReportTest' }
+    outputs.upToDateWhen { false }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+    if (!System.getenv('PROBE_OUT')) {
+        environment 'PROBE_OUT', layout.buildDirectory.file('reports/browser-signals/playwright4j.txt').get().asFile.absolutePath
+    }
+
+    systemProperty 'junit.jupiter.execution.timeout.default', '120 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
+}
+
 tasks.named('processUpstreamTestResources') {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     // The upstream Server serves files via getResourceAsStream("resources" + path), i.e. it
