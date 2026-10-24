@@ -16,6 +16,7 @@
 
 package com.microsoft.playwright;
 
+import com.aresstack.playwright4j.graal.UnhandledRejections;
 import com.microsoft.playwright.impl.driver.Driver;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -117,6 +118,42 @@ public class TestBrowserTypeConnect extends TestBase {
         destroyProcessTree(process);
       }
     }
+    assertNoServerErrors();
+  }
+
+  // playwright4j: Node.js terminates on an unhandled rejection or an uncaught exception; the
+  // GraalJS launch-server reports them on stderr instead (see UnhandledRejections). Such errors
+  // used to pass unnoticed (e.g. ws failing on every disconnect, which skipped Playwright's
+  // per-connection cleanup), so the servers' stderr is scanned and a test that causes one fails.
+  private static final List<String> serverErrors = Collections.synchronizedList(new ArrayList<>());
+  private static final List<Thread> serverStderrPumps = Collections.synchronizedList(new ArrayList<>());
+
+  private static void pumpServerStderr(Process process) {
+    Thread pump = new Thread(() -> {
+      try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream(), UTF_8))) {
+        String line;
+        while ((line = reader.readLine()) != null) {
+          System.err.println(line);
+          if (line.startsWith(UnhandledRejections.LOG_PREFIX) || line.startsWith(UnhandledRejections.UNCAUGHT_LOG_PREFIX)) {
+            serverErrors.add(line);
+          }
+        }
+      } catch (IOException e) {
+        // The server is gone.
+      }
+    }, "launch-server-stderr-" + process.pid());
+    pump.setDaemon(true);
+    pump.start();
+    serverStderrPumps.add(pump);
+  }
+
+  private static void assertNoServerErrors() {
+    List<String> errors;
+    synchronized (serverErrors) {
+      errors = new ArrayList<>(serverErrors);
+      serverErrors.clear();
+    }
+    assertEquals(Collections.emptyList(), errors, "errors reported by launch-server (stack traces in the test output)");
   }
 
   // playwright4j: bounded server start. The ws:// endpoint must appear on stdout within this time,
@@ -141,10 +178,10 @@ public class TestBrowserTypeConnect extends TestBase {
       pb.command().addAll(asList("--node-compat", cliJs, "launch-server", "--browser", browserType.name(),
         "--config", config.toString()));
       pb.directory(dir.toFile());
-      pb.redirectError(ProcessBuilder.Redirect.INHERIT);
       long started = System.nanoTime();
       log("starting launch-server (" + browserType.name() + ", " + launchServerConfig() + ")");
       process = pb.start();
+      pumpServerStderr(process);
       BufferedReader input = new BufferedReader(new InputStreamReader(process.getInputStream(), UTF_8));
       CompletableFuture<String> firstLine = CompletableFuture.supplyAsync(() -> {
         try {
@@ -235,6 +272,16 @@ public class TestBrowserTypeConnect extends TestBase {
       browserServer = null;
       wsEndpoint = null;
     }
+    // Errors the servers reported after the last test, e.g. while handling its disconnects.
+    try {
+      for (Thread pump : new ArrayList<>(serverStderrPumps)) {
+        pump.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(DESTROY_TIMEOUT_SECONDS));
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    serverStderrPumps.clear();
+    assertNoServerErrors();
   }
 
   @Test

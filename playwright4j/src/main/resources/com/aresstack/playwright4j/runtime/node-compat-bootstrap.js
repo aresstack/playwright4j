@@ -49,6 +49,53 @@
   }
   global.__pw4jDebug = pw4jDebug;
 
+  // V8's Error.captureStackTrace does not exist in GraalJS. ws builds its protocol errors with it
+  // (invalid frame, message too big): without it creating the error throws a TypeError instead, and
+  // the WebSocket is closed without its close code (1002/1007/1009). commander uses it as well.
+  if (typeof Error.captureStackTrace !== 'function') {
+    Object.defineProperty(Error, 'captureStackTrace', {
+      configurable: true,
+      writable: true,
+      value: function captureStackTrace(target) {
+        if (target === null || (typeof target !== 'object' && typeof target !== 'function')) {
+          return;
+        }
+        // Drop the "Error" line and this function's own frame.
+        const frames = String(new Error().stack || '').split('\n').slice(2).join('\n');
+        try {
+          Object.defineProperty(target, 'stack', {
+            configurable: true,
+            writable: true,
+            value: String(target) + (frames ? '\n' + frames : '')
+          });
+        } catch (ignored) {
+          // A frozen target keeps its stack.
+        }
+      }
+    });
+  }
+
+  // An exception thrown by a timer callback or by a listener of a host-driven event (socket data,
+  // end, close) would terminate Node.js. Here it is handed to the host's tracker (UnhandledRejections:
+  // reported on stderr, or terminating in strict mode) while the other connections keep running.
+  function reportUncaughtException(error, origin) {
+    const text = origin + ': ' + String(error && error.stack || error);
+    try {
+      const tracker = global.__playwright4jUnhandledRejections;
+      if (tracker) {
+        tracker.recordUncaughtException(text);
+        return;
+      }
+    } catch (ignored) {
+      // Fall back to stderr below.
+    }
+    try {
+      host.driverPipe().writeErr('[playwright4j] uncaught exception: ' + text + '\n');
+    } catch (ignored) {
+      // Diagnostics must never break the run.
+    }
+  }
+
   // Timers are driven by the Java pump (GraalDriverMain) which repeatedly fires due
   // timers via __playwright4jRunDueTimers(). Zero-delay timers take the microtask fast
   // path so they still resolve within the current evaluation. Delayed timers are stored
@@ -133,7 +180,7 @@
         try {
           entry.timer.callback.apply(null, entry.timer.args);
         } catch (error) {
-          host.driverPipe().writeErr('[playwright4j] timer callback failed: ' + String(error && error.stack || error) + '\n');
+          reportUncaughtException(error, 'timer callback');
         }
       }
     }
@@ -1399,21 +1446,371 @@
   // can inherit them via util.inherits + `Readable.call(this)` / `Transform.call(this)` (e.g.
   // fd-slicer's zip entry read stream `xe` does `Readable.call(this)`). ES6 classes throw when
   // invoked without `new`; function constructors support `new`, `.call(this)`, and being extended.
+  //
+  // Node's per-stream state objects are de-facto API: bundled libraries read them directly. ws
+  // decides how to finish a WebSocket from socket._readableState.endEmitted and the Receiver's
+  // _writableState.finished / errorEmitted / needDrain, and reports socket._writableState.length
+  // as bufferedAmount; fd-slicer sizes reads by _readableState.highWaterMark. So the states below
+  // are updated where the transition happens ('end' emitted, end() called, 'finish' emitted,
+  // destroyed, ...), never filled with fixed values.
+  function streamNextTick(callback) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    Promise.resolve().then(function () {
+      callback.apply(null, args);
+    });
+  }
+
+  function ReadableState(options, stream) {
+    options = options || {};
+    this.objectMode = !!(options.objectMode || options.readableObjectMode);
+    this.highWaterMark = typeof options.highWaterMark === 'number'
+      ? options.highWaterMark
+      : (this.objectMode ? 16 : 16384);
+    // null until a consumer appears, true while flowing ('data' events), false once paused.
+    this.flowing = null;
+    // push(null) was called / 'end' was emitted (only after the buffer has been consumed).
+    this.ended = false;
+    this.endEmitted = false;
+    this.reading = false;
+    this.resumeScheduled = false;
+    this.destroyed = false;
+    this.closed = false;
+    this.closeEmitted = false;
+    this.errored = null;
+    this.errorEmitted = false;
+    Object.defineProperty(this, 'length', {
+      enumerable: true,
+      get: function () {
+        return stream.readableLength;
+      }
+    });
+  }
+
+  function WritableState(options) {
+    options = options || {};
+    this.objectMode = !!(options.objectMode || options.writableObjectMode);
+    this.highWaterMark = typeof options.highWaterMark === 'number'
+      ? options.highWaterMark
+      : (this.objectMode ? 16 : 16384);
+    // Bytes (objects in objectMode) passed to write() whose _write callback has not run yet.
+    this.length = 0;
+    // One _write at a time, like Node: chunks written meanwhile (or while corked) wait here.
+    this.writing = false;
+    this.buffered = [];
+    this.bufferProcessing = false;
+    this.pendingcb = 0;
+    this.corked = 0;
+    // write() returned false; 'drain' is emitted once length is back to 0.
+    this.needDrain = false;
+    // end() was called / _final has been started / 'finish' was emitted.
+    this.ending = false;
+    this.ended = false;
+    this.finalCalled = false;
+    this.finished = false;
+    this.destroyed = false;
+    this.closed = false;
+    this.closeEmitted = false;
+    this.errored = null;
+    this.errorEmitted = false;
+    this.onFinished = [];
+  }
+
+  function streamStates(stream) {
+    const states = [];
+    if (stream._readableState) {
+      states.push(stream._readableState);
+    }
+    if (stream._writableState) {
+      states.push(stream._writableState);
+    }
+    return states;
+  }
+
+  function isStreamDestroyed(stream) {
+    return streamStates(stream).some(function (state) { return state.destroyed; });
+  }
+
+  function emitStreamClose(stream) {
+    if (typeof stream.fireSticky === 'function') {
+      stream.fireSticky('close');
+    } else {
+      stream.emit('close');
+    }
+  }
+
+  // Node's destroy(): idempotent; marks both sides destroyed at once, runs _destroy(err, cb), then
+  // emits 'error' (at most once per stream) followed by 'close' (once). Node emits both on a later
+  // tick; the base streams here keep their synchronous timing unless emitAsync is set (sockets).
+  function destroyStream(stream, error, emitAsync) {
+    if (isStreamDestroyed(stream)) {
+      return stream;
+    }
+    const states = streamStates(stream);
+    states.forEach(function (state) {
+      state.destroyed = true;
+      if (error && !state.errored) {
+        state.errored = error;
+      }
+    });
+    if (stream._readableState) {
+      stream.readable = false;
+    }
+    if (stream._writableState) {
+      stream.writable = false;
+    }
+    let completed = false;
+    const done = function (laterError) {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      const failure = laterError || error || null;
+      const emit = function () {
+        if (stream._writableState) {
+          const wstate = stream._writableState;
+          wstate.buffered.splice(0).forEach(function (request) {
+            wstate.length -= request.length;
+            wstate.pendingcb--;
+            if (request.callback) {
+              request.callback(streamDestroyedError('write'));
+            }
+          });
+        }
+        const finishCallbacks = stream._writableState && !stream._writableState.finished
+          ? stream._writableState.onFinished.splice(0)
+          : [];
+        if (failure && !states.some(function (state) { return state.errorEmitted; })) {
+          states.forEach(function (state) {
+            state.errorEmitted = true;
+            if (!state.errored) {
+              state.errored = failure;
+            }
+          });
+          stream.emit('error', failure);
+        }
+        states.forEach(function (state) { state.closed = true; });
+        finishCallbacks.forEach(function (callback) {
+          callback(failure || streamDestroyedError('end'));
+        });
+        if (!states.some(function (state) { return state.closeEmitted; })) {
+          states.forEach(function (state) { state.closeEmitted = true; });
+          emitStreamClose(stream);
+        }
+      };
+      if (emitAsync) {
+        streamNextTick(emit);
+      } else {
+        emit();
+      }
+    };
+    try {
+      stream._destroy(error || null, done);
+    } catch (thrown) {
+      done(thrown);
+    }
+    return stream;
+  }
+
+  function streamDestroyedError(method) {
+    const error = new Error('Cannot call ' + method + ' after a stream was destroyed');
+    error.code = 'ERR_STREAM_DESTROYED';
+    return error;
+  }
+
+  // Node's errorOrDestroy with the default autoDestroy: a failed write destroys the stream with
+  // the error ('error', then 'close').
+  function errorOrDestroyStream(stream, error) {
+    if (!isStreamDestroyed(stream)) {
+      stream.destroy(error);
+    }
+  }
+
+  function writableChunkLength(state, chunk) {
+    if (state.objectMode) {
+      return 1;
+    }
+    return chunk !== undefined && chunk !== null && typeof chunk.length === 'number' ? chunk.length : 0;
+  }
+
+  // Shared write() of Writable and Duplex: accounts the chunk in _writableState until _write
+  // calls back, hands chunks to _write one at a time (buffering while a write is in flight or the
+  // stream is corked), returns false at the high-water mark (needDrain) and emits 'drain' on a
+  // later tick once everything has been written, like Node.
+  function writeToStream(stream, chunk, encoding, callback) {
+    if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const state = stream._writableState;
+    if (state.destroyed || state.ending) {
+      // Node also destroys the stream on a write after end(); dropping the chunk is enough here.
+      if (callback) {
+        streamNextTick(callback, state.destroyed ? streamDestroyedError('write') : writeAfterEndError());
+      }
+      return false;
+    }
+    const length = writableChunkLength(state, chunk);
+    state.length += length;
+    const ret = state.length < state.highWaterMark;
+    if (!ret) {
+      state.needDrain = true;
+    }
+    state.pendingcb++;
+    state.buffered.push({ chunk: chunk, encoding: encoding, callback: callback, length: length });
+    flushWriteBuffer(stream);
+    // A _write that failed synchronously has destroyed the stream already (ws pauses on false).
+    return ret && !state.destroyed;
+  }
+
+  function writeAfterEndError() {
+    const error = new Error('write after end');
+    error.code = 'ERR_STREAM_WRITE_AFTER_END';
+    return error;
+  }
+
+  function flushWriteBuffer(stream) {
+    const state = stream._writableState;
+    if (state.bufferProcessing) {
+      return;
+    }
+    state.bufferProcessing = true;
+    try {
+      while (!state.writing && !state.corked && !state.destroyed && state.buffered.length > 0) {
+        writeOne(stream, state.buffered.shift());
+      }
+    } finally {
+      state.bufferProcessing = false;
+    }
+  }
+
+  function writeOne(stream, request) {
+    const state = stream._writableState;
+    state.writing = true;
+    let called = false;
+    const onwrite = function (error) {
+      if (called) {
+        return;
+      }
+      called = true;
+      state.writing = false;
+      state.length -= request.length;
+      state.pendingcb--;
+      if (error) {
+        if (request.callback) {
+          request.callback(error);
+        }
+        errorOrDestroyStream(stream, error);
+        return;
+      }
+      if (request.callback) {
+        request.callback();
+      }
+      if (state.needDrain && state.length === 0) {
+        streamNextTick(function () {
+          if (state.needDrain && state.length === 0 && !state.destroyed) {
+            state.needDrain = false;
+            stream.emit('drain');
+          }
+        });
+      }
+      flushWriteBuffer(stream);
+      finishStreamIfDone(stream);
+    };
+    try {
+      if (typeof stream._write === 'function') {
+        stream._write(request.chunk, request.encoding, onwrite);
+      } else {
+        onwrite();
+      }
+    } catch (error) {
+      onwrite(error);
+    }
+  }
+
+  // Shared end() of Writable and Duplex. Idempotent: a second end() only waits for 'finish'.
+  function endStream(stream, chunk, encoding, callback) {
+    if (typeof chunk === 'function') {
+      callback = chunk;
+      chunk = undefined;
+    } else if (typeof encoding === 'function') {
+      callback = encoding;
+      encoding = undefined;
+    }
+    const state = stream._writableState;
+    if (chunk !== undefined && chunk !== null && !state.ending) {
+      writeToStream(stream, chunk, encoding);
+    }
+    if (state.corked) {
+      state.corked = 0;
+      flushWriteBuffer(stream);
+    }
+    if (callback) {
+      if (state.finished) {
+        streamNextTick(callback);
+      } else if (state.destroyed) {
+        streamNextTick(callback, state.errored || streamDestroyedError('end'));
+      } else {
+        state.onFinished.push(callback);
+      }
+    }
+    if (!state.ending) {
+      state.ending = true;
+      state.ended = true;
+      stream.writable = false;
+      finishStreamIfDone(stream);
+    }
+    return stream;
+  }
+
+  // Once end() was called and every write has called back: run _final, then mark the writable
+  // side finished right before 'finish' is emitted.
+  function finishStreamIfDone(stream) {
+    const state = stream._writableState;
+    if (!state.ending || state.finalCalled || state.finished || state.destroyed || state.pendingcb > 0) {
+      return;
+    }
+    state.finalCalled = true;
+    let completed = false;
+    const done = function (error) {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      if (error) {
+        state.onFinished.splice(0).forEach(function (callback) { callback(error); });
+        errorOrDestroyStream(stream, error);
+        return;
+      }
+      if (state.destroyed) {
+        return;
+      }
+      state.finished = true;
+      stream._emitFinish();
+      state.onFinished.splice(0).forEach(function (callback) { callback(); });
+      stream._afterFinish();
+    };
+    if (typeof stream._final === 'function') {
+      try {
+        stream._final(done);
+      } catch (error) {
+        done(error);
+      }
+    } else {
+      done();
+    }
+  }
+
   function Readable(options) {
     EventEmitter.call(this);
     this.readable = true;
     this._readableBuffer = [];
-    this._flowing = false;
-    this._readableEnded = false;
     this._reading = false;
-    // Some bundled readable-stream consumers (e.g. fd-slicer's zip entry reader) read
-    // this._readableState.highWaterMark to size their reads.
-    this._readableState = { highWaterMark: 16384, flowing: false, ended: false };
+    this._readableState = new ReadableState(options, this);
     if (options && typeof options.read === 'function') {
       this._read = options.read;
     }
-    if (options && typeof options.highWaterMark === 'number') {
-      this._readableState.highWaterMark = options.highWaterMark;
+    if (options && typeof options.destroy === 'function') {
+      this._destroy = options.destroy;
     }
   }
   Readable.prototype = Object.create(EventEmitter.prototype);
@@ -1423,36 +1820,74 @@
   // produce data when it is invoked. Drive _read while flowing so such streams actually emit
   // their bytes and reach end; without this the zip read pipeline never completes.
   Readable.prototype._maybeRead = function () {
-    if (this._readableEnded || this._reading || !this._flowing || typeof this._read !== 'function') {
+    const state = this._readableState;
+    if (state.ended || state.destroyed || this._reading || state.flowing !== true || typeof this._read !== 'function') {
       return;
     }
     this._reading = true;
+    state.reading = true;
     try {
       this._read(65536);
     } catch (error) {
       this.emit('error', error);
     }
     this._reading = false;
+    state.reading = false;
+  };
+
+  // Emits 'end' at most once; endEmitted turns true right before, as in Node.
+  Readable.prototype._emitEnd = function () {
+    const state = this._readableState;
+    if (state.endEmitted || state.errored || state.closeEmitted) {
+      return;
+    }
+    state.endEmitted = true;
+    this.readable = false;
+    this.emit('end');
+    this._afterEnd();
+  };
+
+  // Node emits 'end' on a later tick once an ended stream has been read empty.
+  Readable.prototype._scheduleEnd = function () {
+    const self = this;
+    streamNextTick(function () {
+      if (self._readableBuffer.length === 0) {
+        self._emitEnd();
+      }
+    });
+  };
+
+  // Hook for Duplex: what happens once the readable side has ended.
+  Readable.prototype._afterEnd = function () {};
+
+  Readable.prototype._destroy = function (error, callback) {
+    callback(error);
   };
 
   Readable.prototype.push = function (chunk) {
+    const state = this._readableState;
     if (chunk === null) {
-      this._readableEnded = true;
+      if (state.ended) {
+        return false;
+      }
+      state.ended = true;
       // Keep `readable` true until the buffer is drained so pull-mode consumers can finish
       // reading any buffered bytes; flowing-mode consumers get 'end' immediately.
-      if (this._flowing) {
-        this.readable = false;
-        this.emit('end');
+      if (state.flowing === true && this._readableBuffer.length === 0) {
+        this._emitEnd();
       } else {
         this.emit('readable');
       }
       return false;
     }
+    // Like Node, data is dropped once the stream is destroyed (or ended), but the EOF above is
+    // still taken: fd-slicer (yauzl) sets `destroyed = true` itself right before push(null).
+    if (state.destroyed || state.ended) {
+      return false;
+    }
     this._readableBuffer.push(chunk);
-    if (this._flowing) {
-      while (this._readableBuffer.length > 0) {
-        this.emit('data', this._readableBuffer.shift());
-      }
+    if (state.flowing === true) {
+      this._flowBuffered();
       // Ask the source for more (Node calls _read again after each consumed chunk).
       this._maybeRead();
     } else {
@@ -1462,12 +1897,41 @@
     return true;
   };
 
+  // Puts data back at the front of the buffer (ws: bytes that arrived together with the HTTP
+  // upgrade request). It is delivered before anything pushed later.
+  Readable.prototype.unshift = function (chunk) {
+    const state = this._readableState;
+    if (state.destroyed || chunk === null || chunk === undefined) {
+      return;
+    }
+    this._readableBuffer.unshift(chunk);
+    if (state.flowing === true) {
+      this._flowBuffered();
+    } else {
+      this.emit('readable');
+    }
+  };
+
+  // Emits buffered chunks while flowing (a listener may pause the stream in between), then
+  // 'end' once the stream has ended and nothing is left.
+  Readable.prototype._flowBuffered = function () {
+    const state = this._readableState;
+    while (state.flowing === true && this._readableBuffer.length > 0) {
+      this.emit('data', this._readableBuffer.shift());
+    }
+    if (state.flowing === true && state.ended && this._readableBuffer.length === 0) {
+      this._emitEnd();
+    }
+  };
+
   // Pull-based read used by Playwright's StreamDispatcher (download.createReadStream): returns
   // up to `size` buffered bytes, or null when nothing is currently buffered.
   Readable.prototype.read = function (size) {
+    const state = this._readableState;
     if (this._readableBuffer.length === 0) {
-      if (this._readableEnded) {
+      if (state.ended) {
         this.readable = false;
+        this._scheduleEnd();
       }
       return null;
     }
@@ -1478,8 +1942,9 @@
     // A non-positive/NaN/absent size means "return all currently available" (Node semantics).
     // Playwright's StreamDispatcher calls read() with no usable size, which arrives as NaN.
     if (!(size > 0) || pending.length <= size) {
-      if (this._readableBuffer.length === 0 && this._readableEnded) {
+      if (state.ended) {
         this.readable = false;
+        this._scheduleEnd();
       }
       return pending;
     }
@@ -1493,7 +1958,27 @@
 
   Object.defineProperty(Readable.prototype, 'readableEnded', {
     get: function () {
-      return this._readableEnded && this._readableBuffer.length === 0;
+      return this._readableState.ended && this._readableBuffer.length === 0;
+    }
+  });
+
+  Object.defineProperty(Readable.prototype, 'readableFlowing', {
+    get: function () {
+      return this._readableState.flowing;
+    },
+    // Node's http server sets socket.readableFlowing = null before handing a socket to its
+    // 'upgrade' listeners: incoming bytes are buffered until the new owner attaches 'data'.
+    set: function (value) {
+      this._readableState.flowing = value;
+    }
+  });
+
+  Object.defineProperty(Readable.prototype, 'destroyed', {
+    get: function () {
+      return isStreamDestroyed(this);
+    },
+    set: function (value) {
+      streamStates(this).forEach(function (state) { state.destroyed = !!value; });
     }
   });
 
@@ -1547,83 +2032,131 @@
   Readable.prototype.on = function (name, listener) {
     const result = EventEmitter.prototype.on.call(this, name, listener);
     if (name === 'data') {
-      this.resume();
-    } else if (name === 'readable' && (this._readableBuffer.length > 0 || this._readableEnded)) {
+      // Node: a 'data' listener starts the flow unless the stream was explicitly paused.
+      if (this._readableState.flowing !== false) {
+        this.resume();
+      }
+    } else if (name === 'readable' && (this._readableBuffer.length > 0 || this._readableState.ended)) {
       // Node re-signals readability to listeners attached after data is already buffered (or
       // after end). Playwright's StreamDispatcher attaches 'readable'/'end' per read() call,
       // often after createReadStream already pushed everything, so replay the signal async.
       const self = this;
       Promise.resolve().then(function () { self.emit('readable'); });
-    } else if (name === 'end' && this._readableEnded && this._readableBuffer.length === 0) {
+    } else if (name === 'end' && this._readableState.endEmitted) {
+      // ... and the 'end' itself (StreamDispatcher may be created after the stream ended).
       const self = this;
-      Promise.resolve().then(function () { self.emit('end'); });
+      Promise.resolve().then(function () { listener.call(self); });
+    } else if (name === 'end' && this._readableState.ended && this._readableBuffer.length === 0) {
+      this._scheduleEnd();
     }
     return result;
   };
+  Readable.prototype.addListener = Readable.prototype.on;
 
+  // Like Node, resume() (also implied by attaching a 'data' listener) switches to flowing mode at
+  // once but delivers buffered data on a later tick. Callers rely on that: ws attaches its 'data'
+  // listener in setSocket() before it is set up to receive messages (readyState, 'end'/'error'
+  // listeners, the 'connection' callback), so buffered bytes must not be emitted synchronously.
   Readable.prototype.resume = function () {
-    if (this._flowing) {
+    const state = this._readableState;
+    if (state.flowing === true) {
       return this;
     }
-    this._flowing = true;
-    while (this._readableBuffer.length > 0) {
-      this.emit('data', this._readableBuffer.shift());
-    }
-    if (this._readableEnded) {
-      this.readable = false;
-      this.emit('end');
-    } else {
-      // Kick off pull-based sources (_read) now that we are flowing.
-      this._maybeRead();
+    state.flowing = true;
+    if (!state.resumeScheduled) {
+      state.resumeScheduled = true;
+      const self = this;
+      streamNextTick(function () {
+        state.resumeScheduled = false;
+        if (state.flowing !== true) {
+          return;
+        }
+        self._flowBuffered();
+        if (!state.ended) {
+          // Kick off pull-based sources (_read) now that we are flowing.
+          self._maybeRead();
+        }
+      });
     }
     return this;
   };
 
   Readable.prototype.pause = function () {
-    this._flowing = false;
+    this._readableState.flowing = false;
     return this;
+  };
+
+  Readable.prototype.isPaused = function () {
+    return this._readableState.flowing === false;
   };
 
   Readable.prototype.setEncoding = function () {
     return this;
   };
 
-  Readable.prototype.pipe = function (destination) {
+  // pipe(destination, { end }) and unpipe(). { end: false } matters: yazl pipes every zip entry
+  // into its output stream with it and ends that stream itself after the central directory, so
+  // ending it with the first entry truncates the archive.
+  Readable.prototype.pipe = function (destination, options) {
     const self = this;
-    this.on('data', function (chunk) {
-      if (destination && typeof destination.write === 'function') {
-        destination.write(chunk);
+    const endDestination = !options || options.end !== false;
+    const pipe = {
+      destination: destination,
+      ondata: function (chunk) {
+        if (destination && typeof destination.write === 'function') {
+          destination.write(chunk);
+        }
+      },
+      onend: function () {
+        if (endDestination && destination && typeof destination.end === 'function') {
+          destination.end();
+        }
+      },
+      onerror: function (error) {
+        if (destination && typeof destination.emit === 'function') {
+          destination.emit('error', error);
+        }
       }
-    });
-    this.on('end', function () {
-      if (destination && typeof destination.end === 'function') {
-        destination.end();
-      }
-    });
-    this.on('error', function (error) {
-      if (destination && typeof destination.emit === 'function') {
-        destination.emit('error', error);
-      }
-    });
+    };
+    (this._pipes || (this._pipes = [])).push(pipe);
+    this.on('data', pipe.ondata);
+    this.on('end', pipe.onend);
+    this.on('error', pipe.onerror);
     if (destination && typeof destination.emit === 'function') {
       destination.emit('pipe', self);
     }
     return destination;
   };
 
-  Readable.prototype.destroy = function (error) {
-    this._readableEnded = true;
-    if (error) {
-      this.emit('error', error);
+  Readable.prototype.unpipe = function (destination) {
+    const self = this;
+    const pipes = this._pipes || [];
+    this._pipes = pipes.filter(function (pipe) {
+      if (destination !== undefined && pipe.destination !== destination) {
+        return true;
+      }
+      self.removeListener('data', pipe.ondata);
+      self.removeListener('end', pipe.onend);
+      self.removeListener('error', pipe.onerror);
+      if (pipe.destination && typeof pipe.destination.emit === 'function') {
+        pipe.destination.emit('unpipe', self);
+      }
+      return false;
+    });
+    if (pipes.length > 0 && this._pipes.length === 0) {
+      this.pause();
     }
-    this.emit('close');
     return this;
+  };
+
+  Readable.prototype.destroy = function (error) {
+    return destroyStream(this, error, false);
   };
 
   function Writable(options) {
     EventEmitter.call(this);
     this.writable = true;
-    this._writableEnded = false;
+    this._writableState = new WritableState(options);
     // One-shot lifecycle events (open/ready/finish/close) are "sticky": consumers frequently
     // attach a listener (e.g. await once(stream, 'close')) right after calling end(), i.e. after
     // we already emitted. Record fired events and replay them to late listeners so awaits resolve.
@@ -1633,6 +2166,9 @@
     }
     if (options && typeof options.final === 'function') {
       this._final = options.final;
+    }
+    if (options && typeof options.destroy === 'function') {
+      this._destroy = options.destroy;
     }
   }
   Writable.prototype = Object.create(EventEmitter.prototype);
@@ -1653,77 +2189,87 @@
     }
     return result;
   };
+  Writable.prototype.addListener = Writable.prototype.on;
 
   Writable.prototype.write = function (chunk, encoding, callback) {
-    if (typeof encoding === 'function') {
-      callback = encoding;
-      encoding = undefined;
-    }
-    const self = this;
-    try {
-      if (typeof this._write === 'function') {
-        this._write(chunk, encoding, function (error) {
-          if (error) {
-            self.emit('error', error);
-          }
-          if (callback) {
-            callback(error);
-          }
-        });
-      } else if (callback) {
-        callback();
-      }
-    } catch (error) {
-      this.emit('error', error);
-    }
-    return true;
+    return writeToStream(this, chunk, encoding, callback);
   };
 
   Writable.prototype.end = function (chunk, encoding, callback) {
-    if (typeof chunk === 'function') {
-      callback = chunk;
-      chunk = undefined;
-    } else if (typeof encoding === 'function') {
-      callback = encoding;
-      encoding = undefined;
-    }
-    const self = this;
-    const finish = function () {
-      self._writableEnded = true;
-      self.fireSticky('finish');
-      self.fireSticky('close');
-      if (callback) {
-        callback();
-      }
-    };
-    const afterWrite = function () {
-      if (typeof self._final === 'function') {
-        self._final(function () { finish(); });
-      } else {
-        finish();
-      }
-    };
-    if (chunk !== undefined && chunk !== null) {
-      this.write(chunk, encoding, afterWrite);
-    } else {
-      afterWrite();
-    }
-    return this;
+    return endStream(this, chunk, encoding, callback);
+  };
+
+  Writable.prototype._emitFinish = function () {
+    this.fireSticky('finish');
+  };
+
+  // Node's autoDestroy: a finished Writable is destroyed, which emits 'close'.
+  Writable.prototype._afterFinish = function () {
+    destroyStream(this, null, false);
+  };
+
+  Writable.prototype._destroy = function (error, callback) {
+    callback(error);
   };
 
   Writable.prototype.destroy = function (error) {
-    if (error) {
-      this.emit('error', error);
-    }
-    this.emit('close');
-    return this;
+    return destroyStream(this, error, false);
   };
+
+  Writable.prototype.cork = function () {
+    this._writableState.corked++;
+  };
+
+  Writable.prototype.uncork = function () {
+    const state = this._writableState;
+    if (state.corked > 0) {
+      state.corked--;
+      if (state.corked === 0) {
+        flushWriteBuffer(this);
+        finishStreamIfDone(this);
+      }
+    }
+  };
+
+  Object.defineProperty(Writable.prototype, 'destroyed', {
+    get: function () {
+      return isStreamDestroyed(this);
+    },
+    set: function (value) {
+      streamStates(this).forEach(function (state) { state.destroyed = !!value; });
+    }
+  });
+
+  Object.defineProperty(Writable.prototype, 'writableEnded', {
+    get: function () {
+      return this._writableState.ending;
+    }
+  });
+
+  Object.defineProperty(Writable.prototype, 'writableFinished', {
+    get: function () {
+      return this._writableState.finished;
+    }
+  });
+
+  Object.defineProperty(Writable.prototype, 'writableLength', {
+    get: function () {
+      return this._writableState.length;
+    }
+  });
+
+  Object.defineProperty(Writable.prototype, 'writableNeedDrain', {
+    get: function () {
+      return this._writableState.needDrain;
+    }
+  });
 
   // Transform is both readable and writable: written chunks pass through _transform and are
   // pushed to the readable side.
   function Transform(options) {
     Readable.call(this, options);
     this.writable = true;
+    this._writableState = new WritableState(options);
     if (options && typeof options.transform === 'function') {
       this._transform = options.transform;
     }
@@ -1747,6 +2293,7 @@
             self.push(data);
           }
           if (error) {
+            self._writableState.errorEmitted = true;
             self.emit('error', error);
           }
           if (callback) {
@@ -1760,6 +2307,7 @@
         }
       }
     } catch (error) {
+      this._writableState.errorEmitted = true;
       this.emit('error', error);
     }
     return true;
@@ -1774,24 +2322,39 @@
       encoding = undefined;
     }
     const self = this;
+    const state = this._writableState;
+    if (state.ending) {
+      if (callback) {
+        if (state.finished) {
+          streamNextTick(callback);
+        } else {
+          state.onFinished.push(callback);
+        }
+      }
+      return this;
+    }
+    state.ending = true;
+    state.ended = true;
+    this.writable = false;
+    const finish = function (error) {
+      self.push(null);
+      state.finished = true;
+      self.emit('finish');
+      state.onFinished.splice(0).forEach(function (finished) { finished(); });
+      if (callback) {
+        callback(error);
+      }
+    };
     const doEnd = function () {
       if (typeof self._flush === 'function') {
         self._flush(function (error, data) {
           if (data !== undefined && data !== null) {
             self.push(data);
           }
-          self.push(null);
-          self.emit('finish');
-          if (callback) {
-            callback(error);
-          }
+          finish(error);
         });
       } else {
-        self.push(null);
-        self.emit('finish');
-        if (callback) {
-          callback();
-        }
+        finish();
       }
     };
     if (chunk !== undefined && chunk !== null) {
@@ -1812,98 +2375,64 @@
   PassThrough.prototype.constructor = PassThrough;
 
   // A real Duplex: independent readable (via push, inherited from Readable) and writable sides,
-  // honouring the { read, write, destroy, final } option callbacks. Distinct from Transform (whose
+  // honouring the { read, write, final, destroy } option callbacks. Distinct from Transform (whose
   // write feeds its own readable side). Playwright's client-certificate interceptor builds
   // `new stream.Duplex({ read, write, destroy })` whose write must forward bytes to the SOCKS proxy
-  // rather than loop back into the readable side.
+  // rather than loop back into the readable side. Like Node: allowHalfOpen (default true) keeps
+  // the writable side open after the readable side ended, and the stream destroys itself
+  // ('close') once both sides are done.
   function Duplex(options) {
     Readable.call(this, options);
     this.writable = true;
+    this._writableState = new WritableState(options);
+    this.allowHalfOpen = !(options && options.allowHalfOpen === false);
     if (options && typeof options.write === 'function') {
-      this._writeImpl = options.write;
+      this._write = options.write;
     }
     if (options && typeof options.final === 'function') {
-      this._finalImpl = options.final;
-    }
-    if (options && typeof options.destroy === 'function') {
-      this._destroyImpl = options.destroy;
+      this._final = options.final;
     }
   }
   Duplex.prototype = Object.create(Readable.prototype);
   Duplex.prototype.constructor = Duplex;
 
   Duplex.prototype.write = function (chunk, encoding, callback) {
-    if (typeof encoding === 'function') {
-      callback = encoding;
-      encoding = undefined;
-    }
-    const self = this;
-    if (typeof this._writeImpl === 'function') {
-      this._writeImpl(chunk, encoding, function (error) {
-        if (error) {
-          self.emit('error', error);
-        }
-        if (callback) {
-          callback(error);
-        }
-      });
-    } else if (callback) {
-      callback();
-    }
-    return true;
+    return writeToStream(this, chunk, encoding, callback);
   };
 
   Duplex.prototype.end = function (chunk, encoding, callback) {
-    if (typeof chunk === 'function') {
-      callback = chunk;
-      chunk = undefined;
-    } else if (typeof encoding === 'function') {
-      callback = encoding;
-      encoding = undefined;
+    return endStream(this, chunk, encoding, callback);
+  };
+
+  Duplex.prototype.cork = Writable.prototype.cork;
+  Duplex.prototype.uncork = Writable.prototype.uncork;
+
+  Duplex.prototype._emitFinish = function () {
+    this.emit('finish');
+  };
+
+  Duplex.prototype._afterFinish = function () {
+    if (this._readableState.endEmitted) {
+      this.destroy();
     }
-    const self = this;
-    const finish = function () {
-      const done = function () {
-        self.writable = false;
-        self.emit('finish');
-        if (callback) {
-          callback();
-        }
-      };
-      if (typeof self._finalImpl === 'function') {
-        self._finalImpl(done);
-      } else {
-        done();
-      }
-    };
-    if (chunk !== undefined && chunk !== null) {
-      this.write(chunk, encoding, finish);
-    } else {
-      finish();
+  };
+
+  Duplex.prototype._afterEnd = function () {
+    if (!this.allowHalfOpen && !this._writableState.ending && !this._writableState.destroyed) {
+      this.end();
     }
-    return this;
+    if (this._writableState.finished) {
+      this.destroy();
+    }
   };
 
   Duplex.prototype.destroy = function (error) {
-    if (this._destroyed) {
-      return this;
-    }
-    this._destroyed = true;
-    const self = this;
-    const done = function (laterError) {
-      const failure = laterError || error;
-      if (failure) {
-        self.emit('error', failure);
-      }
-      self.emit('close');
-    };
-    if (typeof this._destroyImpl === 'function') {
-      this._destroyImpl(error || null, done);
-    } else {
-      done();
-    }
-    return this;
+    return destroyStream(this, error, false);
   };
+
+  ['writableEnded', 'writableFinished', 'writableLength', 'writableNeedDrain'].forEach(function (name) {
+    Object.defineProperty(Duplex.prototype, name, Object.getOwnPropertyDescriptor(Writable.prototype, name));
+  });
 
   function streamFinished(stream, optionsOrCallback, maybeCallback) {
     const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
@@ -3033,16 +3562,17 @@
   const netServersById = {};
   const netSocketsById = {};
 
-  class NetSocket extends EventEmitter {
-    constructor(socketId) {
-      super();
+  // A net.Socket on top of the Duplex above, so it carries the stream state bundled libraries read
+  // (ws: _readableState.endEmitted, read(), unshift(), _writableState.length) and follows Node's
+  // socket lifecycle: allowHalfOpen is false, so the peer's FIN ('end') ends our side too; end()
+  // half-closes (shutdownOutput, the peer still sees our FIN while we read); 'close' is emitted
+  // once, on a later tick, when the socket is destroyed - which happens by itself once both sides
+  // are done, or explicitly via destroy().
+  class NetSocket extends Duplex {
+    constructor(socketId, connecting) {
+      super({ allowHalfOpen: false });
       this.__socketId = socketId;
-      this.__closed = false;
-      this.readable = true;
-      this.writable = true;
-      this.destroyed = false;
-      this.writableEnded = false;
-      this.readableEnded = false;
+      this.connecting = !!connecting;
       this.localAddress = undefined;
       this.localPort = undefined;
       this.remoteAddress = undefined;
@@ -3050,110 +3580,110 @@
     }
 
     get readyState() {
-      if (this.__closed) {
-        return 'closed';
+      if (this.connecting) {
+        return 'opening';
       }
-      return this.readable && this.writable ? 'open' : (this.writable ? 'readOnly' : 'writeOnly');
+      if (this.readable && this.writable) {
+        return 'open';
+      }
+      if (this.readable) {
+        return 'readOnly';
+      }
+      return this.writable ? 'writeOnly' : 'closed';
     }
 
-    // Emits the readable-EOF and terminal 'close' exactly once. Node's stream/ws close handshake
-    // relies on 'end' then 'close' firing; the bundled ws socketOnClose (via 'close') is what makes
-    // the server WebSocket emit its own 'close' so Playwright-Core cleans up the connection.
-    __finishClose(hadError, emitEnd) {
-      if (this.__closed) {
+    get pending() {
+      return this.connecting;
+    }
+
+    _write(chunk, encoding, callback) {
+      if (this.connecting) {
+        // Node queues writes until the outbound connection is established.
+        const self = this;
+        this.once('connect', function () { self._write(chunk, encoding, callback); });
         return;
-      }
-      this.__closed = true;
-      this.destroyed = true;
-      this.readable = false;
-      this.writable = false;
-      this.readableEnded = true;
-      const self = this;
-      if (emitEnd) {
-        self.emit('end');
-      }
-      if (hadError) {
-        // 'error' listeners must exist; ws attaches socketOnError. Emit before 'close' (Node order).
-        // (Caller passes the error object via emit('error') separately.)
-      }
-      self.emit('close', !!hadError);
-    }
-
-    write(chunk, encoding, callback) {
-      if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = undefined;
       }
       const buffer = global.Buffer.isBuffer(chunk)
         ? chunk
         : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
-      if (this.__socketId) {
-        host.netServer().write(this.__socketId, buffer.toString('base64'));
-      }
-      if (callback) {
-        callback();
-      }
-      return true;
+      host.netServer().write(this.__socketId, buffer.toString('base64'));
+      callback();
     }
 
-    end(chunk, encoding, callback) {
-      if (typeof chunk === 'function') {
-        callback = chunk;
-        chunk = undefined;
-      } else if (typeof encoding === 'function') {
-        callback = encoding;
-        encoding = undefined;
-      }
-      if (chunk !== undefined && chunk !== null) {
-        this.write(chunk, encoding);
-      }
-      if (!this.writableEnded) {
-        this.writableEnded = true;
-        this.writable = false;
+    _final(callback) {
+      if (this.connecting) {
         const self = this;
-        Promise.resolve().then(function () { self.emit('finish'); });
+        this.once('connect', function () { self._final(callback); });
+        return;
       }
-      // ws's socketOnEnd calls socket.end() to half-close; once we've written our side, close the
-      // host socket so the peer gets a FIN and the connection actually terminates.
-      if (this.__socketId) {
+      host.netServer().shutdownOutput(this.__socketId);
+      callback();
+    }
+
+    _destroy(error, callback) {
+      // A socket destroyed while still connecting is closed when the host reports the outcome.
+      if (!this.connecting) {
         host.netServer().closeSocket(this.__socketId);
-        this.__socketId = null;
+        delete netSocketsById[this.__socketId];
       }
-      const self = this;
-      Promise.resolve().then(function () { self.__finishClose(false, false); });
-      if (callback) {
-        callback();
-      }
-      return this;
+      callback(error);
     }
 
     destroy(error) {
-      if (this.__socketId) {
+      return destroyStream(this, error, true);
+    }
+
+    destroySoon() {
+      this.end();
+    }
+
+    // Called for a host 'connect' event (net.createConnection).
+    __connected(localAddress, localPort, remoteAddress, remotePort) {
+      if (this.destroyed) {
         host.netServer().closeSocket(this.__socketId);
-        this.__socketId = null;
+        delete netSocketsById[this.__socketId];
+        return;
       }
-      const self = this;
-      Promise.resolve().then(function () {
-        if (error) {
-          self.emit('error', error);
-        }
-        self.__finishClose(!!error, false);
-      });
-      return this;
+      this.connecting = false;
+      this.localAddress = localAddress;
+      this.localPort = localPort;
+      this.remoteAddress = remoteAddress;
+      this.remotePort = remotePort;
+      this.emit('connect');
+      this.emit('ready');
+    }
+
+    // Called for a host 'connecterror' event.
+    __connectFailed(error) {
+      delete netSocketsById[this.__socketId];
+      if (this.destroyed) {
+        return;
+      }
+      this.connecting = false;
+      this.destroy(error);
+    }
+
+    // Called for a host 'end' event: the peer sent FIN, nothing more will arrive.
+    __peerEnded() {
+      this.push(null);
+    }
+
+    // Called for a host 'close' event: the connection failed (reset) or was closed underneath us.
+    // Node would emit ECONNRESET here; the host cannot tell a reset from a local close, so the
+    // socket is destroyed without an error (anything still buffered stays readable, as in Node).
+    __hostClosed() {
+      this.destroy();
     }
 
     setEncoding() { return this; }
     setNoDelay() { return this; }
     setKeepAlive() { return this; }
     setTimeout() { return this; }
-    pause() { return this; }
-    resume() { return this; }
-    // The bundled ws Sender batches frame header + payload with cork()/uncork(); without these
-    // (no-ops here, our write() flushes immediately) it throws mid-send and the connection breaks.
-    cork() { return this; }
-    uncork() { return this; }
     ref() { return this; }
     unref() { return this; }
+    address() {
+      return { address: this.localAddress, port: this.localPort, family: 'IPv4' };
+    }
   }
 
   class NetServer extends EventEmitter {
@@ -3219,63 +3749,61 @@
     ref() { return this; }
   }
 
+  function dispatchNetEvent(parts) {
+    const type = parts[0];
+    if (type === 'connection') {
+      const server = netServersById[parts[1]];
+      const socket = new NetSocket(parts[2], false);
+      netSocketsById[parts[2]] = socket;
+      if (server) {
+        server.emit('connection', socket);
+      } else {
+        socket.destroy();
+      }
+      return;
+    }
+    const socket = netSocketsById[parts[1]];
+    if (!socket) {
+      // Already destroyed on our side; the host socket is closed.
+      return;
+    }
+    if (type === 'data') {
+      socket.push(global.Buffer.from(parts[2] || '', 'base64'));
+    } else if (type === 'end') {
+      socket.__peerEnded();
+    } else if (type === 'close') {
+      socket.__hostClosed();
+    } else if (type === 'connect') {
+      socket.__connected(parts[2], parseInt(parts[3], 10), parts[4], parseInt(parts[5], 10));
+    } else if (type === 'connecterror') {
+      const error = new Error(parts[2] || 'connect failed');
+      error.code = 'ECONNREFUSED';
+      socket.__connectFailed(error);
+    }
+  }
+
   global.__playwright4jDrainNet = function () {
     const batch = String(host.netServer().drainEvents() || '');
     if (batch.length === 0) {
       return 0;
     }
     const lines = batch.split('\n');
-    let handled = 0;
     for (let index = 0; index < lines.length; index++) {
       const parts = lines[index].split(NET_UNIT);
-      const type = parts[0];
-      if (type === 'connection') {
-        const server = netServersById[parts[1]];
-        const socket = new NetSocket(parts[2]);
-        netSocketsById[parts[2]] = socket;
-        if (server) {
-          server.emit('connection', socket);
-        }
-        handled++;
-      } else if (type === 'data') {
-        const socket = netSocketsById[parts[1]];
-        if (socket) {
-          socket.emit('data', global.Buffer.from(parts[2] || '', 'base64'));
-        }
-        handled++;
-      } else if (type === 'close') {
-        // Peer closed (FIN). Emit readable 'end' then the terminal 'close' exactly once, so the ws
-        // socketOnEnd/socketOnClose handlers run and the server WebSocket cleans up the connection.
-        const socket = netSocketsById[parts[1]];
-        if (socket) {
-          socket.__socketId = null;
-          socket.__finishClose(false, true);
-          delete netSocketsById[parts[1]];
-        }
-        handled++;
-      } else if (type === 'connect') {
-        // Outbound connection established (net.createConnection).
-        const socket = netSocketsById[parts[1]];
-        if (socket) {
-          socket.localAddress = parts[2];
-          socket.localPort = parseInt(parts[3], 10);
-          socket.remoteAddress = parts[4];
-          socket.remotePort = parseInt(parts[5], 10);
-          socket.emit('connect');
-        }
-        handled++;
-      } else if (type === 'connecterror') {
-        const socket = netSocketsById[parts[1]];
-        if (socket) {
-          const error = new Error(parts[2] || 'connect failed');
-          error.code = 'ECONNREFUSED';
-          socket.emit('error', error);
-          delete netSocketsById[parts[1]];
-        }
-        handled++;
+      // Listeners run synchronously in here. In Node an exception thrown by one would terminate
+      // the process; here it must not abort the rest of the batch, i.e. the other connections.
+      try {
+        dispatchNetEvent(parts);
+      } catch (error) {
+        reportUncaughtException(error, 'net ' + parts[0] + ' event');
       }
     }
-    return handled;
+    return lines.length;
+  };
+
+  // Diagnostics for leak checks: sockets still registered for host events.
+  global.__playwright4jOpenNetSockets = function () {
+    return Object.keys(netSocketsById).length;
   };
 
   modules.net = {
@@ -3310,7 +3838,7 @@
         }
       }
       const socketId = String(host.netServer().connect(String(hostName), parseInt(port, 10) || 0));
-      const socket = new NetSocket(socketId);
+      const socket = new NetSocket(socketId, true);
       netSocketsById[socketId] = socket;
       if (typeof connectListener === 'function') {
         socket.on('connect', connectListener);
@@ -3430,6 +3958,9 @@
         const request = parseHttpRequestHead(buffer.subarray(0, headerEnd).toString('latin1'), socket);
         const head = buffer.subarray(headerEnd + 4);
         if (String(request.headers['upgrade'] || '').toLowerCase() === 'websocket') {
+          // Like Node's http server: the socket is handed over paused, so bytes arriving before
+          // the new owner (ws) attaches its 'data' listener are buffered, not dropped.
+          socket.readableFlowing = null;
           server.emit('upgrade', request, socket, head);
         } else {
           server.emit('request', request, createServerResponse(socket));
@@ -3556,7 +4087,9 @@
     };
 
     underlying.on('data', function (data) { feed(toInputBuffer(data).toString('base64')); });
-    underlying.on('close', function () { socket.push(null); socket.emit('close'); });
+    // The transport is gone: end the decrypted side and destroy the TLS socket (engine and
+    // underlying stream released, 'close' emitted once).
+    underlying.on('close', function () { socket.push(null); socket.destroy(); });
     underlying.on('error', function (error) { fail(error); });
     socket.__kickHandshake = function () { feed(''); };
     return socket;

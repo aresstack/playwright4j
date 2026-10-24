@@ -135,6 +135,23 @@ public final class JdkHostNetServer {
         }
     }
 
+    /**
+     * Half-closes a socket (Node's socket.end()): sends FIN to the peer and keeps reading until the
+     * peer closes its side as well. The guest closes the socket once both sides are done.
+     */
+    @HostAccess.Export
+    public void shutdownOutput(String socketId) {
+        Socket socket = sockets.get(socketId);
+        socketOutputs.remove(socketId);
+        if (socket != null && !socket.isClosed() && !socket.isOutputShutdown()) {
+            try {
+                socket.shutdownOutput();
+            } catch (IOException ignored) {
+                // The connection is gone; the read thread reports it.
+            }
+        }
+    }
+
     @HostAccess.Export
     public void closeSocket(String socketId) {
         Socket socket = sockets.remove(socketId);
@@ -163,6 +180,16 @@ public final class JdkHostNetServer {
             batch.append(event);
         }
         return batch.toString();
+    }
+
+    /** Number of host sockets (accepted or connected) that are still open; for leak checks. */
+    public int openSocketCount() {
+        return sockets.size();
+    }
+
+    /** Number of listening host servers; for leak checks. */
+    public int openServerCount() {
+        return servers.size();
     }
 
     public void closeAll() {
@@ -197,21 +224,28 @@ public final class JdkHostNetServer {
         acceptThread.start();
     }
 
+    /**
+     * Reads until EOF and queues {@code data} events. The peer's FIN is queued as {@code end} and
+     * leaves the socket open (the guest may still write, then closes it, like a Node socket); a
+     * failed read (reset, or closed locally) is queued as {@code close} and closes the socket.
+     */
     private void startReadThread(final String socketId, final Socket socket) {
         Thread readThread = new Thread(new Runnable() {
             @Override
             public void run() {
                 byte[] buffer = new byte[8192];
-                try (InputStream input = socket.getInputStream()) {
+                try {
+                    InputStream input = socket.getInputStream();
                     int count;
                     while ((count = input.read(buffer)) != -1) {
                         String base64 = Base64.getEncoder().encodeToString(java.util.Arrays.copyOf(buffer, count));
                         // event: data<UNIT>socketId<UNIT>base64
                         events.add("data" + UNIT + socketId + UNIT + base64);
                     }
-                } catch (IOException ignored) {
-                    // Connection closed.
-                } finally {
+                    // event: end<UNIT>socketId
+                    events.add("end" + UNIT + socketId);
+                } catch (IOException exception) {
+                    // event: close<UNIT>socketId
                     events.add("close" + UNIT + socketId);
                     closeSocket(socketId);
                 }

@@ -41,7 +41,8 @@ public final class Driver {
     }
 
     private static final String[] FORWARDED_SYSTEM_PROPERTIES = {
-            "playwright4j.debug"
+            "playwright4j.debug",
+            "playwright4j.unhandledRejections"
     };
 
     public ProcessBuilder createProcessBuilder() {

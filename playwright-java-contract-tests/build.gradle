@@ -61,6 +61,9 @@ tasks.register('channelSmoke', Test) {
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
     systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
+    // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
+    systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
 }
 
@@ -79,6 +82,9 @@ tasks.register('firefoxSmoke', Test) {
 
     systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
+    // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
+    systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
 }
 
@@ -143,6 +149,8 @@ tasks.register('upstreamTest', Test) {
     // single-threaded affinity intact.
     systemProperty 'junit.jupiter.execution.timeout.default', findProperty('playwright4j.testTimeout') ?: '90 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // Reported on stderr by default; -Pplaywright4j.unhandledRejections=strict terminates the driver.
+    systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'warn'
 
     testLogging {
         events "passed", "failed", "skipped"
@@ -174,6 +182,9 @@ tasks.register('browserTypeConnectTest', Test) {
     systemProperty 'playwright4j.debug', findProperty('playwright4j.debug') ?: 'false'
     systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
+    // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
+    systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
     // "started" + standard streams show whether a hang is in the server start, connect() or a
     // single test case (the launch-server's stderr is inherited into the test output).
     testLogging {
@@ -221,6 +232,8 @@ tasks.register('upstreamTestKnownLimitations', Test) {
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
     systemProperty 'junit.jupiter.execution.timeout.default', findProperty('playwright4j.testTimeout') ?: '45 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // Reported on stderr by default; -Pplaywright4j.unhandledRejections=strict terminates the driver.
+    systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'warn'
 
     testLogging { events "failed"; showStandardStreams = false }
 }

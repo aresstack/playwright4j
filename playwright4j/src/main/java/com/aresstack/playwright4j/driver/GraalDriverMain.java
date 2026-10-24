@@ -70,7 +70,11 @@ public final class GraalDriverMain {
                 processLauncher,
                 new RecordingMissingHostFunctionReporter());
 
-        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource, nodeCompat)) {
+        // Node.js terminates on an unhandled rejection; here they are reported on stderr (default),
+        // or terminate the driver like Node with -Dplaywright4j.unhandledRejections=strict (CI).
+        UnhandledRejections unhandledRejections = new UnhandledRejections(
+                UnhandledRejections.Mode.fromSystemProperty(UnhandledRejections.Mode.WARN), System.err);
+        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource, unhandledRejections)) {
             runtime.loadNodeCompatibilityLayer();
             if (nodeCompat) {
                 runNodeCompat(runtime, driverBundleSource, args);
@@ -86,7 +90,8 @@ public final class GraalDriverMain {
         // The client closed our stdin: terminate promptly so the parent process is not kept
         // alive by lingering non-daemon threads (e.g. java.net.http selector threads).
         System.out.flush();
-        System.exit(0);
+        System.err.flush();
+        System.exit(unhandledRejections.terminationRequested() ? 1 : 0);
     }
 
     /**
@@ -98,8 +103,9 @@ public final class GraalDriverMain {
     private static void runNodeCompat(GraalPlaywrightRuntime runtime, PlaywrightDriverBundleSource driverBundleSource, String[] args) {
         runtime.evaluate("playwright4j-node-compat.js", "globalThis.__playwright4jNodeCompat = true;");
         // An unhandled rejection before the command produced any stdout (launch-server: before the
-        // ws:// endpoint) means the command failed: report it and exit 1, as Node.js would. Later
-        // rejections are only reported, so a running server is not torn down by a stray one.
+        // ws:// endpoint) means the command failed: exit 1, as Node.js would. Later rejections are
+        // only recorded and reported (see UnhandledRejections), so a running server is not torn
+        // down by a stray one - except in strict mode, which terminates like Node.js.
         runtime.evaluate("playwright4j-node-compat-rejections.js", ""
                 + "(function () {\n"
                 + "  let produced = false;\n"
@@ -110,9 +116,8 @@ public final class GraalDriverMain {
                 + "    console[name] = function () { produced = true; return original.apply(this, arguments); };\n"
                 + "  });\n"
                 + "  Graal.setUnhandledPromiseRejectionHandler(function (reason) {\n"
-                + "    const text = reason && reason.stack ? reason.stack : String(reason);\n"
-                + "    console.error('[playwright4j] unhandled promise rejection: ' + text);\n"
-                + "    if (!produced) {\n"
+                + "    __playwright4jUnhandledRejections.record(reason && reason.stack ? String(reason.stack) : String(reason));\n"
+                + "    if (!produced || __playwright4jUnhandledRejections.terminationRequested()) {\n"
                 + "      globalThis.__playwright4jExitCode = 1;\n"
                 + "      globalThis.__playwright4jExitRequested = true;\n"
                 + "    }\n"
@@ -127,7 +132,7 @@ public final class GraalDriverMain {
         runtime.evaluateCommonJsEntry(driverBundleSource.cliScriptResourceName(), driverBundleSource.readCliScript());
 
         while (true) {
-            if (nodeCompatExitRequested(runtime)) {
+            if (nodeCompatExitRequested(runtime) || runtime.unhandledRejections().terminationRequested()) {
                 break;
             }
             int fired = runtime.runDueTimers();
@@ -139,7 +144,8 @@ public final class GraalDriverMain {
 
         System.out.flush();
         System.err.flush();
-        System.exit(nodeCompatExitCode(runtime));
+        // Strict mode also terminates on an uncaught exception in a timer or socket listener.
+        System.exit(runtime.unhandledRejections().terminationRequested() ? 1 : nodeCompatExitCode(runtime));
     }
 
     /**
@@ -209,6 +215,10 @@ public final class GraalDriverMain {
         // incoming dispose/close can abort a still-pending asynchronous operation (e.g. an
         // in-flight fetch) promptly instead of waiting for it to settle.
         while (true) {
+            if (runtime.unhandledRejections().terminationRequested()) {
+                // Strict mode: terminate like Node.js; main() exits with code 1.
+                return;
+            }
             String message = inbox.poll();
             if (message != null) {
                 if (Playwright4JDebug.enabled()) {
