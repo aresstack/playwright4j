@@ -5,6 +5,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.PlaywrightException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +17,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -85,6 +87,8 @@ public class FirefoxBiDiSmokeTest {
                     assertEquals("Firefox BiDi smoke", page.textContent("h1"));
                     // The BiDi profile must not expose test-only interfaces to web pages.
                     assertEquals("undefined", page.evaluate("typeof TestUtils"));
+                    PlaywrightException gc = assertThrows(PlaywrightException.class, page::requestGC);
+                    assertTrue(gc.getMessage().contains("dom.testing.testutils.enabled"), gc.getMessage());
                     long start = System.currentTimeMillis();
                     context.close();
                     assertClosedPromptly("context.close()", start);

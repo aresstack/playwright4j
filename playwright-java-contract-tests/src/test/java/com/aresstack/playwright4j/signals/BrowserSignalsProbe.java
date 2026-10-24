@@ -24,6 +24,7 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -86,82 +87,21 @@ public final class BrowserSignalsProbe {
 
             long launchedAfter = System.currentTimeMillis() - 1000;
             Path userDataDir = config.persistent || config.plain ? Files.createTempDirectory("signals-probe-profile") : null;
-            if (config.plain) {
-                runPlainBrowser(config, userDataDir, url, launchedAfter, signals, details);
-            } else try (Playwright playwright = Playwright.create()) {
-                BrowserType type = "chromium".equals(config.browser) ? playwright.chromium() : playwright.firefox();
-                BrowserContext context;
-                Browser browser = null;
-                if (config.persistent) {
-                    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
-                            .setHeadless(config.headless);
-                    if (!config.firefoxPrefs.isEmpty()) {
-                        options.setFirefoxUserPrefs(config.firefoxPrefs);
-                    }
-                    if (config.noViewport) {
-                        options.setViewportSize(null);
-                    }
-                    if (!config.ignoreDefaultArgs.isEmpty()) {
-                        options.setIgnoreDefaultArgs(config.ignoreDefaultArgs);
-                    }
-                    if (!config.args.isEmpty()) {
-                        options.setArgs(config.args);
-                    }
-                    if (config.channel != null) {
-                        options.setChannel(config.channel);
-                    }
-                    if (config.executable != null) {
-                        options.setExecutablePath(Paths.get(config.executable));
-                    }
-                    context = type.launchPersistentContext(userDataDir, options);
+            try {
+                if (config.plain) {
+                    runPlainBrowser(config, userDataDir, url, launchedAfter, signals, details);
                 } else {
-                    BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(config.headless);
-                    if (!config.firefoxPrefs.isEmpty()) {
-                        options.setFirefoxUserPrefs(config.firefoxPrefs);
-                    }
-                    if (!config.ignoreDefaultArgs.isEmpty()) {
-                        options.setIgnoreDefaultArgs(config.ignoreDefaultArgs);
-                    }
-                    if (!config.args.isEmpty()) {
-                        options.setArgs(config.args);
-                    }
-                    if (config.channel != null) {
-                        options.setChannel(config.channel);
-                    }
-                    if (config.executable != null) {
-                        options.setExecutablePath(Paths.get(config.executable));
-                    }
-                    browser = type.launch(options);
-                    context = browser.newContext(config.noViewport
-                            ? new Browser.NewContextOptions().setViewportSize(null) : new Browser.NewContextOptions());
+                    runWithPlaywright(config, userDataDir, url, launchedAfter, signals, details);
                 }
-                try {
-                    signals.put("java.browserVersion", browser != null ? browser.version()
-                            : context.browser() != null ? context.browser().version() : "?");
-                    describeBrowserProcess(config.browser, launchedAfter, signals, details);
-
-                    Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
-                    if (config.exposeBinding != null) {
-                        page.exposeBinding(config.exposeBinding, (source, arguments) -> null);
+            } finally {
+                if (userDataDir != null) {
+                    Path userJs = userDataDir.resolve("user.js");
+                    if (Files.isRegularFile(userJs)) {
+                        details.append("\n## user.js written into the profile\n\n")
+                                .append(new String(Files.readAllBytes(userJs), StandardCharsets.UTF_8)).append('\n');
                     }
-                    page.navigate(url);
-                    putPageSignals(pageReport.get(30, TimeUnit.SECONDS), signals);
-                    // Let the subresource and favicon requests arrive before the report is cut.
-                    Thread.sleep(1000);
-                } finally {
-                    context.close();
-                    if (browser != null) {
-                        browser.close();
-                    }
+                    deleteQuietly(userDataDir);
                 }
-            }
-            if (userDataDir != null) {
-                Path userJs = userDataDir.resolve("user.js");
-                if (Files.isRegularFile(userJs)) {
-                    details.append("\n## user.js written into the profile\n\n")
-                            .append(new String(Files.readAllBytes(userJs), StandardCharsets.UTF_8)).append('\n');
-                }
-                deleteRecursively(userDataDir);
             }
         }
 
@@ -191,6 +131,77 @@ public final class BrowserSignalsProbe {
             Files.write(out, text.getBytes(StandardCharsets.UTF_8));
         }
         return text;
+    }
+
+    private void runWithPlaywright(Config config, Path userDataDir, String url, long launchedAfter,
+                                   Map<String, String> signals, StringBuilder details) throws Exception {
+        try (Playwright playwright = Playwright.create()) {
+            BrowserType type = "chromium".equals(config.browser) ? playwright.chromium() : playwright.firefox();
+            BrowserContext context;
+            Browser browser = null;
+            if (config.persistent) {
+                BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
+                        .setHeadless(config.headless);
+                if (!config.firefoxPrefs.isEmpty()) {
+                    options.setFirefoxUserPrefs(config.firefoxPrefs);
+                }
+                if (config.noViewport) {
+                    options.setViewportSize(null);
+                }
+                if (!config.ignoreDefaultArgs.isEmpty()) {
+                    options.setIgnoreDefaultArgs(config.ignoreDefaultArgs);
+                }
+                if (!config.args.isEmpty()) {
+                    options.setArgs(config.args);
+                }
+                if (config.channel != null) {
+                    options.setChannel(config.channel);
+                }
+                if (config.executable != null) {
+                    options.setExecutablePath(Paths.get(config.executable));
+                }
+                context = type.launchPersistentContext(userDataDir, options);
+            } else {
+                BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(config.headless);
+                if (!config.firefoxPrefs.isEmpty()) {
+                    options.setFirefoxUserPrefs(config.firefoxPrefs);
+                }
+                if (!config.ignoreDefaultArgs.isEmpty()) {
+                    options.setIgnoreDefaultArgs(config.ignoreDefaultArgs);
+                }
+                if (!config.args.isEmpty()) {
+                    options.setArgs(config.args);
+                }
+                if (config.channel != null) {
+                    options.setChannel(config.channel);
+                }
+                if (config.executable != null) {
+                    options.setExecutablePath(Paths.get(config.executable));
+                }
+                browser = type.launch(options);
+                context = browser.newContext(config.noViewport
+                        ? new Browser.NewContextOptions().setViewportSize(null) : new Browser.NewContextOptions());
+            }
+            try {
+                signals.put("java.browserVersion", browser != null ? browser.version()
+                        : context.browser() != null ? context.browser().version() : "?");
+                describeBrowserProcess(config.browser, launchedAfter, signals, details);
+
+                Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
+                if (config.exposeBinding != null) {
+                    page.exposeBinding(config.exposeBinding, (source, arguments) -> null);
+                }
+                page.navigate(url);
+                putPageSignals(pageReport.get(30, TimeUnit.SECONDS), signals);
+                // Let the subresource and favicon requests arrive before the report is cut.
+                Thread.sleep(1000);
+            } finally {
+                context.close();
+                if (browser != null) {
+                    browser.close();
+                }
+            }
+        }
     }
 
     // Baseline without any automation: the browser binary started directly with a fresh profile
@@ -240,20 +251,25 @@ public final class BrowserSignalsProbe {
     // variables Playwright meant to set (MOZ_CRASHREPORTER, ...).
     private static void describeBrowserProcess(String browser, long launchedAfter, Map<String, String> signals,
                                                StringBuilder details) {
+        // The earliest started match is the main (or launcher) process. On Windows the JDK reports no
+        // arguments for other processes, so a process without arguments is kept, not dropped.
         List<ProcessHandle> candidates = ProcessHandle.allProcesses()
                 .filter(p -> p.info().startInstant().map(i -> i.toEpochMilli() >= launchedAfter).orElse(false))
                 .filter(p -> p.info().command().map(c -> isBrowserBinary(browser, c)).orElse(false))
-                .filter(p -> p.info().arguments().map(a -> isMainProcess(browser, a)).orElse(false))
+                .filter(p -> p.info().arguments().map(a -> isMainProcess(browser, a)).orElse(true))
+                .sorted(Comparator.comparing(p -> p.info().startInstant().orElse(Instant.MAX)))
                 .collect(Collectors.toList());
         if (candidates.isEmpty()) {
             signals.put("process.found", "false");
             return;
         }
         ProcessHandle main = candidates.get(0);
-        String[] arguments = main.info().arguments().orElse(new String[0]);
         signals.put("process.found", "true");
         details.append("\n## Browser command line\n\n").append(main.info().command().orElse("?")).append('\n');
-        for (String argument : arguments) {
+        if (!main.info().arguments().isPresent()) {
+            details.append("  (arguments are not available on this OS)\n");
+        }
+        for (String argument : main.info().arguments().orElse(new String[0])) {
             details.append("  ").append(argument).append('\n');
         }
         Path environ = Paths.get("/proc", String.valueOf(main.pid()), "environ");
@@ -278,7 +294,8 @@ public final class BrowserSignalsProbe {
     private static boolean isBrowserBinary(String browser, String command) {
         String name = Paths.get(command).getFileName().toString().toLowerCase(Locale.ROOT);
         if ("chromium".equals(browser)) {
-            return name.startsWith("chrome") || name.startsWith("msedge") || name.startsWith("chromium");
+            return !name.contains("crashpad")
+                    && (name.startsWith("chrome") || name.startsWith("msedge") || name.startsWith("chromium"));
         }
         return name.equals("firefox") || name.equals("firefox.exe") || name.equals("firefox-bin");
     }
@@ -380,9 +397,13 @@ public final class BrowserSignalsProbe {
         out.flush();
     }
 
-    private static void deleteRecursively(Path dir) throws IOException {
+    // Best effort: a browser that is still shutting down may hold or remove profile files, which
+    // must not cost the finished report.
+    private static void deleteQuietly(Path dir) {
         try (java.util.stream.Stream<Path> paths = Files.walk(dir)) {
-            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            paths.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        } catch (IOException | java.io.UncheckedIOException ignored) {
+            // Left in the temp directory.
         }
     }
 
@@ -507,9 +528,9 @@ public final class BrowserSignalsProbe {
             + "  safe('history.length', () => String(history.length));\n"
             + "  safe('window.opener', () => String(window.opener !== null));\n"
             + "  safe('error.stackSample', () => (new Error('x').stack || '').split('\\n').slice(0, 2).join(' / '));\n"
-            // Globals the page did not define and a fresh same-origin iframe does not have: what an
-            // automation layer injected into the main world.
-            + "  safe('window.extraGlobals', () => { const f = document.createElement('iframe');"
+            // Globals in the main frame that a fresh same-origin iframe does not have. Playwright installs
+            // bindings and init scripts into every frame, so those show up under suspiciousNames instead.
+            + "  safe('window.mainFrameOnlyGlobals', () => { const f = document.createElement('iframe');"
             + " document.body.appendChild(f); const base = new Set(Object.getOwnPropertyNames(f.contentWindow));"
             + " const extra = Object.getOwnPropertyNames(window).filter(k => !base.has(k) && !/^\\d+$/.test(k));"
             + " f.remove(); return extra.join(', ') || '(none)'; });\n"

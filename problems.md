@@ -32,6 +32,15 @@ The test expects `prefers-color-scheme: light` as the default; on a Windows host
 Chrome inherits `dark` without an override. Environmental, not a driver defect. Do not force Chrome
 globally to light (that would diverge from official behaviour).
 
+## DELIBERATE_DIVERGENCE — Firefox `TestUtils` / `page.requestGC()`
+
+Playwright's BiDi Firefox profile enables `dom.testing.testutils.enabled`, which exposes a
+`TestUtils` global to every web page; Playwright needs it only for `page.requestGC()`. playwright4j
+turns the pref off by default, so web pages do not see that global (see
+[`docs/browser-signals.md`](docs/browser-signals.md)). As a consequence `page.requestGC()` on
+Firefox fails with a message naming the pref. Callers that need it pass
+`firefoxUserPrefs {"dom.testing.testutils.enabled": true}`. The official driver keeps the pref on.
+
 ## UNSUPPORTED_ENGINE_FAST_FAIL — Firefox / WebKit
 
 Playwright4J is **Chromium-only** (channels `chrome` / `msedge`). Fixtures that request WebKit or

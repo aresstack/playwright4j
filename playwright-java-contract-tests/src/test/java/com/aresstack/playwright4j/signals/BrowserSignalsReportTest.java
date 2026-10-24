@@ -13,16 +13,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * playwright4j (see {@link BrowserSignalsProbe}) and writes them to {@code PROBE_OUT}, so they can
  * be diffed against a reference run with the official Playwright driver. Runs only when a browser
  * is configured: FIREFOX_EXECUTABLE (or PROBE_EXECUTABLE) for Firefox, PROBE_BROWSER=chromium with
- * PROBE_CHANNEL or PROBE_EXECUTABLE for Chrome/Edge.
+ * PROBE_CHANNEL or PROBE_EXECUTABLE for Chrome/Edge (PROBE_PLAIN=true always needs PROBE_EXECUTABLE).
  */
 public class BrowserSignalsReportTest {
 
     @Test
     void reportBrowserSignals() throws Exception {
         BrowserSignalsProbe.Config config = BrowserSignalsProbe.Config.fromEnvironment();
-        boolean configured = "chromium".equals(config.browser)
-                ? config.channel != null || config.executable != null
-                : config.executable != null && Files.isRegularFile(Paths.get(config.executable));
+        boolean executable = config.executable != null && Files.isRegularFile(Paths.get(config.executable));
+        boolean configured = config.plain || !"chromium".equals(config.browser)
+                ? executable
+                : config.channel != null || executable;
         Assumptions.assumeTrue(configured, "Set FIREFOX_EXECUTABLE (or PROBE_BROWSER=chromium with "
                 + "PROBE_CHANNEL/PROBE_EXECUTABLE) to collect browser signals.");
 

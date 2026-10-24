@@ -5333,6 +5333,28 @@
     };
   }
 
+  // BidiPage.requestGC evaluates TestUtils.gc() and reports any failure as "Method not implemented.".
+  // With dom.testing.testutils.enabled off by default (see patchBidiFirefoxProfilePrefs) say how to
+  // turn it back on instead.
+  function patchBidiPageRequestGC(BidiPage) {
+    const originalRequestGC = BidiPage.prototype.requestGC;
+    if (typeof originalRequestGC !== 'function') {
+      return;
+    }
+    BidiPage.prototype.requestGC = async function () {
+      try {
+        return await originalRequestGC.apply(this, arguments);
+      } catch (error) {
+        if (error && error.message === 'Method not implemented.') {
+          throw new Error('page.requestGC() on Firefox needs firefoxUserPrefs '
+            + '{"dom.testing.testutils.enabled": true}. playwright4j turns this pref off by default '
+            + 'because it exposes a TestUtils global to every web page.');
+        }
+        throw error;
+      }
+    };
+  }
+
   function installKnownModuleFallbacks(resourceName, exportsObject) {
     if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
@@ -5368,6 +5390,7 @@
 
     if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {
       patchBidiPageInitialBlankLoad(exportsObject.BidiPage);
+      patchBidiPageRequestGC(exportsObject.BidiPage);
     }
 
     if (resourceName.endsWith('/lib/utilsBundle.js') && exportsObject.program === undefined) {
