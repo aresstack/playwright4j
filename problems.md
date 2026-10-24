@@ -41,6 +41,16 @@ turns the pref off by default, so web pages do not see that global (see
 Firefox fails with a message naming the pref. Callers that need it pass
 `firefoxUserPrefs {"dom.testing.testutils.enabled": true}`. The official driver keeps the pref on.
 
+## DELIBERATE_DIVERGENCE — Firefox user activation on page load
+
+On every new document Playwright's BiDi layer evaluates `1 + 1` in its utility world only to create
+that world, and sends it with `userActivation: true`. Firefox then reports the page as activated by
+the user (`navigator.userActivation.hasBeenActive`) although no input event happened; a normal
+Firefox, a minimal BiDi client and Chrome over CDP do not. playwright4j sends this one call with
+`userActivation: false` (see [`docs/browser-signals.md`](docs/browser-signals.md)). Evaluations and
+actions the caller asks for keep `userActivation: true`, so `page.evaluate` and clicks still
+activate the page. The official driver activates every page on load.
+
 ## UNSUPPORTED_ENGINE_FAST_FAIL — Firefox / WebKit
 
 Playwright4J is **Chromium-only** (channels `chrome` / `msedge`). Fixtures that request WebKit or
