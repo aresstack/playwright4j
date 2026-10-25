@@ -6436,7 +6436,9 @@
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
   // The same holds for every other utility-world evaluation: Playwright reads the page there
   // (page.content(), textContent(), count(), screenshots), and a read must not
-  // activate the page (#37). Only the caller's main-world evaluations keep upstream behaviour.
+  // activate the page (#37). Only the caller's main-world evaluations keep upstream behaviour;
+  // with playwright4j.bidi.nativeBehavior they run without activation too, as a page's own script
+  // does, so main-world reads (allTextContents(), boundingBox()) do not activate the page either.
   // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
   // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend (the recorder).
   const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
@@ -6468,7 +6470,8 @@
           utilityWorldTouchSessions.add(session);
           const originalSend = session.send;
           session.send = function (method, params) {
-            if (params && params.userActivation === true && isEvaluationWithoutActivation(method, params, utilityWorldName)) {
+            if (params && params.userActivation === true
+                && (nativeBehavior() || isEvaluationWithoutActivation(method, params, utilityWorldName))) {
               arguments[1] = Object.assign({}, params, { userActivation: false });
             }
             return originalSend.apply(this, arguments);
@@ -6694,6 +6697,14 @@
       + '        }\n'
       + '        const utility = await this._context.injectedScript();\n'
       + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));', 1);
+    // Dropping files on an element (setInputFiles on a non-input) builds the DataTransfer and
+    // dispatches the drag events in the utility world; the page sees the same events (#50).
+    source = replaceCoreBundleAnchor(source,
+      'return this._retryPointerAction(progress2, "drop", false, async (progress3, point) => {\n'
+      + '          const mainContext = await progress3.race(this._frame.mainContext());',
+      'return this._retryPointerAction(progress2, "drop", false, async (progress3, point) => {\n'
+      + '          const mainContext = await progress3.race(' + hooks + '.isBidiPage(this._page.delegate)'
+      + ' ? this._frame.utilityContext() : this._frame.mainContext());', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
