@@ -14,7 +14,7 @@ dependencies {
     // The documented consumer setup (README "Using Playwright4J"): the Playwright Java API without
     // Microsoft's Node-based driver. 'driver' would shadow playwright4j's Driver class and
     // 'driver-bundle' ships node/node.exe for every platform.
-    implementation('com.microsoft.playwright:playwright:1.59.0') {
+    implementation('com.microsoft.playwright:playwright:1.62.0') {
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
     }
@@ -26,7 +26,7 @@ configurations {
 }
 dependencies {
     withoutExcludes "com.aresstack:playwright4j:${playwright4jVersion}"
-    withoutExcludes 'com.microsoft.playwright:playwright:1.59.0'
+    withoutExcludes 'com.microsoft.playwright:playwright:1.62.0'
 }
 
 // Walks the resolved dependency graph (metadata only, no artifact download).

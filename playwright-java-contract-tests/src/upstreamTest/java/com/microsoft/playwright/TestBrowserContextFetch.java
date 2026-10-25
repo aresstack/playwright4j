@@ -28,6 +28,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.text.ParseException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -53,6 +54,22 @@ public class TestBrowserContextFetch extends TestBase {
     assertTrue(contentType.isPresent());
     assertEquals("application/json", contentType.get().value);
     assertEquals("{\"foo\": \"bar\"}\n", response.text());
+  }
+
+  @Test
+  void getShouldReturnTiming() {
+    APIResponse response = context.request().get(server.PREFIX + "/simple.json");
+    assertTrue(response.ok());
+    Timing timing = response.timing();
+    assertTrue(timing.startTime > 0, "startTime = " + timing.startTime);
+    assertTrue(timing.domainLookupEnd >= timing.domainLookupStart);
+    assertTrue(timing.connectStart >= timing.domainLookupEnd);
+    assertEquals(-1, timing.secureConnectionStart);
+    assertTrue(timing.connectEnd >= timing.connectStart);
+    assertTrue(timing.requestStart >= timing.connectEnd);
+    assertTrue(timing.responseStart >= timing.requestStart);
+    assertTrue(timing.responseEnd >= timing.responseStart);
+    assertTrue(timing.responseEnd < 60_000, "responseEnd = " + timing.responseEnd);
   }
 
   @Test
@@ -533,6 +550,23 @@ public class TestBrowserContextFetch extends TestBase {
     assertEquals("{\"date\":\"2024-07-10T18:15:30.000Z\"}", new String(body));
   }
 
+  public static class LocalDateData {
+    public String name;
+    public LocalDate date;
+  }
+
+  @Test
+  void shouldSupportLocalDateInData() throws ExecutionException, InterruptedException {
+    APIRequestContext request = playwright.request().newContext();
+    LocalDateData testData = new LocalDateData();
+    testData.name = "foo";
+    testData.date = LocalDate.of(2022, 12, 23);
+    Future<Server.Request> serverRequest = server.futureRequest("/empty.html");
+    request.post(server.EMPTY_PAGE, RequestOptions.create().setData(testData));
+    byte[] body = serverRequest.get().postBody;
+    assertEquals("{\"name\":\"foo\",\"date\":\"2022-12-23\"}", new String(body));
+  }
+
   @Test
   void shouldSupportApplicationXWwwFormUrlencoded() throws ExecutionException, InterruptedException {
     Future<Server.Request> req = server.futureRequest("/empty.html");
@@ -741,10 +775,12 @@ public class TestBrowserContextFetch extends TestBase {
     });
     page.evaluate("() => setTimeout(closeContext, 1000);");
     PlaywrightException e = assertThrows(PlaywrightException.class, () -> context.request().get(server.EMPTY_PAGE));
-    assertTrue(e.getMessage().contains("Target page, context or browser has been closed"), e.getMessage());
+    assertTrue(e.getMessage().contains("Request context disposed") ||
+      e.getMessage().contains("Target page, context or browser has been closed"), e.getMessage());
 
     e = assertThrows(PlaywrightException.class, () ->  context.request().post(server.EMPTY_PAGE));
-    assertTrue(e.getMessage().contains("Target page, context or browser has been closed"), e.getMessage());
+    assertTrue(e.getMessage().contains("Request context disposed") ||
+      e.getMessage().contains("Target page, context or browser has been closed"), e.getMessage());
   }
 
   @Test

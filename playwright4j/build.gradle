@@ -21,7 +21,7 @@ tasks.named('javadoc') {
 
 
 configurations {
-    playwrightDriverBundle {
+    playwrightDriverArchive {
         canBeConsumed = false
         transitive = false
     }
@@ -30,16 +30,16 @@ configurations {
 dependencies {
     api 'org.graalvm.polyglot:polyglot:25.0.0'
     api 'org.graalvm.polyglot:js:25.0.0'
-    // Build-time only: the Playwright Core JS package is copied out of this artifact (see
-    // repackageDriverPackage). Not a published dependency, because it also ships Node.js binaries.
-    playwrightDriverBundle 'com.microsoft.playwright:driver-bundle:1.59.0'
+    // Build-time only: extract Playwright Core JS from the upstream driver artifact.
+    // Never publish Microsoft's driver class or any Node.js executable.
+    playwrightDriverArchive 'com.microsoft.playwright:driver:1.62.0'
 
     // Java-backed video encoding (default backend for the intercepted ffmpeg spawn).
     implementation 'org.jcodec:jcodec:0.2.5'
     implementation 'org.jcodec:jcodec-javase:0.2.5'
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
-    testImplementation 'com.microsoft.playwright:playwright:1.59.0'
+    testImplementation 'com.microsoft.playwright:playwright:1.62.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.13.1'
 }
@@ -48,15 +48,14 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
-// Copy only the platform-independent Playwright Core package (driver/<platform>/package/** is
-// identical for every platform) into this jar as driver/package/**. The bundled Node.js
-// executables (driver/*/node, node.exe) are deliberately left out: nothing may run or ship them.
+// Since Playwright 1.62, the platform-independent Core lives directly under
+// driver/package/** in the driver artifact (not driver-bundle).
+// Bundle those JS resources only; exclude Microsoft's Driver.class and native binaries.
 def driverPackageOutputDir = layout.buildDirectory.dir('generated/driver-package')
 def repackageDriverPackage = tasks.register('repackageDriverPackage', Sync) {
     description = 'Extracts the Playwright Core JS package from driver-bundle, without Node.js binaries.'
-    from({ zipTree(configurations.playwrightDriverBundle.singleFile) }) {
-        include 'driver/win32_x64/package/**'
-        eachFile { it.path = it.path.replaceFirst('^driver/win32_x64/package/', 'driver/package/') }
+    from({ zipTree(configurations.playwrightDriverArchive.singleFile) }) {
+        include 'driver/package/**'
         includeEmptyDirs = false
     }
     into driverPackageOutputDir
@@ -100,6 +99,7 @@ tasks.named('sourcesJar') {
 
 test {
     useJUnitPlatform()
+    testLogging { events "failed"; exceptionFormat "full" }
     systemProperty 'playwright4j.chromeSpike', findProperty('playwright4j.chromeSpike') ?: 'false'
     systemProperty 'playwright4j.graalChromeSpike', findProperty('playwright4j.graalChromeSpike') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''

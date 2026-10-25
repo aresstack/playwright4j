@@ -51,7 +51,7 @@ final class NodeCompatZipStreamTest {
         runtime.evaluate("zip-test.js", ""
                 + "(function () {\n"
                 + "  const fs = require('fs');\n"
-                + "  const { yazl, yauzl } = require('playwright-core/lib/zipBundle');\n"
+                + "  const { yazl, yauzl } = require('playwright-core/lib/utilsBundle');\n"
                 + "  const test = globalThis.__zipTest = { state: 'writing', entries: {} };\n"
                 + "  const fail = function (error) { test.state = 'error: ' + (error && error.stack || error); };\n"
                 + "  // Like Tracing._exportZip: files compressed, outputStream piped after end().\n"

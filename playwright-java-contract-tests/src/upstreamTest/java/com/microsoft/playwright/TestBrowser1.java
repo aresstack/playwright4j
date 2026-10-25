@@ -20,6 +20,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.microsoft.playwright.junit.FixtureTest;
 import com.microsoft.playwright.junit.UsePlaywright;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 
@@ -30,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @FixtureTest
 @UsePlaywright(TestOptionsFactories.BasicOptionsFactory.class)
+@Tag("smoke")
 public class TestBrowser1 {
 
   @Test
@@ -111,6 +113,15 @@ public class TestBrowser1 {
       browser.close(new Browser.CloseOptions().setReason("The reason."));
     }));
     assertTrue(e.getMessage().contains("The reason."), e.getMessage());
+  }
+
+  @Test
+  void shouldFireContextEvent(Browser browser) {
+    BrowserContext[] contextEvent = { null };
+    browser.onContext(c -> contextEvent[0] = c);
+    BrowserContext context = browser.newContext();
+    assertEquals(context, contextEvent[0]);
+    context.close();
   }
 
 }

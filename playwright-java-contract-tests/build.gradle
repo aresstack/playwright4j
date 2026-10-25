@@ -4,7 +4,7 @@ plugins {
 
 description = 'Non-published contract tests for the official Playwright Java API against the playwright4j driver replacement.'
 
-ext.upstreamPlaywrightVersion = findProperty('upstreamPlaywrightVersion') ?: '1.59.0'
+ext.upstreamPlaywrightVersion = findProperty('upstreamPlaywrightVersion') ?: '1.62.0'
 ext.microsoftPlaywrightJavaRepository = 'https://github.com/microsoft/playwright-java'
 ext.upstreamPlaywrightJavaRepository = microsoftPlaywrightJavaRepository
 ext.upstreamPlaywrightTestsZipUrl = findProperty('playwrightJavaTestsZipUrl') ?: "${upstreamPlaywrightJavaRepository}/archive/refs/tags/v${upstreamPlaywrightVersion}.zip"
@@ -380,6 +380,9 @@ tasks.register('syncUpstreamPlaywrightJavaTests') {
         copy {
             from sourceJava
             into targetJava
+            // Since 1.62 upstream keeps the tests of its Node.js driver installer (DriverJar,
+            // PLAYWRIGHT_NODEJS_PATH) here; playwright4j replaces that driver by design.
+            exclude 'com/microsoft/playwright/impl/driver/**'
         }
 
         delete targetResources

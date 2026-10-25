@@ -84,7 +84,7 @@ final class NodeCompatFirefoxUserJsTest {
     @Test
     void aUserJsPlaywrightWroteIsNotTakenOver() throws Exception {
         // As playwright4j up to 0.2.1 left it: Playwright's preferences and that launch's firefoxUserPrefs.
-        run("require('playwright-core/lib/server/bidi/third_party/firefoxPrefs').createProfile("
+        run("(require('playwright-core/lib/coreBundle'), globalThis.__playwright4jCoreBundle.internals).createProfile("
                 + "{ path: " + js(profile) + ", preferences: { 'permissions.default.image': 2 } })");
         assertTrue(userJs().contains(IMAGES_OFF));
 
@@ -96,7 +96,7 @@ final class NodeCompatFirefoxUserJsTest {
 
     @Test
     void aUserJsPlaywrightWroteThatTheProfileCommentedOutIsTakenOver() throws Exception {
-        run("require('playwright-core/lib/server/bidi/third_party/firefoxPrefs').createProfile("
+        run("(require('playwright-core/lib/coreBundle'), globalThis.__playwright4jCoreBundle.internals).createProfile("
                 + "{ path: " + js(profile) + ", preferences: {} })");
         List<String> own = new java.util.ArrayList<>(userJs());
         own.add(0, "/* Playwright's preferences, switched off:");
@@ -157,7 +157,7 @@ final class NodeCompatFirefoxUserJsTest {
 
     private void launch(String firefoxUserPrefs) {
         // Loaded through the server index like the driver does; on its own the module hits an import cycle.
-        run("(require('playwright-core/lib/server'), require('playwright-core/lib/server/bidi/bidiFirefox')).BidiFirefox"
+        run("(require('playwright-core/lib/coreBundle'), globalThis.__playwright4jCoreBundle.internals).BidiFirefox"
                 + ".prototype.prepareUserDataDir.call(null, { firefoxUserPrefs: " + firefoxUserPrefs + " }, " + js(profile) + ")");
     }
 
