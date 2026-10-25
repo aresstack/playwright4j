@@ -8,6 +8,7 @@ import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Response;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -41,7 +42,14 @@ public class FirefoxBiDiSmokeTest {
     // exercises the Windows launcher-process handoff (see -wait-for-browser in the runtime).
     @Test
     void launchPersistentContextWithInstalledFirefox() throws Throwable {
-        runGuarded(FirefoxBiDiSmokeTest::runPersistentSmoke);
+        runGuarded(configured -> runPersistentSmoke(configured, 2));
+    }
+
+    // Every start after the first finds the session store of the one before it (#66).
+    @Test
+    @Timeout(240)
+    void persistentProfileStartsRepeatedly() throws Throwable {
+        runGuarded(configured -> runPersistentSmoke(configured, 6));
     }
 
     private static void runSmoke(String configured) {
@@ -52,7 +60,7 @@ public class FirefoxBiDiSmokeTest {
                     .setHeadless(true);
             Browser browser = playwright.firefox().launch(options);
             try {
-                for (int round = 0; round < 2; round++) {
+                for (int round = 0; round < rounds; round++) {
                     BrowserContext context = browser.newContext();
                     Page page = context.newPage();
                     page.setContent("<html><body><h1>Firefox BiDi smoke</h1></body></html>");
@@ -74,7 +82,7 @@ public class FirefoxBiDiSmokeTest {
         }
     }
 
-    private static void runPersistentSmoke(String configured) throws Exception {
+    private static void runPersistentSmoke(String configured, int rounds) throws Exception {
         Path userDataDir = Files.createTempDirectory("playwright4j-firefox-profile");
         try (Playwright playwright = Playwright.create()) {
             for (int round = 0; round < 2; round++) {
