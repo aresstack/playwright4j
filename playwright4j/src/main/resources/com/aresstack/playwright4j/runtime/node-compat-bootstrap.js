@@ -1299,15 +1299,15 @@
       });
       if (!isChromium) {
         // WebKit (--inspector-pipe) and Firefox (-juggler-pipe) drive their protocol over fd 3/4
-        // pipes that this Chromium-only runtime does not wire up. Spawning such a browser succeeds
+        // pipes that this runtime does not wire up (Firefox runs over WebDriver BiDi instead). Spawning such a browser succeeds
         // but its transport handshake never completes, so Playwright's launch blocks on its
         // 180s timeout (a full-sweep hang). Reject fast with a clear error instead — the launch
         // promise then rejects promptly and no doomed process is left running.
         const unsupportedEngine = detectUnsupportedBrowserEngine(command, argList);
         if (unsupportedEngine) {
           throw new Error('Unsupported browser engine: ' + unsupportedEngine
-            + '. playwright4j runs a Chromium-only runtime; only the chromium browser'
-            + ' (chrome / msedge channels) is available.');
+            + '. playwright4j supports chromium (channels chrome / msedge) and firefox'
+            + ' over WebDriver BiDi (channel moz-firefox).');
         }
         const generalId = String(host.processLauncher().spawnProcessWithEnvironment(String(command), joinedArguments, workingDirectory, environment));
         return createGeneralProcess(generalId);
