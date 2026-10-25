@@ -1,9 +1,11 @@
 # Reading pages without script: FirefoxBidi
 
 Playwright reads page content through scripts it runs in the page: `page.content()`, locators and
-`evaluate`. A page can notice some of that; `page.content()`, for example, marks the page as
-user-activated (`navigator.userActivation`). On Firefox, `com.aresstack.playwright4j.bidi.FirefoxBidi`
-reads the same information over WebDriver BiDi instead, without running script in the page:
+`evaluate`. On Firefox, playwright4j runs Playwright's own reads in an isolated world without user
+activation (see [browser-signals.md](browser-signals.md)), but they still execute script in the
+page's process. `com.aresstack.playwright4j.bidi.FirefoxBidi` reads over WebDriver BiDi instead,
+without running any script in the page, and also reaches what the Playwright API does not offer:
+response bodies by network event, including redirects, and cookies by browsing context.
 
 | Method | BiDi command | Returns |
 | --- | --- | --- |
@@ -75,7 +77,8 @@ Firefox 158.0.1 and Camoufox 156.0.1-beta.36 (with the BiDi fixes, see [camoufox
 give the same results:
 
 - `FirefoxBidi` reads (whole document, 64 levels, about 45 ms for the test page) change nothing the
-  page can observe; the text rendered by the page's scripts is included.
+  page can observe; the text rendered by the page's scripts is included. `page.content()` and
+  locator reads leave no observable trace either.
 - Reading response bodies changes no request: no cache-bypass headers, the cached script is not
   requested again, the style sheet is revalidated with `If-None-Match`.
 - `FirefoxBidiTest` (part of `firefoxSmoke`) checks the DOM, response body, cookie and 304 reads and
