@@ -173,6 +173,8 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   breaks and tabs as Enter and Tab. `fill()` only sets the content and never submits: it refuses
   text with a line break for a single-line `<input>` before typing anything, types a line break
   as Enter into a `<textarea>` and as Shift+Enter into a rich-text (contenteditable) element.
+  `keyboard.down/up/press` accept any single grapheme (`ä`, `ß`, `é`, `👍🏽`), which
+  Playwright rejects as "Unknown key", and send it as a real key action.
   `FirefoxKeyboardInputTest` (task `firefoxSmoke`) checks all of it. This differs from the
   official driver (issue #36).
 

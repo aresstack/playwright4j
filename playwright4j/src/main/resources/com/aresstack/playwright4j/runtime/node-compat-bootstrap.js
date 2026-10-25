@@ -6321,6 +6321,40 @@
     RawKeyboard.prototype.sendText = function (progress, text) {
       return this.pw4jSendText(progress, text, 'enter');
     };
+    // keyboard.down/up/press with a grapheme of several code points (é as e + U+0301, 👍🏽):
+    // Playwright's key mapping accepts only one code point; BiDi takes the grapheme as it is.
+    const originalKeydown = RawKeyboard.prototype.keydown;
+    const originalKeyup = RawKeyboard.prototype.keyup;
+    RawKeyboard.prototype.keydown = function (progress, modifiers, keyName, description, autoRepeat) {
+      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1) {
+        return this._performActions(progress, [{ type: 'keyDown', value: keyName }]);
+      }
+      return originalKeydown.apply(this, arguments);
+    };
+    RawKeyboard.prototype.keyup = function (progress, modifiers, keyName, description) {
+      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1) {
+        return this._performActions(progress, [{ type: 'keyUp', value: keyName }]);
+      }
+      return originalKeyup.apply(this, arguments);
+    };
+  }
+
+  // One printable grapheme that WebDriver BiDi can send as the value of a key action.
+  function isTypableGrapheme(text) {
+    return typeof text === 'string' && text.length > 0 && splitGraphemes(text).length === 1
+      && !/[-]/.test(text) && !/^[\u0000-\u001F\u007F]$/.test(text);
+  }
+
+  // keyboard.down/up/press("ä"): Playwright knows only keys of the US layout and fails with
+  // "Unknown key" before the raw keyboard is reached. On BiDi Firefox any other single grapheme
+  // is a key of its own, sent as a real keyDown/keyUp (the browser generates the text, as for a
+  // person with a German layout). The code is only Playwright's bookkeeping of pressed keys; BiDi
+  // does not send it.
+  function graphemeKeyDescription(raw, keyString) {
+    if (!raw || typeof raw.pw4jSendText !== 'function' || !isTypableGrapheme(keyString)) {
+      return undefined;
+    }
+    return { key: keyString, keyCode: 0, keyCodeWithoutLocation: 0, code: 'pw4j:' + keyString, text: keyString, location: 0 };
   }
 
   // fill() after Playwright's own preparation (focus, select all) found an element that needs the
@@ -6465,7 +6499,8 @@
       rejectsFillLineBreaks: function (keyboard) {
         return !!(keyboard && keyboard._raw && typeof keyboard._raw.pw4jSendText === 'function');
       },
-      fillTypedText: fillTypedText
+      fillTypedText: fillTypedText,
+      graphemeKeyDescription: graphemeKeyDescription
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
     // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
@@ -6482,6 +6517,10 @@
     // window.__pw_bidiInsertText in the pages' main world any more.
     source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
     source = replaceCoreBundleAnchor(source, '        promises2.push(this.extendInjectedScript(source7));\n', '', 1);
+    // Keyboard.down/up/press: single graphemes outside the US layout (see graphemeKeyDescription).
+    source = replaceCoreBundleAnchor(source, '        let description = usKeyboardLayout.get(keyString);\n        if (!description)\n',
+      '        let description = usKeyboardLayout.get(keyString) || ' + hooks + '.graphemeKeyDescription(this._raw, keyString);\n'
+      + '        if (!description)\n', 1);
     // ElementHandle._fill: with real key events a line break is a key press, so on BiDi Firefox
     // fill() refuses it for a single-line <input> before any input (it could submit the form),
     // and tells a rich-text element apart from a <textarea> (see fillTypedText). The check runs

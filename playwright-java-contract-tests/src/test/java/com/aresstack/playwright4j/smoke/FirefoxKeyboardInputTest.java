@@ -39,6 +39,29 @@ public class FirefoxKeyboardInputTest {
         runGuarded(FirefoxKeyboardInputTest::run);
     }
 
+    // keyboard.down/up/press with keys outside the US layout (as human-like input uses them): real
+    // trusted key events, no "Unknown key", nothing installed in the page.
+    @Test
+    void downUpAndPressAcceptKeysOutsideTheUsLayout() throws Throwable {
+        runGuarded(executable -> withPage(executable, page -> {
+            page.setContent("<html><body>" + RECORDER + "<input id=i></body></html>");
+            page.locator("#i").click();
+
+            page.keyboard().down("ä");
+            page.keyboard().up("ä");
+            page.keyboard().press("ß");
+            page.keyboard().press("Ö");
+            page.keyboard().down("e\u0301");
+            page.keyboard().up("e\u0301");
+            page.keyboard().press("👍🏽");
+            page.keyboard().press("Shift+ü");
+
+            assertEquals("äßÖe\u0301👍🏽ü", page.inputValue("#i"));
+            assertOnlyTrustedKeyInput(page, "ä", "ß", "Ö", "e\u0301", "👍🏽", "ü");
+            assertEquals("undefined", page.evaluate("typeof window.__pw_bidiInsertText"));
+        }));
+    }
+
     // fill() sets the content and never submits: a line break is refused for a single-line input
     // before anything is typed, is Enter in a textarea and Shift+Enter in a rich-text editor. An
     // explicit Enter still submits.
