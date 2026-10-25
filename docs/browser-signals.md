@@ -152,7 +152,7 @@ BiDi (Firefox, Camoufox). It is off by default and separate from `nativeBehavior
 - The answer stays Playwright's: dismiss, accept for `beforeunload`, cancel for auth. Only when it
   is sent changes.
 - A dialog handler the caller registered, and `httpCredentials` that match, still answer at once:
-  the caller decides how and when.
+  the caller decides how and when. So does the cancel after configured credentials were rejected.
 - The delay adds to the action that opened the dialog or the request (an `evaluate`, a click, a
   navigation). The upper bound keeps it well below Playwright's default 30 s timeout; a caller
   with short timeouts must allow for it.

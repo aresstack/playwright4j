@@ -6464,12 +6464,15 @@
           return;
         }
         setTimeout(function () {
-          if (!dialog._handled)
+          // isClosed, not isClosedOrClosing: page.close({ runBeforeUnload }) waits for this answer.
+          if (!dialog._handled && !dialog.page().isClosed())
             dialog._close().catch(function () {});
         }, delay);
       },
       onBidiAuthRequired: function (networkManager, params) {
-        const delay = host.unhandledPromptDelayMillis();
+        // A second challenge after Playwright sent the configured credentials means they were
+        // wrong; that cancel is the caller's configuration at work and stays immediate.
+        const delay = networkManager._attemptedAuthentications.has(params.request.request) ? -1 : host.unhandledPromptDelayMillis();
         if (delay < 0) {
           networkManager._answerAuthRequired(params);
           return;

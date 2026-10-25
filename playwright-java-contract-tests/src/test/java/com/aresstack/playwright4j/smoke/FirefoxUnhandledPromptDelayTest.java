@@ -48,6 +48,10 @@ public class FirefoxUnhandledPromptDelayTest {
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext("/protected", exchange -> {
             String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+            // Basic user:secret
+            if (authorization != null && !authorization.equals("Basic dXNlcjpzZWNyZXQ=")) {
+                authorization = null;
+            }
             byte[] body = (authorization == null ? "login required" : "welcome").getBytes(StandardCharsets.UTF_8);
             if (authorization == null) {
                 exchange.getResponseHeaders().set("WWW-Authenticate", "Basic realm=\"test\"");
@@ -100,6 +104,26 @@ public class FirefoxUnhandledPromptDelayTest {
                 Response authorized = withCredentials.newPage().navigate(url);
                 assertEquals(200, authorized.status());
                 withCredentials.close();
+
+                // Wrong credentials: Playwright tries them once and cancels the next challenge at once.
+                BrowserContext wrongCredentials = browser.newContext(new Browser.NewContextOptions()
+                        .setHttpCredentials("user", "wrong"));
+                started = System.nanoTime();
+                Response rejected = wrongCredentials.newPage().navigate(url);
+                long rejectedMillis = (System.nanoTime() - started) / 1_000_000;
+                assertEquals(401, rejected.status());
+                assertTrue(rejectedMillis < 600, "wrong credentials were cancelled after " + rejectedMillis + " ms");
+                wrongCredentials.close();
+
+                // A dialog whose page closes during the delay is left alone, and closing does not wait for it.
+                Page closing = browser.newPage();
+                closing.navigate("data:text/html,<p>closing</p>");
+                closing.evaluate("() => { setTimeout(() => alert('late'), 0); }");
+                closing.waitForTimeout(200);
+                started = System.nanoTime();
+                closing.close();
+                long closeMillis = (System.nanoTime() - started) / 1_000_000;
+                assertTrue(closeMillis < 5_000, "page.close() took " + closeMillis + " ms");
             } finally {
                 browser.close();
             }
