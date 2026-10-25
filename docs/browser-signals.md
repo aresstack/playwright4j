@@ -210,7 +210,7 @@ What it changes, each part independent of the others:
 
 | Area | Playwright | With `nativeBehavior` | Caller's override |
 | --- | --- | --- | --- |
-| Preferences (#44, #45, #46) | Writes test values to `user.js`: `dom.disable_open_during_load=false` (popup blocker off), `dom.min_background_timeout_value*=0`, `dom.timeout.enable_budget_timer_throttling=false`, `layout.testing.top-level-always-active=true` (background timers and rendering not throttled), `focusmanager.testmode=true`, `browser.contentblocking.features.standard` without Total Cookie Protection and fingerprinting/cryptomining lists, `dom.security.https_first=false`, `network.http.speculative-parallel-limit=0`, `network.manage-offline-status=false`, `geo.provider.testing=true` | These lines are left out of `user.js`, and values an earlier launch left in a persistent profile's `prefs.js` are removed, so the browser's defaults apply: Firefox's, or for Camoufox the values `camoufox.cfg` sets (it keeps the popup blocker, HTTPS-First and cookie partitioning on and sets `focusmanager.testmode` and `geo.provider.testing` itself). | `firefoxUserPrefs` still sets any of them. |
+| Preferences (#44, #45, #46) | Writes test values to `user.js`: `dom.disable_open_during_load=false` (popup blocker off), `dom.min_background_timeout_value*=0`, `dom.timeout.enable_budget_timer_throttling=false`, `layout.testing.top-level-always-active=true` (background timers and rendering not throttled), `focusmanager.testmode=true`, `browser.contentblocking.features.standard` without Total Cookie Protection and fingerprinting/cryptomining lists, `dom.security.https_first=false`, `network.http.speculative-parallel-limit=0`, `network.manage-offline-status=false`, `geo.provider.testing=true` | These lines are left out of `user.js`, so the browser's defaults apply: Firefox's, or for Camoufox the values `camoufox.cfg` sets (it keeps the popup blocker, HTTPS-First and cookie partitioning on and sets `focusmanager.testmode` and `geo.provider.testing` itself). | `firefoxUserPrefs` still sets any of them. |
 | Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`. |
 | Default viewport (#47) | 1280x720 at device scale factor 1, `screen` set to the same size, which replaces the window and screen the browser or Camoufox's fingerprint reports | No viewport emulation, as with `setViewportSize(null)`; `page.viewportSize()` is `null`. Applies to `newContext()` and `launchPersistentContext()`. | A caller's `viewport`, `deviceScaleFactor` or `isMobile` is kept, with Playwright's checks. |
 | Screenshot caret (#40) | `caret: "hide"` by default, which writes `caret-color` into the focused element's style | `caret: "initial"` by default; the element's style is not touched. | `setCaret(ScreenshotCaret.HIDE)` still hides it. |
@@ -228,6 +228,13 @@ What it does not change:
   which override Camoufox's own values; leave them unset with Camoufox.
 - Synthetic `fill()`/`selectOption()` events, direct mouse movement and scrolling (#41-#43), and
   dialogs or HTTP authentication answered without a handler (#48).
+
+Persistent profiles: Firefox stores the values `user.js` sets in `prefs.js`, so a profile once
+launched without the property keeps Playwright's values. A `prefs.js` line is removed only when it
+is exactly a line Playwright wrote in the previous `user.js` (after playwright4j's end marker):
+that value was applied by `user.js` on every launch. A value the user changed afterwards, or any
+value in a profile without the marker (written by playwright4j 0.2.1 or earlier or by plain
+Playwright), stays; set it in `about:config` or through `firefoxUserPrefs`.
 
 Why `remote.prefs.recommended` matters: Firefox's Remote Agent, which serves WebDriver BiDi,
 applies its recommended preferences at startup to every preference that has no user value and

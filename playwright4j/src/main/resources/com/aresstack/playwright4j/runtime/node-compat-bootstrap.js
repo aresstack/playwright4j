@@ -6280,15 +6280,20 @@
   }
 
   // Firefox stores user.js values in prefs.js, so a persistent profile once launched without the
-  // flag would keep Playwright's values. Firefox writes prefs.js lines in the format user.js uses.
-  function nativeBehaviorPrefsJs(prefsJs, callerPrefs) {
-    if (!nativeBehavior() || !modules.fs.existsSync(prefsJs)) {
+  // flag keeps Playwright's values there. A prefs.js line is removed only when it is exactly a line
+  // Playwright wrote after the END marker of the previous user.js: user.js applied that value on
+  // every launch, so it is Playwright's. Any other value, a profile without the marker (playwright4j
+  // up to 0.2.1) included, may be the user's and stays.
+  function nativeBehaviorPrefsJs(prefsJs, previousUserJs, callerPrefs) {
+    const end = previousUserJs.indexOf(KEPT_USER_JS_END);
+    if (!nativeBehavior() || end < 0 || !modules.fs.existsSync(prefsJs)) {
       return;
     }
-    const text = String(modules.fs.readFileSync(prefsJs, 'latin1'));
-    const lines = text.split('\n');
+    const written = new Set(previousUserJs.slice(end).split(/\r?\n/));
+    const lines = String(modules.fs.readFileSync(prefsJs, 'latin1')).split('\n');
     const kept = lines.filter(function (line) {
-      return !nativeBehaviorDroppedPref(playwrightUserJsPrefName(line.replace(/\r$/, '')), callerPrefs);
+      const text = line.replace(/\r$/, '');
+      return !(written.has(text) && nativeBehaviorDroppedPref(playwrightUserJsPrefName(text), callerPrefs));
     });
     if (kept.length !== lines.length) {
       modules.fs.writeFileSync(prefsJs, global.Buffer.from(kept.join('\n'), 'latin1'));
@@ -6315,7 +6320,7 @@
       await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
       const callerPrefs = (options && options.firefoxUserPrefs) || {};
       const written = nativeBehaviorUserJs(readUserJsBytes(userJs), callerPrefs);
-      nativeBehaviorPrefsJs(modules.path.join(String(userDataDir), 'prefs.js'), callerPrefs);
+      nativeBehaviorPrefsJs(modules.path.join(String(userDataDir), 'prefs.js'), previous, callerPrefs);
       const playwrightDefaults = new Set(written.split(/\r?\n/).map(playwrightUserJsPrefName).filter(function (name) {
         return name !== undefined && !Object.prototype.hasOwnProperty.call(prefs, name);
       }));

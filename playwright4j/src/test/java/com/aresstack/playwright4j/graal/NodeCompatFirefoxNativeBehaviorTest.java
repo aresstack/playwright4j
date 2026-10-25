@@ -99,11 +99,15 @@ final class NodeCompatFirefoxNativeBehaviorTest {
     }
 
     @Test
-    void valuesAnEarlierLaunchLeftInPrefsJsAreRemoved() throws Exception {
+    void onlyPlaywrightsValuesFromTheLastLaunchAreRemovedFromPrefsJs() throws Exception {
+        launch("{}");
+        // Firefox saved Playwright's user.js values; the user changed two prefs in about:config.
         List<String> saved = Arrays.asList(
                 "// Mozilla User Preferences",
                 POPUPS_ALLOWED,
                 TEST_FOCUS,
+                "user_pref(\"dom.security.https_first\", true);",
+                "user_pref(\"geo.provider.testing\", false);",
                 "user_pref(\"playwright4j.test.own\", 1);");
         Files.write(profile.resolve("prefs.js"), saved, StandardCharsets.ISO_8859_1);
 
@@ -112,7 +116,24 @@ final class NodeCompatFirefoxNativeBehaviorTest {
 
         System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
         launch("{ 'focusmanager.testmode': true }");
-        assertEquals(Arrays.asList("// Mozilla User Preferences", TEST_FOCUS, "user_pref(\"playwright4j.test.own\", 1);"), prefsJs());
+        assertEquals(Arrays.asList(
+                "// Mozilla User Preferences",
+                TEST_FOCUS,
+                "user_pref(\"dom.security.https_first\", true);",
+                "user_pref(\"geo.provider.testing\", false);",
+                "user_pref(\"playwright4j.test.own\", 1);"), prefsJs());
+    }
+
+    @Test
+    void prefsJsOfAProfileWithoutPlaywright4jsMarkersStays() throws Exception {
+        // As playwright4j up to 0.2.1 or plain Playwright left it: the origin of a value is unknown.
+        Files.write(profile.resolve("user.js"), Arrays.asList(POPUPS_ALLOWED, TEST_FOCUS), StandardCharsets.ISO_8859_1);
+        List<String> saved = Arrays.asList("// Mozilla User Preferences", POPUPS_ALLOWED, TEST_FOCUS);
+        Files.write(profile.resolve("prefs.js"), saved, StandardCharsets.ISO_8859_1);
+
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
+        launch("{}");
+        assertEquals(saved, prefsJs());
     }
 
     private void launch(String firefoxUserPrefs) {
