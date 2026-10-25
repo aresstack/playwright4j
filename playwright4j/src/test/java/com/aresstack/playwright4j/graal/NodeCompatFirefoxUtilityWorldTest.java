@@ -51,7 +51,7 @@ final class NodeCompatFirefoxUtilityWorldTest {
                 + "  let answer;\n"
                 + "  const session = { send: () => new Promise(resolve => { answer = resolve; }) };\n"
                 + "  let main = null;\n"
-                + "  const frame = {\n"
+                + "  const frame = { _page: { delegate: {} }, attribution: {}, instrumentation: {},\n"
                 + "    mainContext: async () => main,\n"
                 + "    contextCreated(world, context) { if (world === 'main') main = context; else test.utility = 'R3'; },\n"
                 + "    contextDestroyed(context) { if (context === main) main = null; else test.utility = 'none'; }\n"
