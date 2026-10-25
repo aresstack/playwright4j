@@ -82,7 +82,7 @@ public class FirefoxMainWorldTest {
         }
     }
 
-    // setInputFiles on a drop zone builds a DataTransfer and dispatches drag events (#50.4).
+    // locator.drop() builds a DataTransfer and dispatches drag events (#50.4).
     @Test
     void droppingFilesBuildsTheDataTransferOutsideTheMainWorld() throws Throwable {
         runGuarded(executable -> {
@@ -98,8 +98,9 @@ public class FirefoxMainWorldTest {
                         + "zone.addEventListener('drop', e => { e.preventDefault();"
                         + "  zone.dataset.dropped = e.dataTransfer.files[0].name + ':' + e.isTrusted; });"
                         + "</script>");
-                page.locator("#zone").setInputFiles(new com.microsoft.playwright.options.FilePayload(
-                        "notes.txt", "text/plain", "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                page.locator("#zone").drop(new com.microsoft.playwright.options.DropPayload().setFiles(
+                        new com.microsoft.playwright.options.FilePayload(
+                                "notes.txt", "text/plain", "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
                 assertEquals("notes.txt:false", page.getAttribute("#zone", "data-dropped"));
                 assertEquals(null, page.getAttribute("body", "data-main-world"));
             }

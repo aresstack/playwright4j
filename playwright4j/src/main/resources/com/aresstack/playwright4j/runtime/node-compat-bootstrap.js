@@ -6697,7 +6697,7 @@
       + '        }\n'
       + '        const utility = await this._context.injectedScript();\n'
       + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));', 1);
-    // Dropping files on an element (setInputFiles on a non-input) builds the DataTransfer and
+    // locator.drop() builds the DataTransfer and
     // dispatches the drag events in the utility world; the page sees the same events (#50).
     source = replaceCoreBundleAnchor(source,
       'return this._retryPointerAction(progress2, "drop", false, async (progress3, point) => {\n'
