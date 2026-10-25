@@ -137,6 +137,31 @@ main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElemen
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
 
+### Dialogs and HTTP authentication without a handler (Firefox)
+
+Playwright answers a JavaScript dialog (`alert`, `confirm`, `prompt`, `beforeunload`) that no
+`onDialog` handler takes at once: dismissed, or accepted for `beforeunload`. An HTTP auth challenge
+without matching `httpCredentials` is cancelled at once, too. A page can time this: `confirm()`
+returns within a few milliseconds, where a person needs hundreds (issue #48).
+
+`-Dplaywright4j.bidi.unhandledPromptDelay=MIN-MAX` (milliseconds, or one value; `0 <= MIN <= MAX
+<= 10000`) delays exactly these answers by a random time in that range, for pages over WebDriver
+BiDi (Firefox, Camoufox). It is off by default and separate from `nativeBehavior`. Set it before
+`Playwright.create()`; an invalid value fails there.
+
+- The answer stays Playwright's: dismiss, accept for `beforeunload`, cancel for auth. Only when it
+  is sent changes.
+- A dialog handler the caller registered, and `httpCredentials` that match, still answer at once:
+  the caller decides how and when.
+- The delay adds to the action that opened the dialog or the request (an `evaluate`, a click, a
+  navigation). The upper bound keeps it well below Playwright's default 30 s timeout; a caller
+  with short timeouts must allow for it.
+- A dialog whose page closes during the delay is not answered; a handler registered during the
+  delay does not receive it, as without the delay.
+
+To control the timing of each answer, register a dialog handler that waits before it accepts or
+dismisses. `FirefoxUnhandledPromptDelayTest` (part of `firefoxSmoke`) guards both modes.
+
 ### Chrome
 
 | Signal | Chrome without automation | Official driver | playwright4j 0.2.1 |

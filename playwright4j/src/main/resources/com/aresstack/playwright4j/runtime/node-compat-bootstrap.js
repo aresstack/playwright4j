@@ -6455,6 +6455,36 @@
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
+      // -Dplaywright4j.bidi.unhandledPromptDelay (#48): Playwright answers a dialog nobody handles
+      // and an auth challenge without credentials at once; this only delays that same answer.
+      closeUnhandledDialog: function (dialog) {
+        const delay = global.__playwright4jCoreBundle.isBidiPage(dialog.page().delegate) ? host.unhandledPromptDelayMillis() : -1;
+        if (delay < 0) {
+          dialog._close().then(function () {});
+          return;
+        }
+        setTimeout(function () {
+          if (!dialog._handled)
+            dialog._close().catch(function () {});
+        }, delay);
+      },
+      onBidiAuthRequired: function (networkManager, params) {
+        const delay = host.unhandledPromptDelayMillis();
+        if (delay < 0) {
+          networkManager._answerAuthRequired(params);
+          return;
+        }
+        // Playwright's own decision runs unchanged; only its "cancel" reaches the browser later.
+        const session = networkManager._session;
+        const delayedCancel = {
+          sendMayFail: function (method, answer) {
+            if (answer.action !== 'cancel')
+              return session.sendMayFail(method, answer);
+            setTimeout(function () { session.sendMayFail(method, answer); }, delay);
+          }
+        };
+        networkManager._answerAuthRequired.call(Object.create(networkManager, { _session: { value: delayedCancel } }), params);
+      },
       bidiPage: function (BidiPage) {
         return patchOnce(BidiPage, function () {
           bidiPageClasses.push(BidiPage);
@@ -6484,6 +6514,11 @@
       '      async _markAsTargetElement(progress2) {\n        if (!this._page' + snapshotsRecorded + ')\n          return;\n', 1);
     source = replaceCoreBundleAnchor(source, 'markTargets: options.markTargets }',
       'markTargets: this.frame._page' + snapshotsRecorded + ' ? options.markTargets : void 0 }', 2);
+    source = replaceCoreBundleAnchor(source, '        if (!hasHandlers)\n          dialog._close().then(() => {\n          });\n',
+      '        if (!hasHandlers)\n          ' + hooks + '.closeUnhandledDialog(dialog);\n', 1);
+    source = replaceCoreBundleAnchor(source, '      _onAuthRequired(params2) {\n        const isBasic = ',
+      '      _onAuthRequired(params2) {\n        ' + hooks + '.onBidiAuthRequired(this, params2);\n      }\n'
+      + '      _answerAuthRequired(params2) {\n        const isBasic = ', 1);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
     // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
     // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's

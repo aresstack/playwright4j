@@ -83,6 +83,8 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxMainWorldTest'
         // Reading a page leaves no user activation, Playwright events or DOM changes (#37, #38, #40).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxReadSideEffectsTest'
+        // Unhandled dialogs and auth challenges answered after a delay, opt-in (#48).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxUnhandledPromptDelayTest'
     }
 
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'

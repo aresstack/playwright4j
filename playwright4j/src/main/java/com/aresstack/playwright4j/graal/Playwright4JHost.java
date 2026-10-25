@@ -96,6 +96,13 @@ public final class Playwright4JHost {
         return processLauncher;
     }
 
+    /** Milliseconds to wait before answering an unhandled prompt, or -1 (see {@link UnhandledPromptDelay}). */
+    @HostAccess.Export
+    public int unhandledPromptDelayMillis() {
+        UnhandledPromptDelay delay = UnhandledPromptDelay.fromSystemProperty();
+        return delay == null ? -1 : delay.nextMillis();
+    }
+
     @HostAccess.Export
     public void debugLog(String message) {
         Playwright4JDebug.log("[pw4j-js] " + message);
