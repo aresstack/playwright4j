@@ -215,8 +215,15 @@ BrowserContext context = playwright.firefox().launchPersistentContext(userDataDi
 The official Camoufox launchers split the JSON into chunks of 2047 characters on Windows and 32767
 elsewhere. `CamoufoxFingerprintTest` (task `camoufoxSmoke`) checks that a configured
 `navigator.platform` and `navigator.hardwareConcurrency` reach the first page (and, with
-`CAMOUFOX_BIDI_FIXES=true`, a second page), and that they are absent without `setEnv`. Measured on
-Linux with Camoufox 156.0.1-beta.36, released and with the fixes: passes.
+`CAMOUFOX_BIDI_FIXES=true`, a second page), and that they are absent without `setEnv`. With a
+display it also counts the native windows: the persistent start, the first navigation and the second
+page leave exactly one Camoufox window (issue #34; without the start-tab takeover a second window
+opens while `pages()` still reports one page). Measured on Linux with Camoufox 156.0.1-beta.36,
+released and with the fixes: passes.
+
+The Windows CI job `firefox-smoke` installs Camoufox 156.0.1-beta.36 (pinned, SHA-256 checked),
+applies both fixes with `docs/camoufox/hotpatch_omni.py`, and runs `FirefoxPersistentWindowTest` and
+`camoufoxSmoke` against it.
 
 ## Comparison with Camoufox's own launcher (manual)
 

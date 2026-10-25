@@ -493,7 +493,7 @@ public class FirefoxPersistentWindowTest {
      * Waits until the Firefox processes started through Playwright (descendants of this JVM, minus
      * the trees of otherRoots) show exactly the expected number of windows, stable for a moment.
      */
-    private static void expectWindows(String step, Set<Long> otherRoots, int expected) throws Exception {
+    static void expectWindows(String step, Set<Long> otherRoots, int expected) throws Exception {
         if (!countWindows()) {
             return;
         }
