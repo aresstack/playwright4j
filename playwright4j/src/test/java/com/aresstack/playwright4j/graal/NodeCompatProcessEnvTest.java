@@ -91,48 +91,4 @@ final class NodeCompatProcessEnvTest {
     private static String eval(GraalPlaywrightRuntime runtime, String source) {
         return runtime.evaluate("process-env-test.js", source).asString();
     }
-
-    private static final class RecordingProcessLauncher implements HostProcessLauncher {
-        String environment;
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public String launchChromium(String command, String arguments, String workingDirectory) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public void close(String processId) {
-        }
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public String spawnProcess(String command, String arguments, String workingDirectory) {
-            throw new UnsupportedOperationException("expected spawnProcessWithEnvironment");
-        }
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public String spawnProcessWithEnvironment(String command, String arguments, String workingDirectory, String environment) {
-            this.environment = environment;
-            return "recorded";
-        }
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public void writeStdin(String processId, String base64) {
-        }
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public void endStdin(String processId) {
-        }
-
-        @Override
-        @org.graalvm.polyglot.HostAccess.Export
-        public String drainProcessEvents() {
-            return "";
-        }
-    }
 }
