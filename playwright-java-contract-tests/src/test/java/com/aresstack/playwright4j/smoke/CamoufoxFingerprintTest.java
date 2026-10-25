@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -43,13 +44,19 @@ public class CamoufoxFingerprintTest {
         try (Playwright playwright = Playwright.create()) {
             BrowserContext context = playwright.firefox().launchPersistentContext(userDataDir, options(executable).setEnv(env));
             try {
+                // The start window is the only one (#34): Playwright's persistent launch would open a
+                // second window for its first page; only native windows show that, not pages().
+                assertEquals(1, context.pages().size(), "pages after the start");
+                FirefoxPersistentWindowTest.expectWindows("persistent start", Collections.emptySet(), 1);
                 Page first = context.pages().get(0);
                 first.navigate("data:text/html,<title>first</title>");
                 assertEquals(PLATFORM + " / " + CORES, first.evaluate(FINGERPRINT), "first page");
+                FirefoxPersistentWindowTest.expectWindows("navigating the start tab", Collections.emptySet(), 1);
                 if ("true".equalsIgnoreCase(System.getenv("CAMOUFOX_BIDI_FIXES"))) {
                     Page second = context.newPage();
                     second.navigate("data:text/html,<title>second</title>");
                     assertEquals(PLATFORM + " / " + CORES, second.evaluate(FINGERPRINT), "second page");
+                    FirefoxPersistentWindowTest.expectWindows("newPage()", Collections.emptySet(), 1);
                 }
             } finally {
                 context.close();
