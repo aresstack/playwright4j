@@ -6,6 +6,7 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Response;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -79,8 +80,10 @@ public class FirefoxBiDiSmokeTest {
                 BrowserContext context = playwright.firefox().launchPersistentContext(userDataDir, options);
                 try {
                     Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
-                    page.navigate("data:text/html,<title>persistent</title>");
-                    assertEquals("persistent", page.title());
+                    Response response = page.navigate("data:text/html,<title>persistent</title>");
+                    String where = "round " + round + ", url " + page.url() + ", response " + (response == null ? null : response.url())
+                            + ", readyState " + page.evaluate("document.readyState") + ", pages " + context.pages().size();
+                    assertEquals("persistent", page.title(), where);
                     // Loading a page must not grant it user activation without any input (the page
                     // records the state itself; page.title() is read only after that).
                     page.navigate("data:text/html,<script>setTimeout(() => document.title = 'activation:'"
