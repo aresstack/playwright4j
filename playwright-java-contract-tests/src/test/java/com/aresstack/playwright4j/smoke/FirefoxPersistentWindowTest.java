@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +43,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 public class FirefoxPersistentWindowTest {
     private static final long WINDOW_SETTLE_MILLIS = 15_000;
     private static final long WINDOW_STABLE_MILLIS = 1_500;
+    // How long Firefox's child processes wait before they start, for the slow-start variant.
+    private static final long CHILD_PROCESS_PAUSE_SECONDS = 3;
 
     private static final List<String> OWN_USER_JS = List.of(
             "// Einstellungen f\u00fcr diesen Test",
@@ -87,7 +90,19 @@ public class FirefoxPersistentWindowTest {
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void lastTabClosedInFirefoxLeavesTheContextOpenWithoutPages() throws Throwable {
         Assumptions.assumeTrue(countWindows(), "needs a headed Firefox and OS window access");
-        runGuarded(FirefoxPersistentWindowTest::lastTabClosedByUser);
+        runGuarded(executable -> lastTabClosedByUser(executable, false));
+    }
+
+    // The same while Firefox starts its child processes slowly (MOZ_DEBUG_CHILD_PAUSE), as on
+    // Windows when the process for the new tab page starts only on demand: Firefox's replacement
+    // tab shows its initial about:blank until about:newtab commits seconds later. newPage() must
+    // not hand that tab out, or the page turns into the privileged new tab page, which refuses
+    // data: URLs.
+    @Test
+    @Timeout(value = 300, unit = TimeUnit.SECONDS)
+    void lastTabClosedInFirefoxWhileItsChildProcessesStartSlowly() throws Throwable {
+        Assumptions.assumeTrue(countWindows(), "needs a headed Firefox and OS window access");
+        runGuarded(executable -> lastTabClosedByUser(executable, true));
     }
 
     // Firefox ending without context.close() (closed by the user or killed): the context reports
@@ -196,10 +211,19 @@ public class FirefoxPersistentWindowTest {
         }
     }
 
-    private static void lastTabClosedByUser(String executable) throws Exception {
+    private static void lastTabClosedByUser(String executable, boolean slowChildProcesses) throws Exception {
         Path userDataDir = Files.createTempDirectory("playwright4j-firefox-windows");
+        BrowserType.LaunchPersistentContextOptions options = options(executable);
+        if (slowChildProcesses) {
+            // setEnv replaces the environment: pass the inherited one along. On Linux the fork
+            // server would start content processes without the pause.
+            Map<String, String> env = new HashMap<>(System.getenv());
+            env.put("MOZ_DEBUG_CHILD_PAUSE", String.valueOf(CHILD_PROCESS_PAUSE_SECONDS));
+            env.put("MOZ_DISABLE_FORKSERVER", "1");
+            options.setEnv(env);
+        }
         try (Playwright playwright = Playwright.create()) {
-            BrowserContext context = launch(playwright, executable, userDataDir);
+            BrowserContext context = playwright.firefox().launchPersistentContext(userDataDir, options);
             boolean[] contextClosed = {false};
             context.onClose(c -> contextClosed[0] = true);
             try {
@@ -224,11 +248,20 @@ public class FirefoxPersistentWindowTest {
                 }
                 assertTrue(context.pages().isEmpty(), "pages after the user closed the last tab: " + context.pages().size());
                 assertTrue(!contextClosed[0], "the context closed with the last tab");
-                expectWindows("after the user closed the last tab", Collections.emptySet(), 1);
+                if (slowChildProcesses) {
+                    // Firefox's replacement tab is there, its about:newtab comes only after the pause.
+                    Thread.sleep(1_000);
+                } else {
+                    expectWindows("after the user closed the last tab", Collections.emptySet(), 1);
+                }
 
                 Page again = context.newPage();
                 assertEquals(1, context.pages().size(), "pages after newPage()");
                 expectWindows("newPage() after the user closed the last tab", Collections.emptySet(), 1);
+                if (slowChildProcesses) {
+                    // Long enough for the replacement tab's about:newtab to have loaded.
+                    Thread.sleep(TimeUnit.SECONDS.toMillis(CHILD_PROCESS_PAUSE_SECONDS) + 2_000);
+                }
                 again.navigate("data:text/html,<title>after the user</title>");
                 assertEquals("after the user", again.title());
             } finally {
@@ -421,7 +454,10 @@ public class FirefoxPersistentWindowTest {
         // What Firefox applied, as it saved it on exit.
         String prefs = new String(Files.readAllBytes(userDataDir.resolve("prefs.js")), StandardCharsets.ISO_8859_1);
         assertTrue(prefs.contains(OWN_USER_JS.get(1)), "the profile's own preference applies: " + prefs);
-        assertTrue(prefs.contains("user_pref(\"browser.startup.page\", 0);"), "Playwright's start page applies: " + prefs);
+        // Playwright's start page (0) wins over the profile's own (3). Firefox saves only values that
+        // differ from the build's default, so 0 is listed for Firefox but not for Camoufox, whose
+        // default it already is.
+        assertFalse(prefs.contains("user_pref(\"browser.startup.page\", 3);"), "Playwright's start page applies: " + prefs);
         assertTrue(prefs.contains("user_pref(\"browser.tabs.closeWindowWithLastTab\", false);"),
                 "Playwright's preferences after the profile's open comment apply: " + prefs);
         assertFalse(prefs.contains("playwright4j.test.off"), "a line inside the profile's open comment applies: " + prefs);
