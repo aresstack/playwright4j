@@ -138,6 +138,26 @@ main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElemen
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
 
+### Natural pointer opt-in
+
+Playwright moves the mouse to an action's target in one `pointerMove` and sends the press and
+release right after it, so a page sees a single `mousemove` and a click of a few milliseconds
+(issue #43). `-Dplaywright4j.bidi.naturalPointer=true` (Firefox and Camoufox over WebDriver BiDi;
+default `false`) changes only the mouse's timing and path:
+
+| Action | Playwright (property off) | With the property |
+|---|---|---|
+| `mouse.move`, `hover`, the move before a click, `dragTo` without `steps` | one jump to the target | a curved path (quadratic Bezier, bend up to 12% of the distance to a random side) with a minimum-jerk speed profile; duration from Fitts' law, 90 ms + 90 ms per bit for a 24 px target, ±15% |
+| `click`, `dblclick`, `mouse.click` without `delay` | press and release at once | 30–90 ms pause after the move, button held 55–130 ms, 90–170 ms between the clicks of a double click |
+| `steps` or `delay` set by the caller, including `delay: 0` | as given | as given: `steps` keeps Playwright's straight path, any `delay` (also `0`) keeps Playwright's press timing |
+| `mouse.down`, `mouse.up`, `mouse.wheel`, keyboard, touch | unchanged | unchanged |
+
+The path is sent as one `input.performActions` sequence on Playwright's own pointer source, so a
+button held with `mouse.down()` stays held. The pauses count against the action's timeout. The
+property is independent of `playwright4j.bidi.nativeBehavior`, which only covers browser
+configuration and technical side effects. `FirefoxNaturalPointerTest` (part of `firefoxSmoke`)
+guards both settings.
+
 ### Chrome
 
 | Signal | Chrome without automation | Official driver | playwright4j 0.2.1 |
@@ -176,6 +196,24 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   Playwright's behaviour (`userActivation: true`, like `userGesture` over CDP), so a caller's
   `page.evaluate` or `locator(...).click()` still activates the page. This differs from the official
   driver.
+- Reading activates the page: Playwright sends every evaluation in its utility world with
+  `userActivation: true`, so `page.content()`, `textContent()`, `count()`, `isVisible()`,
+  `title()`, `setContent()` or `screenshot()` mark the page as activated by the user (#37).
+  playwright4j sends all utility-world evaluations with `userActivation: false`, as Playwright's
+  Juggler Firefox does. Main-world evaluations keep `true`; besides `page.evaluate` they include
+  `evaluateAll` and the client-side reads built on it (`allTextContents()`, `allInnerTexts()`), and
+  the element handles the API returns in the main world, which `locator.boundingBox()` and
+  `elementHandle()` resolve first (#50), so these still activate the page.
+- Target markers: before a locator action or `evaluateAll`, Playwright dispatches
+  `__playwright_reset_targets__` and `__playwright_mark_target__` events in the page, which page
+  listeners receive (#38). Only a trace that records snapshots reads them, so playwright4j
+  dispatches them only while such a trace runs, in every browser.
+- Screenshot style toggle: before a screenshot Playwright appends and removes an empty `<style>`
+  in every frame to restart CSS animations in step (#40). playwright4j skips it for Firefox over
+  BiDi, as Playwright already does for its Juggler Firefox. Measured with Firefox 158: an
+  animation started right before a screenshot with `animations: "disabled"` was finished and two
+  consecutive screenshots were identical in 20 of 20 runs, with and without the toggle. The caret
+  (`caret-color` in the `style` attribute of editable elements) stays Playwright's default.
 
 - Text input: since Playwright 1.62 the BiDi layer installs `window.__pw_bidiInsertText` in the main
   world of every document (`BidiBrowserContext.initialize` → `extendInjectedScript`) and types
@@ -224,6 +262,70 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   setup), not from the GraalJS runtime.
 - Bindings from `page.exposeBinding` and scripts from `addInitScript` are visible to pages in all
   engines.
+
+## Native behavior (opt-in)
+
+`-Dplaywright4j.bidi.nativeBehavior=true` (default `false`) keeps the controlled browser's own
+behaviour where Playwright changes it for testing. It applies to Firefox over WebDriver BiDi
+(`moz-firefox`), Camoufox included; Chrome and Edge over CDP are unchanged, and so is the Java
+API. Set it in the application JVM before `Playwright.create()`; the driver JVM receives it. It
+does not make automation undetectable: `navigator.webdriver` stays `true`, and nothing here
+spoofs a value or works around a challenge. Without the property everything stays as Playwright
+does it.
+
+What it changes, each part independent of the others:
+
+| Area | Playwright | With `nativeBehavior` | Caller's override |
+| --- | --- | --- | --- |
+| Preferences (#44, #45, #46) | Writes test values to `user.js`: `dom.disable_open_during_load=false` (popup blocker off), `dom.min_background_timeout_value*=0`, `dom.timeout.enable_budget_timer_throttling=false`, `layout.testing.top-level-always-active=true` (background timers and rendering not throttled), `focusmanager.testmode=true`, `browser.contentblocking.features.standard` without Total Cookie Protection and fingerprinting/cryptomining lists, `dom.security.https_first=false`, `network.http.speculative-parallel-limit=0`, `network.manage-offline-status=false`, `geo.provider.testing=true` | These lines are left out of `user.js`, so the browser's defaults apply: Firefox's, or for Camoufox the values `camoufox.cfg` sets (it keeps the popup blocker, HTTPS-First and cookie partitioning on and sets `focusmanager.testmode` and `geo.provider.testing` itself). | `firefoxUserPrefs` still sets any of them. |
+| Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`. |
+| Default viewport (#47) | 1280x720 at device scale factor 1, `screen` set to the same size, which replaces the window and screen the browser or Camoufox's fingerprint reports | No viewport emulation, as with `setViewportSize(null)`; `page.viewportSize()` is `null`. Applies to `newContext()` and `launchPersistentContext()`. | A caller's `viewport`, `deviceScaleFactor` or `isMobile` is kept, with Playwright's checks. |
+| Screenshot caret (#40) | `caret: "hide"` by default, which writes `caret-color` into the focused element's style | `caret: "initial"` by default; the element's style is not touched. | `setCaret(ScreenshotCaret.HIDE)` still hides it. |
+| Preload scripts (#51) | `exposeBinding`/`exposeFunction`, `addInitScript`, `clock`, `routeWebSocket` and tracing snapshots install scripts or globals in the page's main world | Unchanged, because they are what the caller asked for. The first one per context logs a warning on the driver's stderr that names the property. | - |
+
+What it does not change:
+
+- `navigator.webdriver` and the remote-control indicator (see above).
+- Scripts Playwright itself runs in the page's main world, user activation and `__playwright_*`
+  events during reads, and the style toggle during screenshots (#36-#39, #50): they are fixed or
+  tracked separately, independent of this property.
+- The other Playwright profile preferences (telemetry, updates, Safe Browsing, first-run pages and
+  similar) that keep the browser from reaching out on its own.
+- Context options the caller sets, such as `locale`, `timezoneId`, `userAgent` or `geolocation`,
+  which override Camoufox's own values; leave them unset with Camoufox.
+- Synthetic `fill()`/`selectOption()` events, direct mouse movement and scrolling (#41-#43), and
+  dialogs or HTTP authentication answered without a handler (#48).
+
+Persistent profiles: Firefox stores the values `user.js` sets in `prefs.js`, so a profile once
+launched without the property keeps Playwright's values. A `prefs.js` line is removed only when it
+is exactly a line Playwright wrote in the previous `user.js` (after playwright4j's end marker):
+that value was applied by `user.js` on every launch. A value the user changed afterwards, or any
+value in a profile without the marker (written by playwright4j 0.2.1 or earlier or by plain
+Playwright), stays; set it in `about:config` or through `firefoxUserPrefs`. A value that the user
+set to exactly Playwright's value cannot be told apart and is removed as well, so before the first
+removal playwright4j copies the file to `prefs.js.playwright4j-backup` in the profile. Later cleanups
+keep that copy; to restore, close the browser and copy it back over `prefs.js`.
+
+Why `remote.prefs.recommended` matters: Firefox's Remote Agent, which serves WebDriver BiDi,
+applies its recommended preferences at startup to every preference that has no user value and
+resets them at shutdown. That list repeats most of Playwright's test values
+(`dom.disable_open_during_load=false`, `focusmanager.testmode=true`, `geo.provider.testing=true`,
+`network.manage-offline-status=false`, ...) and adds more, such as `dom.permissions.testing.enabled`
+and `dom.input_events.security.minNumTicks=0`. Measured with Firefox 158 over BiDi: with
+Playwright's lines removed but the Remote Agent's preferences on, a `window.open` during page load
+still opened a popup; with `remote.prefs.recommended=false` Firefox blocked it. Camoufox does not
+set `remote.prefs.recommended` in `camoufox.cfg`, and its values there are `defaultPref`, so they
+apply once neither Playwright nor the Remote Agent sets a user value.
+
+Measured on Linux with the property set: `firefoxSmoke` (including `FirefoxNativeBehaviorTest`) passes
+with Firefox 158.0.1 and with Camoufox 156.0.1-beta.36 with both BiDi fixes
+(`hotpatch_omni.py`), and so does `camoufoxSmoke` (fingerprint through `setEnv`, second page with
+the fixes). With Camoufox the popup blocker stays on, as `camoufox.cfg` leaves it. The window-count
+checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. CI on Windows runs
+`firefoxSmoke` with Firefox and with Camoufox, and `camoufoxSmoke`, with and without the property.
+
+The property may become the default once its compatibility with the Playwright API is shown;
+until then it is opt-in.
 
 **Not covered**
 

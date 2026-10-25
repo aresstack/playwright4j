@@ -3302,6 +3302,22 @@
     return JSON.stringify(tls);
   }
 
+  // Playwright routes APIRequestContext traffic through a proxy by passing a proxy agent:
+  // HttpsProxyAgent keeps the proxy as a URL in `proxy`, SocksProxyAgent its URL in `proxyUrl`.
+  // The host connects through that proxy itself; Playwright already applied `bypass`.
+  function agentProxyUrl(agent) {
+    if (!agent) {
+      return '';
+    }
+    if (typeof agent.proxyUrl === 'string') {
+      return agent.proxyUrl;
+    }
+    if (agent.proxy && typeof agent.proxy.href === 'string') {
+      return agent.proxy.href;
+    }
+    return '';
+  }
+
   function createHttpRequest(defaultProtocol, first, second, third) {
     // Node signatures: request(url[, options][, cb]) or request(options[, cb]).
     let urlString = null;
@@ -3390,7 +3406,7 @@
         const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
         // Non-blocking: the response is delivered later via __playwright4jDrainHttp, so the
         // JS thread stays free and Playwright's timeout/abort can take effect mid-request.
-        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options));
+        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options), agentProxyUrl(options.agent));
       } catch (error) {
         Promise.resolve().then(function () {
           request.emit('error', error);
@@ -3667,6 +3683,11 @@
       return result;
     };
 
+    // WHATWG userinfo percent-encode set; '%' is not in it, so encoding is idempotent.
+    function encodeUserinfo(value) {
+      return String(value).replace(/[\u0000-\u0020"#<>?`{}\/:;=@\[\\\]^|\u007f-\u{10ffff}]/gu, encodeURIComponent);
+    }
+
     global.URL = class URL {
       constructor(value, base) {
         let text = String(value);
@@ -3781,6 +3802,24 @@
         this._search = query ? '?' + query : '';
         this._searchParams = new global.URLSearchParams(query);
         this._searchDirty = false;
+      }
+
+      // Node encodes credentials on assignment (url.password = 'p@ss' gives 'p%40ss'), so href
+      // stays parseable; Playwright assigns proxy credentials this way.
+      get username() {
+        return this._username;
+      }
+
+      set username(value) {
+        this._username = encodeUserinfo(value);
+      }
+
+      get password() {
+        return this._password;
+      }
+
+      set password(value) {
+        this._password = encodeUserinfo(value);
       }
 
       get host() {
@@ -5618,6 +5657,109 @@
     };
   }
 
+  // playwright4j.bidi.naturalPointer (Firefox over BiDi, off by default): Playwright moves the
+  // mouse to the target in one jump and presses and releases it at once (#43). With the property,
+  // a move without the caller's `steps` follows a slightly curved path with a minimum-jerk speed
+  // profile and a duration that grows with the distance (Fitts' law), and a click without the
+  // caller's `delay` pauses before the press, holds the button and pauses between clicks.
+  const NATURAL_POINTER = {
+    // Fitts' law T = a + b * log2(1 + D / W) for a target width W.
+    moveBaseMillis: 90, moveMillisPerBit: 90, targetWidth: 24,
+    segmentMillis: 16, maxSegments: 60, maxCurve: 0.12, jitter: 0.15,
+    settleMillis: [30, 90], holdMillis: [55, 130], betweenClicksMillis: [90, 170]
+  };
+
+  function naturalPointer() {
+    return host.naturalPointer() === true;
+  }
+
+  function randomBetween(range) {
+    return range[0] + Math.random() * (range[1] - range[0]);
+  }
+
+  // The intermediate points from (fromX, fromY) to (x, y); the last one is the target itself.
+  function naturalPointerPath(fromX, fromY, x, y) {
+    const distance = Math.hypot(x - fromX, y - fromY);
+    if (distance < 1) {
+      return [{ x: x, y: y, duration: 0 }];
+    }
+    const config = NATURAL_POINTER;
+    const millis = (config.moveBaseMillis + config.moveMillisPerBit * Math.log2(1 + distance / config.targetWidth))
+      * (1 + (Math.random() * 2 - 1) * config.jitter);
+    const segments = Math.max(2, Math.min(config.maxSegments, Math.round(millis / config.segmentMillis)));
+    const duration = Math.round(millis / segments);
+    // A quadratic Bezier whose control point lies off the straight line, on a random side.
+    const bend = (Math.random() * 2 - 1) * config.maxCurve * distance;
+    const controlX = (fromX + x) / 2 - (y - fromY) / distance * bend;
+    const controlY = (fromY + y) / 2 + (x - fromX) / distance * bend;
+    const points = [];
+    for (let i = 1; i <= segments; i++) {
+      const t = i / segments;
+      const s = t * t * t * (10 - 15 * t + 6 * t * t);
+      const u = 1 - s;
+      points.push(i === segments ? { x: x, y: y, duration: duration } : {
+        x: Math.round(u * u * fromX + 2 * u * s * controlX + s * s * x),
+        y: Math.round(u * u * fromY + 2 * u * s * controlY + s * s * y),
+        duration: duration
+      });
+    }
+    return points;
+  }
+
+  function installNaturalPointer(bidiPage) {
+    const mouse = bidiPage._page.mouse;
+    const originalMove = mouse.move;
+    const originalClick = mouse.click;
+    mouse.move = async function (progress, x, y, options) {
+      options = options || {};
+      if (!naturalPointer() || options.steps !== undefined) {
+        return originalMove.call(this, progress, x, y, options);
+      }
+      const path = naturalPointerPath(this._x, this._y, x, y);
+      this._x = x;
+      this._y = y;
+      // One action sequence on Playwright's own pointer source, so pressed buttons carry over.
+      await progress.race(bidiPage._session.send('input.performActions', {
+        context: bidiPage._session.sessionId,
+        actions: [{
+          type: 'pointer',
+          id: 'pw_mouse',
+          parameters: { pointerType: 'mouse' },
+          actions: path.map(function (point) {
+            return { type: 'pointerMove', x: point.x, y: point.y, duration: point.duration };
+          })
+        }]
+      }));
+    };
+    mouse.click = async function (progress, x, y, options) {
+      options = options || {};
+      if (!naturalPointer() || options.delay !== undefined) {
+        return originalClick.call(this, progress, x, y, options);
+      }
+      const clickCount = options.clickCount || 1;
+      await this.move(progress, x, y, { forClick: true, steps: options.steps });
+      await progress.wait(randomBetween(NATURAL_POINTER.settleMillis));
+      for (let cc = 1; cc <= clickCount; ++cc) {
+        await this.down(progress, Object.assign({}, options, { clickCount: cc }));
+        await progress.wait(randomBetween(NATURAL_POINTER.holdMillis));
+        await this.up(progress, Object.assign({}, options, { clickCount: cc }));
+        if (cc < clickCount) {
+          await progress.wait(randomBetween(NATURAL_POINTER.betweenClicksMillis));
+        }
+      }
+    };
+  }
+
+  function patchBidiPageNaturalPointer(BidiPage) {
+    const originalInitialize = BidiPage.prototype._initialize;
+    BidiPage.prototype._initialize = function () {
+      if (isBidiFirefox(this._browserContext._browser)) {
+        installNaturalPointer(this);
+      }
+      return originalInitialize.apply(this, arguments);
+    };
+  }
+
   // Firefox sends no browsingContext.load for the initial about:blank of a top-level context it
   // creates (browsingContext.create), so its main frame only ever reaches "commit". The persistent
   // launch (launchPersistentContext) waits for "load" on that default page and would hang until its
@@ -5670,6 +5812,98 @@
         }
         throw error;
       }
+    };
+  }
+
+  // playwright4j.bidi.nativeBehavior: no default viewport. Playwright emulates 1280x720 at device
+  // scale factor 1 and sets screen to the same size, which replaces the window and screen the
+  // browser (or Camoufox's fingerprint) reports. A caller's viewport, deviceScaleFactor or
+  // isMobile is kept, and so is Playwright's validation of them.
+  function nativeBehaviorContextOptions(options) {
+    if (!nativeBehavior() || !options || options.viewport || options.noDefaultViewport
+        || options.deviceScaleFactor !== undefined || options.isMobile !== undefined) {
+      return options;
+    }
+    return Object.assign({}, options, { noDefaultViewport: true });
+  }
+
+  function patchBidiBrowserNativeViewport(BidiBrowser) {
+    const originalNewContext = BidiBrowser.prototype.newContext;
+    BidiBrowser.prototype.newContext = function (progress, options) {
+      return originalNewContext.call(this, progress, isBidiFirefox(this) ? nativeBehaviorContextOptions(options) : options);
+    };
+  }
+
+  function patchBidiFirefoxNativeViewport(BidiFirefox) {
+    const originalInnerLaunch = BidiFirefox.prototype._innerLaunch;
+    BidiFirefox.prototype._innerLaunch = function (progress, options, persistent) {
+      const args = Array.prototype.slice.call(arguments);
+      args[2] = nativeBehaviorContextOptions(persistent);
+      return originalInnerLaunch.apply(this, args);
+    };
+  }
+
+  // playwright4j.bidi.nativeBehavior: screenshots leave the text caret alone unless the caller asks
+  // for caret: "hide". Hiding it writes caret-color into the style of the focused element, which
+  // the page can observe.
+  // The Screenshotter class is not reachable from the bundle's BiDi classes; its prototype is
+  // patched once, from the first BiDi page.
+  const patchedScreenshotters = new WeakSet();
+  function patchBidiPageNativeCaret(BidiPage) {
+    const originalInitialize = BidiPage.prototype._initialize;
+    BidiPage.prototype._initialize = function () {
+      const prototype = Object.getPrototypeOf(this._page.screenshotter);
+      if (!patchedScreenshotters.has(prototype)) {
+        patchedScreenshotters.add(prototype);
+        patchScreenshotterNativeCaret(prototype);
+      }
+      return originalInitialize.apply(this, arguments);
+    };
+  }
+
+  function patchScreenshotterNativeCaret(prototype) {
+    ['screenshotPage', 'screenshotElement'].forEach(function (method) {
+      const original = prototype[method];
+      prototype[method] = function () {
+        const args = Array.prototype.slice.call(arguments);
+        const index = args.length - 1;
+        const options = args[index];
+        if (nativeBehavior() && options && options.caret === undefined && isBidiFirefox(this._page.browserContext._browser)) {
+          args[index] = Object.assign({}, options, { caret: 'initial' });
+        }
+        return original.apply(this, args);
+      };
+    });
+  }
+
+  // playwright4j.bidi.nativeBehavior: the first preload script of a context is reported once.
+  // exposeBinding/exposeFunction, addInitScript, clock, routeWebSocket and tracing snapshots install
+  // scripts or globals in the page's main world that a page can see; nativeBehavior cannot keep
+  // those, so it says so instead of failing or dropping the caller's script.
+  const NATIVE_BEHAVIOR_PROPERTY = 'playwright4j.bidi.nativeBehavior';
+  const warnedPreloadContexts = new WeakSet();
+  function warnNativeBehaviorPreload(context) {
+    if (!nativeBehavior() || !context || warnedPreloadContexts.has(context)) {
+      return;
+    }
+    warnedPreloadContexts.add(context);
+    console.warn('playwright4j: ' + NATIVE_BEHAVIOR_PROPERTY + ' is set, but this context now installs a '
+      + 'preload script in the page\'s main world (exposeBinding/exposeFunction, addInitScript, clock, '
+      + 'routeWebSocket or tracing snapshots). Pages can observe it; see docs/browser-signals.md.');
+  }
+  function patchBidiContextNativePreloadWarning(BidiBrowserContext) {
+    const originalContextAdd = BidiBrowserContext.prototype.doAddInitScript;
+    BidiBrowserContext.prototype.doAddInitScript = function () {
+      warnNativeBehaviorPreload(this);
+      return originalContextAdd.apply(this, arguments);
+    };
+  }
+
+  function patchBidiPageNativePreloadWarning(BidiPage) {
+    const originalPageAdd = BidiPage.prototype.addInitScript;
+    BidiPage.prototype.addInitScript = function () {
+      warnNativeBehaviorPreload(this._browserContext);
+      return originalPageAdd.apply(this, arguments);
     };
   }
 
@@ -6147,6 +6381,77 @@
     };
   }
 
+  // playwright4j.bidi.nativeBehavior: Playwright's test preferences that change what a page or
+  // server can observe (popup blocker, background timers and rendering, focus, tracking and cookie
+  // protection, HTTPS-First, speculative connections, offline detection, test geolocation). Their
+  // lines are left out of user.js, so the browser's own default applies: Firefox's, or for
+  // Camoufox the value camoufox.cfg sets with defaultPref. firefoxUserPrefs still sets any of them.
+  const NATIVE_BEHAVIOR_PREFS = [
+    'browser.contentblocking.features.standard',
+    'dom.disable_open_during_load',
+    'dom.min_background_timeout_value',
+    'dom.min_background_timeout_value_without_budget_throttling',
+    'dom.security.https_first',
+    'dom.timeout.enable_budget_timer_throttling',
+    'focusmanager.testmode',
+    'geo.provider.testing',
+    'layout.testing.top-level-always-active',
+    'network.http.speculative-parallel-limit',
+    'network.manage-offline-status'
+  ];
+
+  // Firefox's Remote Agent sets its own recommended test preferences at startup, the ones above
+  // among them, for every preference without a user value (remote/shared/RecommendedPreferences).
+  // Leaving Playwright's lines out would hand them to the Remote Agent, so it is told not to.
+  const NATIVE_BEHAVIOR_ADDED_PREFS = {
+    'remote.prefs.recommended': false
+  };
+
+  function nativeBehavior() {
+    return host.nativeBehavior() === true;
+  }
+
+  function nativeBehaviorDroppedPref(name, callerPrefs) {
+    return NATIVE_BEHAVIOR_PREFS.indexOf(name) >= 0 && !Object.prototype.hasOwnProperty.call(callerPrefs, name);
+  }
+
+  function nativeBehaviorUserJs(written, callerPrefs) {
+    if (!nativeBehavior()) {
+      return written;
+    }
+    return written.split(/\r?\n/).filter(function (line) {
+      return !nativeBehaviorDroppedPref(playwrightUserJsPrefName(line), callerPrefs);
+    }).join('\n');
+  }
+
+  // Firefox stores user.js values in prefs.js, so a persistent profile once launched without the
+  // flag keeps Playwright's values there. A prefs.js line is removed only when it is exactly a line
+  // Playwright wrote after the END marker of the previous user.js: user.js applied that value on
+  // every launch, so it is Playwright's. Any other value, a profile without the marker (playwright4j
+  // up to 0.2.1) included, may be the user's and stays. Before the first removal the file is copied
+  // to prefs.js.playwright4j-backup, so a value removed by mistake can be restored.
+  const NATIVE_BEHAVIOR_PREFS_JS_BACKUP_SUFFIX = '.playwright4j-backup';
+  function nativeBehaviorPrefsJs(prefsJs, previousUserJs, callerPrefs) {
+    const end = previousUserJs.indexOf(KEPT_USER_JS_END);
+    if (!nativeBehavior() || end < 0 || !modules.fs.existsSync(prefsJs)) {
+      return;
+    }
+    const written = new Set(previousUserJs.slice(end).split(/\r?\n/));
+    const lines = String(modules.fs.readFileSync(prefsJs, 'latin1')).split('\n');
+    const kept = lines.filter(function (line) {
+      const text = line.replace(/\r$/, '');
+      return !(written.has(text) && nativeBehaviorDroppedPref(playwrightUserJsPrefName(text), callerPrefs));
+    });
+    if (kept.length !== lines.length) {
+      // The first cleanup keeps the original file; later ones would only copy cleaned files.
+      const backup = prefsJs + NATIVE_BEHAVIOR_PREFS_JS_BACKUP_SUFFIX;
+      if (!modules.fs.existsSync(backup)) {
+        modules.fs.copyFileSync(prefsJs, backup);
+      }
+      modules.fs.writeFileSync(prefsJs, global.Buffer.from(kept.join('\n'), 'latin1'));
+    }
+  }
+
   // Playwright's BiDi browser answers a context.route() with network.setCacheBehavior "bypass"
   // for the whole browser (BidiBrowser.updateCacheBehavior, no contexts filter), so every other
   // context and tab skips the HTTP cache too (#49). Send it per top-level browsing context
@@ -6203,9 +6508,12 @@
       const previous = readUserJsBytes(userJs);
       const prefs = Object.assign({}, FIREFOX_DEFAULT_PREFS,
           options && options[PERSISTENT_LAUNCH_OPTION] ? FIREFOX_PERSISTENT_DEFAULT_PREFS : {},
+          nativeBehavior() ? NATIVE_BEHAVIOR_ADDED_PREFS : {},
           (options && options.firefoxUserPrefs) || {});
       await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
-      const written = readUserJsBytes(userJs);
+      const callerPrefs = (options && options.firefoxUserPrefs) || {};
+      const written = nativeBehaviorUserJs(readUserJsBytes(userJs), callerPrefs);
+      nativeBehaviorPrefsJs(modules.path.join(String(userDataDir), 'prefs.js'), previous, callerPrefs);
       const playwrightDefaults = new Set(written.split(/\r?\n/).map(playwrightUserJsPrefName).filter(function (name) {
         return name !== undefined && !Object.prototype.hasOwnProperty.call(prefs, name);
       }));
@@ -6229,15 +6537,19 @@
   // create that world, and sends it with userActivation: true. Firefox then marks the page as
   // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
-  // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
+  // The same holds for every other utility-world evaluation: Playwright reads the page there
+  // (page.content(), textContent(), count(), screenshots), and a read must not
+  // activate the page (#37). Only the caller's main-world evaluations keep upstream behaviour.
   // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
   // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend (the recorder).
   const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
-  function isPlaywrightSetupEvaluation(method, params, utilityWorldName) {
+  function isEvaluationWithoutActivation(method, params, utilityWorldName) {
+    if (params.target && params.target.sandbox === utilityWorldName) {
+      return true;
+    }
     if (method === 'script.evaluate') {
       const expression = String(params.expression || '');
-      return (expression === '1 + 1' && params.target && params.target.sandbox === utilityWorldName)
-        || PLAYWRIGHT_SETUP_SCRIPT.test(expression);
+      return PLAYWRIGHT_SETUP_SCRIPT.test(expression);
     }
     if (method === 'script.callFunction' && Array.isArray(params.arguments)) {
       return params.arguments.some(function (argument) {
@@ -6259,7 +6571,7 @@
           utilityWorldTouchSessions.add(session);
           const originalSend = session.send;
           session.send = function (method, params) {
-            if (params && params.userActivation === true && isPlaywrightSetupEvaluation(method, params, utilityWorldName)) {
+            if (params && params.userActivation === true && isEvaluationWithoutActivation(method, params, utilityWorldName)) {
               arguments[1] = Object.assign({}, params, { userActivation: false });
             }
             return originalSend.apply(this, arguments);
@@ -6410,6 +6722,15 @@
     return keyboard.insertText(progress, value);
   }
 
+  // Before a screenshot Playwright appends and removes a <style> in every frame to restart CSS
+  // animations in step, a DOM change the page can observe (#40). Firefox keeps animations stable
+  // without it, as Playwright's Juggler Firefox, which does not toggle either.
+  function patchBidiPageNoScreenshotStyleToggle(BidiPage) {
+    BidiPage.prototype.shouldToggleStyleSheetToSyncAnimations = function () {
+      return false;
+    };
+  }
+
   function installKnownModuleFallbacks(resourceName, exportsObject) {
     if (resourceName.endsWith('/pipeTransport.js')) {
       const HostBackedPipeTransport = createHostBackedPipeTransport();
@@ -6519,11 +6840,14 @@
         return patchOnce(BidiFirefox, function () {
           patchBidiFirefoxProfilePrefs(BidiFirefox);
           patchBidiFirefoxUserJs(BidiFirefox);
+          patchBidiFirefoxNativeViewport(BidiFirefox);
         });
       },
       bidiBrowser: function (BidiBrowser, BidiBrowserContext) {
         return patchOnce(BidiBrowser, function () {
           patchBidiBrowserFirefoxTabs(BidiBrowser, BidiBrowserContext);
+          patchBidiBrowserNativeViewport(BidiBrowser);
+          patchBidiContextNativePreloadWarning(BidiBrowserContext);
           patchBidiBrowserCacheBehavior(BidiBrowser);
         });
       },
@@ -6536,8 +6860,12 @@
           patchBidiPageInitialBlankLoad(BidiPage);
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
+          patchBidiPageNoScreenshotStyleToggle(BidiPage);
           patchBidiPageFirefoxLastTab(BidiPage);
+          patchBidiPageNativeCaret(BidiPage);
+          patchBidiPageNativePreloadWarning(BidiPage);
           patchBidiPageCacheBehavior(BidiPage);
+          patchBidiPageNaturalPointer(BidiPage);
         });
       },
       bidiKeyboard: function (RawKeyboard) {
@@ -6561,6 +6889,13 @@
     source = replaceCoreBundleAnchor(source, 'new BidiFirefox(this)', 'new (' + hooks + '.bidiFirefox(BidiFirefox))(this)', 1);
     source = replaceCoreBundleAnchor(source, 'BidiBrowser.connect(',
       hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2).connect(', 2);
+    // Locator actions dispatch __playwright_mark_target__/__playwright_reset_targets__ into the
+    // page for the trace viewer's snapshots (#38). Only a trace that records snapshots reads them.
+    const snapshotsRecorded = '?.browserContext?.tracing?._snapshotter?.started()';
+    source = replaceCoreBundleAnchor(source, '      async _markAsTargetElement(progress2) {\n',
+      '      async _markAsTargetElement(progress2) {\n        if (!this._page' + snapshotsRecorded + ')\n          return;\n', 1);
+    source = replaceCoreBundleAnchor(source, 'markTargets: options.markTargets }',
+      'markTargets: this.frame._page' + snapshotsRecorded + ' ? options.markTargets : void 0 }', 2);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
     // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
     // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's

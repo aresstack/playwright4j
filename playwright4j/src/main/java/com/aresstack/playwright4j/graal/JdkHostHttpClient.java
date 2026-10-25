@@ -59,11 +59,12 @@ public final class JdkHostHttpClient implements HostHttpClient {
 
     @Override
     @org.graalvm.polyglot.HostAccess.Export
-    public String startRequest(String method, String url, String headers, String bodyBase64, String tlsOptions) {
+    public String startRequest(String method, String url, String headers, String bodyBase64, String tlsOptions, String proxy) {
         String requestId = UUID.randomUUID().toString();
         CompletableFuture<HostHttpResponse> future;
         try {
-            HttpClient requestClient = tlsClientFactory.clientFor(tlsOptions, client);
+            ProxyServer proxyServer = proxy == null || proxy.isEmpty() ? null : ProxyServer.parse(proxy);
+            HttpClient requestClient = tlsClientFactory.clientFor(tlsOptions, proxyServer, client);
             future = requestClient.sendAsync(buildRequest(method, url, headers, bodyBase64),
                             HttpResponse.BodyHandlers.ofByteArray())
                     .handle((response, throwable) -> {

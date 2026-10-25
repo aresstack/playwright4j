@@ -3,6 +3,18 @@ package com.aresstack.playwright4j.graal;
 import org.graalvm.polyglot.HostAccess;
 
 public final class Playwright4JHost {
+    /**
+     * {@code -Dplaywright4j.bidi.nativeBehavior=true} keeps Firefox's own behaviour where Playwright
+     * changes it for testing (Firefox over WebDriver BiDi only; see docs/browser-signals.md).
+     */
+    public static final String NATIVE_BEHAVIOR_PROPERTY = "playwright4j.bidi.nativeBehavior";
+
+    /**
+     * {@code -Dplaywright4j.bidi.naturalPointer=true} moves the mouse along a curved path and gives
+     * clicks a human press and release timing, where the caller sets no {@code steps} or {@code delay}
+     * (Firefox over WebDriver BiDi only; see docs/browser-signals.md).
+     */
+    public static final String NATURAL_POINTER_PROPERTY = "playwright4j.bidi.naturalPointer";
 
     private final HostEnvironment environment;
     private final HostFileSystem fileSystem;
@@ -94,6 +106,18 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public HostProcessLauncher processLauncher() {
         return processLauncher;
+    }
+
+    /** Read on every use, so the driver follows the property as the JVM sees it. */
+    @HostAccess.Export
+    public boolean nativeBehavior() {
+        return Boolean.parseBoolean(System.getProperty(NATIVE_BEHAVIOR_PROPERTY, "").trim());
+    }
+
+    /** Read on every use, so the driver follows the property as the JVM sees it. */
+    @HostAccess.Export
+    public boolean naturalPointer() {
+        return Boolean.parseBoolean(System.getProperty(NATURAL_POINTER_PROPERTY, "").trim());
     }
 
     @HostAccess.Export

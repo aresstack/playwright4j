@@ -42,6 +42,11 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:launchEnvironmentTest --no-daemon --stacktrace
 
+      - name: APIRequestContext proxy
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:apiRequestProxyTest --no-daemon --stacktrace
+
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
         env:
@@ -151,6 +156,10 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace
 
+      - name: Firefox smoke with playwright4j.bidi.nativeBehavior
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
+
       # Camoufox (Firefox under another name, see docs/camoufox.md) with the two WebDriver BiDi fixes
       # applied by docs/camoufox/hotpatch_omni.py: the same window checks as for Firefox.
       - name: Install Camoufox (pinned, with the WebDriver BiDi fixes)
@@ -177,6 +186,16 @@ jobs:
           $env:CAMOUFOX_BIDI_FIXES = "true"
           $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
           ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke --no-daemon --stacktrace
+
+      - name: Camoufox smoke with playwright4j.bidi.nativeBehavior
+        shell: pwsh
+        run: |
+          $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
+          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CAMOUFOX_BIDI_FIXES = "true"
+          $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
+          ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
 
       - name: Show failed Firefox tests
         if: failure()
