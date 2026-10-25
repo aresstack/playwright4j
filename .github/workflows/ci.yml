@@ -116,12 +116,20 @@ jobs:
 
   firefox-smoke:
     # Firefox over WebDriver BiDi (Playwright channel moz-firefox) using the Firefox that is
-    # preinstalled on the windows-2022 image. Separate job so Chrome/Edge stay an independent
-    # gate while the BiDi lifecycle work lands. The test fails (never skips) without Firefox.
-    # Covers launch() headless and launchPersistentContext() headed with a profile directory
-    # (the GPT Desktop path; headed exercises the Windows launcher-process handoff).
+    # preinstalled on the windows-2022 image, and Camoufox (Firefox under another name, see
+    # docs/camoufox.md) with the two WebDriver BiDi fixes applied by docs/camoufox/hotpatch_omni.py.
+    # Each browser runs with and without playwright4j.bidi.nativeBehavior, one job per combination,
+    # so a hang or failure names its combination and does not hold up the others. Separate from
+    # build-and-smoke so Chrome/Edge stay an independent gate. The tests fail (never skip) without
+    # the browser. launchPersistentContext() runs headed (the Windows launcher-process handoff).
+    name: firefox-smoke (${{ matrix.browser }}, nativeBehavior=${{ matrix.nativeBehavior }})
     runs-on: windows-2022
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, camoufox]
+        nativeBehavior: ["false", "true"]
 
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
@@ -138,6 +146,7 @@ jobs:
           cache: gradle
 
       - name: Locate installed Firefox (fail if missing)
+        if: matrix.browser == 'firefox'
         shell: pwsh
         run: |
           $candidates = @(
@@ -152,17 +161,8 @@ jobs:
           (Get-Item $exe).VersionInfo.ProductVersion | ForEach-Object { Write-Host "Firefox $_ at $exe" }
           "FIREFOX_EXECUTABLE=$exe" >> $env:GITHUB_ENV
 
-      - name: Firefox smoke (moz-firefox, WebDriver BiDi)
-        shell: pwsh
-        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace
-
-      - name: Firefox smoke with playwright4j.bidi.nativeBehavior
-        shell: pwsh
-        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
-
-      # Camoufox (Firefox under another name, see docs/camoufox.md) with the two WebDriver BiDi fixes
-      # applied by docs/camoufox/hotpatch_omni.py: the same window checks as for Firefox.
       - name: Install Camoufox (pinned, with the WebDriver BiDi fixes)
+        if: matrix.browser == 'camoufox'
         shell: pwsh
         run: |
           $version = "156.0.1-beta.36"
@@ -175,27 +175,20 @@ jobs:
           python docs/camoufox/hotpatch_omni.py $dir window visibility
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "CAMOUFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
+          "FIREFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
 
-      - name: Camoufox window smoke (moz-firefox, WebDriver BiDi)
+      - name: Firefox smoke (moz-firefox, WebDriver BiDi)
         shell: pwsh
-        run: |
-          $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
-          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace --tests '*FirefoxPersistentWindowTest*'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # CAMOU_CONFIG from setEnv, and one native window on the persistent start (#34).
-          $env:CAMOUFOX_BIDI_FIXES = "true"
-          $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
-          ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke --no-daemon --stacktrace
+        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke "-Pplaywright4j.bidi.nativeBehavior=${{ matrix.nativeBehavior }}" --no-daemon --stacktrace
 
-      - name: Camoufox smoke with playwright4j.bidi.nativeBehavior
+      # CAMOU_CONFIG from setEnv, and one native window on the persistent start (#34).
+      - name: Camoufox fingerprint smoke
+        if: matrix.browser == 'camoufox'
         shell: pwsh
-        run: |
-          $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
-          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:CAMOUFOX_BIDI_FIXES = "true"
-          $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
-          ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
+        env:
+          CAMOUFOX_BIDI_FIXES: "true"
+          PLAYWRIGHT4J_REQUIRE_CAMOUFOX: "true"
+        run: ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke "-Pplaywright4j.bidi.nativeBehavior=${{ matrix.nativeBehavior }}" --no-daemon --stacktrace
 
       - name: Show failed Firefox tests
         if: failure()
@@ -214,22 +207,22 @@ jobs:
             }
           }
 
-      - name: Report leftover Firefox processes
+      - name: Report leftover browser processes
         if: always()
         shell: pwsh
         run: |
-          $left = Get-CimInstance Win32_Process -Filter "Name='firefox.exe'"
+          $left = Get-CimInstance Win32_Process -Filter "Name='firefox.exe' OR Name='camoufox.exe'"
           if ($left) {
-            $left | Format-List ProcessId, ParentProcessId, CreationDate, CommandLine
+            $left | Format-List Name, ProcessId, ParentProcessId, CreationDate, CommandLine
             $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           }
-          else { Write-Host "No Firefox processes left." }
+          else { Write-Host "No Firefox or Camoufox processes left." }
 
       - name: Upload Firefox smoke reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright4j-firefox-smoke-reports
+          name: playwright4j-firefox-smoke-reports-${{ matrix.browser }}-nativeBehavior-${{ matrix.nativeBehavior }}
           path: |
             playwright-java-contract-tests/build/reports/tests/firefoxSmoke/**
             playwright-java-contract-tests/build/test-results/firefoxSmoke/**
