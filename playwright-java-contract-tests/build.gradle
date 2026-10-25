@@ -92,7 +92,10 @@ tasks.register('firefoxSmoke', Test) {
     environment 'MOZ_ENABLE_WAYLAND', '0'
 
     systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
-    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // A hung browser call does not react to an interrupt: run each test in its own thread so a
+    // timeout fails the test, and print every thread's stack first to show where it hung.
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SEPARATE_THREAD'
+    systemProperty 'junit.jupiter.execution.timeout.threaddump.enabled', 'true'
     // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
     // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
@@ -121,7 +124,10 @@ tasks.register('camoufoxSmoke', Test) {
     environment 'MOZ_ENABLE_WAYLAND', '0'
 
     systemProperty 'junit.jupiter.execution.timeout.default', '120 s'
-    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    // A hung browser call does not react to an interrupt: run each test in its own thread so a
+    // timeout fails the test, and print every thread's stack first to show where it hung.
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SEPARATE_THREAD'
+    systemProperty 'junit.jupiter.execution.timeout.threaddump.enabled', 'true'
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
     // -Pplaywright4j.bidi.nativeBehavior=true runs the smoke with Firefox's own behaviour (docs/browser-signals.md).
     if (findProperty('playwright4j.bidi.nativeBehavior')) {
