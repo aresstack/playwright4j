@@ -147,8 +147,8 @@ def install(root, release, archive):
     if os.path.exists(root) and os.listdir(root):
         sys.exit(f"{root} is not empty")
     os.makedirs(root, exist_ok=True)
-    # Download next to the new folder, so the space is needed on one drive only.
-    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(root))) as tmp:
+    # Download into the new folder, so nothing is written elsewhere and one drive needs the space.
+    with tempfile.TemporaryDirectory(dir=root) as tmp:
         if archive is None:
             system = {"win32": "win", "linux": "lin"}.get(sys.platform)
             if system is None or platform.machine().lower() not in ("x86_64", "amd64"):
@@ -157,7 +157,7 @@ def install(root, release, archive):
             url = (f"https://github.com/daijro/camoufox/releases/download/v{release}/"
                    f"camoufox-{release}-{system}.x86_64.zip")
             print(f"downloading {url}")
-            with urllib.request.urlopen(url) as response, open(archive, "wb") as out:
+            with urllib.request.urlopen(url, timeout=60) as response, open(archive, "wb") as out:
                 shutil.copyfileobj(response, out, 1 << 20)
         digest = hashlib.sha256()
         with open(archive, "rb") as f:

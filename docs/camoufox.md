@@ -43,8 +43,8 @@ The two changed files in `omni.ja`, the same in the Windows and the Linux archiv
 | `chrome/remote/content/shared/WindowManager.sys.mjs` | `158.0-beta.40` | `3fc4ff2e3585b173ca99c04895aa1616222eb785cd5aa3a14c07a3d7209719c1` | `42df8aeb4f98f33a9076f6178435700ecd9f05d5029161a4bdaa2f6ed3c019ec` |
 | `chrome/remote/content/webdriver-bidi/modules/windowglobal/browsingContext.sys.mjs` | both | `26b244cc760a7dd8197566c90f6fdc9a4dd264e651d7bfb7fc3c2febdbc3bdd2` | `4202f76e04e88059c1e6b9797228f4a04f9ed1d210984d5818f00ccc790df460` |
 
-The archive is about 1.3 GB and the unpacked browser about 2.5 GB. The script downloads next to
-the new folder and deletes the archive afterwards, so the drive of the new folder needs about 4 GB
+The archive is about 1.3 GB and the unpacked browser about 2.5 GB. The script downloads into the
+new folder and deletes the archive afterwards, so the drive of the new folder needs about 4 GB
 during the installation.
 
 ### Windows (PowerShell)
@@ -84,11 +84,12 @@ argument in `setArgs`), which clears the script cache Firefox keeps in the profi
 
 ### An already unpacked Camoufox
 
-`python docs/camoufox/hotpatch_omni.py <folder>` patches a Camoufox unpacked before (the folder that
-holds `omni.ja` and the executable), with the same checks. Close every Camoufox started from that
-folder first. The released file stays as `omni.ja.orig`; running the script again changes nothing.
-Patch a copy of its own rather than an installation another tool keeps up to date: an update of such an
-installation brings back the released `omni.ja`, and the script has to run again.
+`python3 docs/camoufox/hotpatch_omni.py <folder>` (on Windows `python`) patches a Camoufox unpacked
+before (the folder that holds `omni.ja` and the executable), with the same checks of the two files.
+Close every Camoufox started from that folder first. The released file stays as `omni.ja.orig`;
+running the script again changes nothing. Patch a copy of its own rather than an installation
+another tool keeps up to date: an update of such an installation brings back the released
+`omni.ja`, and the script has to run again.
 
 ### Undoing
 
@@ -116,9 +117,9 @@ It exits with a code other than 0 and leaves `omni.ja` as it was:
 ### Other Camoufox builds
 
 For a build that is not listed, `--unverified` applies the same changes without the file checks
-(`python docs/camoufox/hotpatch_omni.py --unverified <folder>`, then
-`python docs/camoufox/hotpatch_omni.py --check --unverified <folder>`). Run the checks of [Reproducing](#reproducing) against it before
-relying on it. To pin it, add the archive and file hashes to `RELEASES` and `KNOWN_FILES` in the
+(`python3 docs/camoufox/hotpatch_omni.py --unverified <folder>`, then
+`python3 docs/camoufox/hotpatch_omni.py --check --unverified <folder>`; on Windows `python`). Run
+the checks of [Reproducing](#reproducing) against it before relying on it. To pin it, add the archive and file hashes to `RELEASES` and `KNOWN_FILES` in the
 script, together with the test results.
 
 ## Camoufox upstream
@@ -136,12 +137,12 @@ playwright4j does not wait for that outcome:
   `e2c542a` ([aresstack/camoufox#1](https://github.com/aresstack/camoufox/pull/1)), together with the
   patch guard `browser/tests/playwright/patches/webdriver-bidi-tabs.py`: it fails on a released
   build and passes with both patches. #952 is opened from that branch, which stays as the reference.
-- CI and the release check install the default pinned release through the script, so they test
-  exactly the files listed above, whatever happens upstream.
+- The Windows CI job `firefox-smoke` installs the default pinned release through the script, so it
+  tests exactly the files listed above, whatever happens upstream.
 
 | Upstream | Effect on playwright4j |
 | --- | --- |
-| merges #952, or fixes the behaviours another way | only new Camoufox releases change; the pinned releases stay as they are. A release with the fixes needs no patching. The script refuses its files until they are pinned, and the checks of [Reproducing](#reproducing) show whether it behaves the same. |
+| merges #952, or fixes the behaviours another way | only new Camoufox releases change; the pinned releases stay as they are. A release with the fixes needs no patching. `--install` accepts it only once its archive is added to `RELEASES`, and `--check` recognises the fixes only in the form above; the checks of [Reproducing](#reproducing) show whether such a release behaves the same. |
 | asks for changes, or closes #952 | none |
 | replaces a pinned release archive | `--install` stops at the archive's SHA-256 |
 | removes a pinned release | the download fails; an archive kept from before still installs with `--archive` |
@@ -294,7 +295,7 @@ Camoufox 156.0.1-beta.36 with both fixes, persistent context headed:
 | Run | Result |
 | --- | --- |
 | Linux, `FirefoxPersistentWindowTest` (process and window names extended to `camoufox` locally) | 5 of 6 pass |
-| Linux, this branch on master after #29 (Core 1.62), `firefoxSmoke` | 9 of 9 pass (Firefox 158.0.1: 9 of 9) |
+| Linux, #31 on master after #29 (Core 1.62), `firefoxSmoke` | 9 of 9 pass (Firefox 158.0.1: 9 of 9) |
 | Windows (Angelo, master `4cb607f`, fixes reconstructed from the description, process name extended locally) | `FirefoxBiDiSmokeTest` 2 of 2; `firefoxSmoke` 6 of 8 |
 | Linux and Windows, `camoufoxSmoke` (fingerprint through `setEnv`, two pages) | Linux: passes; Windows (Angelo, the script's hotpatch, master after #30 and #33): 2 of 2 pass |
 
