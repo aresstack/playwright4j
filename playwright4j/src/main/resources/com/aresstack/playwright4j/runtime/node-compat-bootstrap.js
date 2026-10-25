@@ -6056,6 +6056,63 @@
     return exportsObject;
   }
 
+  function replaceCoreBundleAnchor(source, anchor, replacement, expectedCount) {
+    const count = source.split(anchor).length - 1;
+    if (count !== expectedCount) {
+      throw new Error('Unsupported Playwright Core bundle: expected ' + expectedCount + ' x "' + anchor + '", found ' + count);
+    }
+    return source.split(anchor).join(replacement);
+  }
+
+  function patchCoreBundleSource(source) {
+    const HostBackedPipeTransport = createHostBackedPipeTransport();
+    const HostBackedWebSocketTransport = createHostBackedWebSocketTransport();
+    const patched = new WeakSet();
+    function patchOnce(target, apply) {
+      if (!patched.has(target)) {
+        patched.add(target);
+        apply();
+      }
+      return target;
+    }
+    global.__playwright4jCoreBundle = {
+      PipeTransport: HostBackedPipeTransport,
+      WebSocketTransport: HostBackedWebSocketTransport,
+      bidiFirefox: function (BidiFirefox) {
+        return patchOnce(BidiFirefox, function () {
+          patchBidiFirefoxProfilePrefs(BidiFirefox);
+          patchBidiFirefoxUserJs(BidiFirefox);
+        });
+      },
+      bidiBrowser: function (BidiBrowser, BidiBrowserContext) {
+        return patchOnce(BidiBrowser, function () {
+          patchBidiBrowserFirefoxTabs(BidiBrowser, BidiBrowserContext);
+        });
+      },
+      bidiPage: function (BidiPage) {
+        return patchOnce(BidiPage, function () {
+          patchBidiPageInitialBlankLoad(BidiPage);
+          patchBidiPageRequestGC(BidiPage);
+          patchBidiPageTouchUtilityWorld(BidiPage, '__playwright_utility_world__');
+          patchBidiPageFirefoxLastTab(BidiPage);
+        });
+      }
+    };
+    const hooks = 'globalThis.__playwright4jCoreBundle';
+    // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
+    // --remote-debugging-pipe, fd 3/4, which the JVM cannot hand to a child process).
+    source = replaceCoreBundleAnchor(source, '    PipeTransport = class {', '    PipeTransport = ' + hooks + '.PipeTransport || class {', 1);
+    source = replaceCoreBundleAnchor(source, '    PipeTransport2 = class {', '    PipeTransport2 = ' + hooks + '.PipeTransport || class {', 1);
+    source = replaceCoreBundleAnchor(source, '    WebSocketTransport = class _WebSocketTransport {',
+      '    WebSocketTransport = ' + hooks + '.WebSocketTransport || class _WebSocketTransport {', 1);
+    source = replaceCoreBundleAnchor(source, 'new BidiFirefox(this)', 'new (' + hooks + '.bidiFirefox(BidiFirefox))(this)', 1);
+    source = replaceCoreBundleAnchor(source, 'BidiBrowser.connect(',
+      hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2).connect(', 2);
+    source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
+    pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
+    return source;
+  }
+
   function loadCommonJsModule(resourceName) {
     const normalizedResourceName = normalizeResourceName(resourceName);
 
@@ -6078,22 +6135,15 @@
       return module.exports;
     }
 
-    // Playwright 1.62 bundles PipeTransport into coreBundle.js rather than exposing
-    // a separate pipeTransport.js module. Replace only the class binding with the
-    // established host-backed implementation for both the Java protocol and CDP pipes.
+    // Since Playwright 1.62 the whole server lives in lib/coreBundle.js, so the per-module hooks
+    // in installKnownModuleFallbacks no longer see pipeTransport.js, transport.js or the BiDi
+    // modules. The same replacements and patches are applied by rewriting the bundle source:
+    // the transport classes are swapped at their definition, and the BiDi classes are patched
+    // (once, on their prototypes) where Playwright first uses them. Each anchor must occur
+    // exactly as often as expected, so a changed bundle fails loudly instead of silently
+    // running without a patch.
     if (normalizedResourceName.endsWith('/lib/coreBundle.js')) {
-      const transportBinding = 'PipeTransport = class {';
-      const webSocketBinding = 'WebSocketTransport = class _WebSocketTransport {';
-      if (source.indexOf(transportBinding) < 0 || source.indexOf(webSocketBinding) < 0) {
-        throw new Error('Unsupported Playwright Core bundle: expected transport bindings not found');
-      }
-      global.__playwright4jHostBackedPipeTransport = createHostBackedPipeTransport();
-      global.__playwright4jHostBackedWebSocketTransport = createHostBackedWebSocketTransport();
-      pw4jDebug('Patching bundled Playwright 1.62 PipeTransport and WebSocketTransport');
-      source = source.replace(transportBinding,
-        'PipeTransport = global.__playwright4jHostBackedPipeTransport || class {');
-      source = source.replace(webSocketBinding,
-        'WebSocketTransport = global.__playwright4jHostBackedWebSocketTransport || class _WebSocketTransport {');
+      source = patchCoreBundleSource(source);
     }
 
     // Route dynamic import() through our CommonJS loader. GraalJS's native dynamic import needs a
