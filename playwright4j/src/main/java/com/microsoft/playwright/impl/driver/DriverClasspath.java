@@ -135,7 +135,8 @@ final class DriverClasspath {
             if (separator < 0) {
                 return null;
             }
-            String outer = decode(rest.substring(0, separator));
+            // Same path form as a file: URL ("/C:/..." on Windows), so let the URI parser map it.
+            Path outer = fileUrlToPath("file:" + rest.substring(0, separator));
             String inner = rest.substring(separator + 2);
             int innerEnd = inner.indexOf("!/");
             if (innerEnd >= 0) {
@@ -145,7 +146,7 @@ final class DriverClasspath {
             if (!inner.endsWith(".jar")) {
                 return null; // e.g. BOOT-INF/classes/: the application's own classes
             }
-            return extractNested(Paths.get(outer), inner, nestedJarCache).toString();
+            return extractNested(outer, inner, nestedJarCache).toString();
         }
         // file:/outer.jar!/<resource>  or  file:/outer.jar!/BOOT-INF/lib/inner.jar!/<resource>
         String[] parts = spec.split("!/", -1);
