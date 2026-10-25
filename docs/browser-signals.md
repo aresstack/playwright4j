@@ -124,6 +124,19 @@ Since the change for Firefox tabs and windows (PR #27, not released yet), playwr
 creates a window for the first page of a persistent context: like the minimal client, it takes over
 the start tab, and further pages open as tabs.
 
+### Playwright's own code and the page's main world (Firefox)
+
+Upstream Playwright 1.62 runs some of its own code in the page's main world in Firefox, where page
+scripts see it: every document gets a `window.__pw_bidiInsertText` global; handle previews create
+the InjectedScript there (which reads `window.__pwClock` and dispatches
+`__playwright_global_listeners_check__`); and the offsets for input inside an `<iframe>` call
+`getClientRects`/`getBoundingClientRect` there, which a page can hook. playwright4j runs all three
+in Playwright's utility world instead (issues #36, #39, #50), as do its own checks of a taken-over
+start tab. Unchanged, because the Playwright API defines them: the caller's `evaluate` and its
+main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElement()`) run in the
+main world, and each evaluation there creates Playwright's UtilityScript in it.
+`FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
+
 ### Chrome
 
 | Signal | Chrome without automation | Official driver | playwright4j 0.2.1 |
@@ -255,7 +268,7 @@ with Firefox 158.0.1 and with Camoufox 156.0.1-beta.36 with both BiDi fixes
 (`hotpatch_omni.py`), and so does `camoufoxSmoke` (fingerprint through `setEnv`, second page with
 the fixes). With Camoufox the popup blocker stays on, as `camoufox.cfg` leaves it. The window-count
 checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. CI on Windows runs
-`firefoxSmoke` with and without the property.
+`firefoxSmoke` with Firefox and with Camoufox, and `camoufoxSmoke`, with and without the property.
 
 The property may become the default once its compatibility with the Playwright API is shown;
 until then it is opt-in.

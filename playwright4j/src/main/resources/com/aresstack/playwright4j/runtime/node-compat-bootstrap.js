@@ -3302,6 +3302,22 @@
     return JSON.stringify(tls);
   }
 
+  // Playwright routes APIRequestContext traffic through a proxy by passing a proxy agent:
+  // HttpsProxyAgent keeps the proxy as a URL in `proxy`, SocksProxyAgent its URL in `proxyUrl`.
+  // The host connects through that proxy itself; Playwright already applied `bypass`.
+  function agentProxyUrl(agent) {
+    if (!agent) {
+      return '';
+    }
+    if (typeof agent.proxyUrl === 'string') {
+      return agent.proxyUrl;
+    }
+    if (agent.proxy && typeof agent.proxy.href === 'string') {
+      return agent.proxy.href;
+    }
+    return '';
+  }
+
   function createHttpRequest(defaultProtocol, first, second, third) {
     // Node signatures: request(url[, options][, cb]) or request(options[, cb]).
     let urlString = null;
@@ -3390,7 +3406,7 @@
         const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
         // Non-blocking: the response is delivered later via __playwright4jDrainHttp, so the
         // JS thread stays free and Playwright's timeout/abort can take effect mid-request.
-        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options));
+        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options), agentProxyUrl(options.agent));
       } catch (error) {
         Promise.resolve().then(function () {
           request.emit('error', error);
@@ -3667,6 +3683,11 @@
       return result;
     };
 
+    // WHATWG userinfo percent-encode set; '%' is not in it, so encoding is idempotent.
+    function encodeUserinfo(value) {
+      return String(value).replace(/[\u0000-\u0020"#<>?`{}\/:;=@\[\\\]^|\u007f-\u{10ffff}]/gu, encodeURIComponent);
+    }
+
     global.URL = class URL {
       constructor(value, base) {
         let text = String(value);
@@ -3781,6 +3802,24 @@
         this._search = query ? '?' + query : '';
         this._searchParams = new global.URLSearchParams(query);
         this._searchDirty = false;
+      }
+
+      // Node encodes credentials on assignment (url.password = 'p@ss' gives 'p%40ss'), so href
+      // stays parseable; Playwright assigns proxy credentials this way.
+      get username() {
+        return this._username;
+      }
+
+      set username(value) {
+        this._username = encodeUserinfo(value);
+      }
+
+      get password() {
+        return this._password;
+      }
+
+      set password(value) {
+        this._password = encodeUserinfo(value);
       }
 
       get host() {
@@ -6021,6 +6060,9 @@
   // The realms of a taken-over tab and its load events came before it had a page session. Report
   // its window realms (the utility world follows on demand) and the lifecycle events its document
   // has already passed.
+  // Playwright's utility world; the shim reads page state there, never in the main world.
+  const UTILITY_WORLD_NAME = '__playwright_utility_world__';
+
   async function restoreTakenOverPage(bidiPage) {
     const contextId = bidiPage._session.sessionId;
     try {
@@ -6034,7 +6076,7 @@
       }
       const evaluation = await bidiPage._session.send('script.evaluate', {
         expression: 'document.readyState',
-        target: { realm: main.realm },
+        target: { context: contextId, sandbox: UTILITY_WORLD_NAME },
         awaitPromise: false
       });
       const readyState = evaluation && evaluation.type === 'success' && evaluation.result ? evaluation.result.value : undefined;
@@ -6307,6 +6349,47 @@
     }
   }
 
+  // Playwright's BiDi browser answers a context.route() with network.setCacheBehavior "bypass"
+  // for the whole browser (BidiBrowser.updateCacheBehavior, no contexts filter), so every other
+  // context and tab skips the HTTP cache too (#49). Send it per top-level browsing context
+  // instead, for the pages whose own or whose context's routes need it.
+  const pageCacheBehavior = new WeakMap();
+  function syncBidiPageCacheBehavior(bidiPage) {
+    const networkManager = bidiPage._networkManager;
+    const wanted = bidiPage._page.needsRequestInterception() || !!(networkManager && networkManager._credentials)
+      ? 'bypass' : 'default';
+    if (pageCacheBehavior.get(bidiPage) === wanted || (!pageCacheBehavior.has(bidiPage) && wanted === 'default')) {
+      return Promise.resolve();
+    }
+    pageCacheBehavior.set(bidiPage, wanted);
+    return bidiPage._session.sendMayFail('network.setCacheBehavior',
+        { cacheBehavior: wanted, contexts: [bidiPage._session.sessionId] });
+  }
+  function patchBidiBrowserCacheBehavior(BidiBrowser) {
+    BidiBrowser.prototype.updateCacheBehavior = async function () {
+      await Promise.all([...this._bidiPages.values()].map(syncBidiPageCacheBehavior));
+    };
+    const originalOnBrowsingContextCreated = BidiBrowser.prototype._onBrowsingContextCreated;
+    BidiBrowser.prototype._onBrowsingContextCreated = function (event) {
+      const result = originalOnBrowsingContextCreated.apply(this, arguments);
+      const bidiPage = !event.parent && this._bidiPages.get(event.context);
+      if (bidiPage) {
+        syncBidiPageCacheBehavior(bidiPage);
+      }
+      return result;
+    };
+  }
+  // BidiNetworkManager sets the page's cache behaviour from the page's own routes only; it would
+  // reset a page whose context still routes.
+  function patchBidiPageCacheBehavior(BidiPage) {
+    const originalUpdateRequestInterception = BidiPage.prototype.updateRequestInterception;
+    BidiPage.prototype.updateRequestInterception = async function () {
+      await originalUpdateRequestInterception.apply(this, arguments);
+      pageCacheBehavior.delete(this);
+      await syncBidiPageCacheBehavior(this);
+    };
+  }
+
   function patchBidiFirefoxUserJs(BidiFirefox) {
     // BrowserType._prepareToLaunch knows whether the launch is persistent, prepareUserDataDir does
     // not: pass it along on a copy of the launch options.
@@ -6353,9 +6436,7 @@
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
   // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
   // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
-  // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend. Since 1.62 a
-  // BiDi context extends the injected script of every new document right away
-  // (BidiBrowserContext.initialize), so all of them run before any input.
+  // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend (the recorder).
   const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
   function isPlaywrightSetupEvaluation(method, params, utilityWorldName) {
     if (method === 'script.evaluate') {
@@ -6444,7 +6525,7 @@
     if (resourceName.endsWith('/lib/server/bidi/bidiPage.js') && exportsObject.BidiPage) {
       patchBidiPageInitialBlankLoad(exportsObject.BidiPage);
       patchBidiPageRequestGC(exportsObject.BidiPage);
-      patchBidiPageTouchUtilityWorld(exportsObject.BidiPage, '__playwright_utility_world__');
+      patchBidiPageTouchUtilityWorld(exportsObject.BidiPage, UTILITY_WORLD_NAME);
       patchBidiPageFirefoxLastTab(exportsObject.BidiPage);
     }
 
@@ -6501,6 +6582,7 @@
     const HostBackedPipeTransport = createHostBackedPipeTransport();
     const HostBackedWebSocketTransport = createHostBackedWebSocketTransport();
     const patched = new WeakSet();
+    const bidiPageClasses = [];
     function patchOnce(target, apply) {
       if (!patched.has(target)) {
         patched.add(target);
@@ -6523,16 +6605,22 @@
           patchBidiBrowserFirefoxTabs(BidiBrowser, BidiBrowserContext);
           patchBidiBrowserNativeViewport(BidiBrowser);
           patchBidiContextNativePreloadWarning(BidiBrowserContext);
+          patchBidiBrowserCacheBehavior(BidiBrowser);
         });
+      },
+      isBidiPage: function (delegate) {
+        return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
       bidiPage: function (BidiPage) {
         return patchOnce(BidiPage, function () {
+          bidiPageClasses.push(BidiPage);
           patchBidiPageInitialBlankLoad(BidiPage);
           patchBidiPageRequestGC(BidiPage);
-          patchBidiPageTouchUtilityWorld(BidiPage, '__playwright_utility_world__');
+          patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
           patchBidiPageFirefoxLastTab(BidiPage);
           patchBidiPageNativeCaret(BidiPage);
           patchBidiPageNativePreloadWarning(BidiPage);
+          patchBidiPageCacheBehavior(BidiPage);
         });
       }
     };
@@ -6547,6 +6635,44 @@
     source = replaceCoreBundleAnchor(source, 'BidiBrowser.connect(',
       hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2).connect(', 2);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
+    // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
+    // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's
+    // evaluations and main-world handles stay there, as the API defines.
+    // No window.__pw_bidiInsertText on every document: insertText runs its script in the utility world.
+    source = replaceCoreBundleAnchor(source, '        promises2.push(this.extendInjectedScript(source7));\n', '', 1);
+    source = replaceCoreBundleAnchor(source,
+      '          const context2 = await progress2.race(frame.mainContext());\n'
+      + '          const handle = await progress2.race(context2.evaluateHandle((text3) => window.__pw_bidiInsertText(text3), text2));',
+      '          const context2 = await progress2.race(frame.utilityContext());\n'
+      + '          const handle = await progress2.race(context2.evaluateExpressionHandle('
+      + '"(text) => {\\nconst module = { exports: {} };\\n" + source7 + "\\nreturn bidiInsertText(window, text);\\n}", { isFunction: true }, text2));', 1);
+    source = replaceCoreBundleAnchor(source,
+      '        const box = await handle.evaluate((element3) => {\n'
+      + '          if (!(element3 instanceof Element) || element3.getClientRects().length === 0)\n'
+      + '            return null;\n'
+      + '          const rect = element3.getBoundingClientRect();\n'
+      + '          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };\n'
+      + '        });\n'
+      + '        if (!box)\n',
+      '        const box = await handle.evaluateInUtility(([, element3]) => {\n'
+      + '          if (!(element3 instanceof Element) || element3.getClientRects().length === 0)\n'
+      + '            return null;\n'
+      + '          const rect = element3.getBoundingClientRect();\n'
+      + '          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };\n'
+      + '        }, {});\n'
+      + '        if (!box || box === "error:notconnected")\n', 1);
+    // A main-world handle's preview would create the InjectedScript in the main world.
+    source = replaceCoreBundleAnchor(source,
+      '        const utility = await this._context.injectedScript();\n'
+      + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));',
+      '        if (this._context.world === "main" && ' + hooks + '.isBidiPage(this._page.delegate)) {\n'
+      + '          const preview = await this.evaluateInUtility(([injected, e]) => "JSHandle@" + injected.previewNode(e), {});\n'
+      + '          if (preview !== "error:notconnected")\n'
+      + '            this._setPreview(preview);\n'
+      + '          return;\n'
+      + '        }\n'
+      + '        const utility = await this._context.injectedScript();\n'
+      + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks

@@ -42,6 +42,11 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:launchEnvironmentTest --no-daemon --stacktrace
 
+      - name: APIRequestContext proxy
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:apiRequestProxyTest --no-daemon --stacktrace
+
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
         env:
@@ -155,11 +160,48 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
 
+      # Camoufox (Firefox under another name, see docs/camoufox.md) with the two WebDriver BiDi fixes
+      # applied by docs/camoufox/hotpatch_omni.py: the same window checks as for Firefox.
+      - name: Install Camoufox (pinned, with the WebDriver BiDi fixes)
+        shell: pwsh
+        run: |
+          $version = "156.0.1-beta.36"
+          $zip = "$env:RUNNER_TEMP\camoufox.zip"
+          Invoke-WebRequest "https://github.com/daijro/camoufox/releases/download/v$version/camoufox-$version-win.x86_64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne "096fd4832a7a32f2aa7f7bdd07fe6253dda296cbe783acd7bc2c86cf5ae62031") { Write-Error "Camoufox archive SHA-256 $hash"; exit 1 }
+          $dir = "$env:RUNNER_TEMP\camoufox"
+          Expand-Archive $zip -DestinationPath $dir
+          python docs/camoufox/hotpatch_omni.py $dir window visibility
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "CAMOUFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
+
+      - name: Camoufox window smoke (moz-firefox, WebDriver BiDi)
+        shell: pwsh
+        run: |
+          $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
+          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace --tests '*FirefoxPersistentWindowTest*'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # CAMOU_CONFIG from setEnv, and one native window on the persistent start (#34).
+          $env:CAMOUFOX_BIDI_FIXES = "true"
+          $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
+          ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke --no-daemon --stacktrace
+
+      - name: Camoufox smoke with playwright4j.bidi.nativeBehavior
+        shell: pwsh
+        run: |
+          $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
+          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CAMOUFOX_BIDI_FIXES = "true"
+          $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
+          ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
+
       - name: Show failed Firefox tests
         if: failure()
         shell: pwsh
         run: |
-          $results = "playwright-java-contract-tests/build/test-results/firefoxSmoke"
+          $results = "playwright-java-contract-tests/build/test-results/firefoxSmoke", "playwright-java-contract-tests/build/test-results/camoufoxSmoke"
           Get-ChildItem $results -Filter *.xml -ErrorAction SilentlyContinue | ForEach-Object {
             [xml]$xml = Get-Content $_.FullName -Raw
             foreach ($case in $xml.testsuite.testcase) {
@@ -191,3 +233,5 @@ jobs:
           path: |
             playwright-java-contract-tests/build/reports/tests/firefoxSmoke/**
             playwright-java-contract-tests/build/test-results/firefoxSmoke/**
+            playwright-java-contract-tests/build/reports/tests/camoufoxSmoke/**
+            playwright-java-contract-tests/build/test-results/camoufoxSmoke/**

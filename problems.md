@@ -51,6 +51,16 @@ Firefox, a minimal BiDi client and Chrome over CDP do not. playwright4j sends th
 actions the caller asks for keep `userActivation: true`, so `page.evaluate` and clicks still
 activate the page. The official driver activates every page on load.
 
+## DELIBERATE_DIVERGENCE — `APIRequestContext` proxy schemes
+
+The `proxy` option of `APIRequest.newContext` (and of a browser context's `request()`) is honoured,
+including `bypass` and Basic credentials; https targets go through a `CONNECT` tunnel. The requests
+are sent by `java.net.http`, which speaks only plain HTTP to a proxy, so a `socks4://`, `socks5://`
+or `https://` proxy server fails the request with `Proxy scheme "…" is not supported for API
+requests` instead of connecting directly. Credentials are sent when the proxy answers `407`, not
+preemptively as Playwright on Node does. The driver JVM enables Basic for `CONNECT`
+(`jdk.http.auth.tunneling.disabledSchemes`) unless the application sets that property.
+
 ## UNSUPPORTED_ENGINE_FAST_FAIL — Firefox / WebKit
 
 Playwright4J is **Chromium-only** (channels `chrome` / `msedge`). Fixtures that request WebKit or

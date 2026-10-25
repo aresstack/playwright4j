@@ -32,6 +32,20 @@ final class NodeCompatibilityLayerTest {
         }
     }
 
+    @Test
+    void urlEncodesAssignedCredentialsLikeNode() {
+        try (GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(Playwright4JHost.createDefault())) {
+            runtime.loadNodeCompatibilityLayer();
+
+            // Playwright sets proxy credentials this way; the href must stay a parseable URL.
+            assertEquals("http://us%20er:p%40ss%3Aw%C3%B6rd@127.0.0.1:3128/", runtime.evaluate("url-credentials.js",
+                    "(function () { const url = new URL('http://127.0.0.1:3128');"
+                            + " url.username = 'us er'; url.password = 'p@ss:w\u00f6rd'; return url.href; })()").asString());
+            assertEquals("p%40ss", runtime.evaluate("url-parsed-credentials.js",
+                    "new URL('http://user:p%40ss@127.0.0.1/').password").asString());
+        }
+    }
+
     private static boolean accessible(GraalPlaywrightRuntime runtime, String path) {
         return runtime.evaluate("fs-access.js",
                 "(function () { try { require('fs').accessSync('" + path + "'); return true; } catch (e) { return false; } })()")

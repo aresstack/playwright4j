@@ -11,6 +11,7 @@ summarizes it.
 | Chrome and Edge channel smokes (launch, page, evaluate, close) | Windows CI | yes, release gate |
 | Firefox WebDriver BiDi smoke | Windows CI | yes, release gate |
 | Firefox windows and tabs, counted through the OS (`FirefoxPersistentWindowTest`, part of `firefoxSmoke`) | Windows CI, headed | yes, release gate |
+| `APIRequestContext` through a proxy: plain HTTP, `CONNECT` for https, credentials, `bypass` (`apiRequestProxyTest`, stub proxy, no browser) | CI | yes |
 | `TestBrowserTypeConnect` (launch-server, connect, reconnect, disconnect) for Chrome and Edge | CI | yes |
 | Jar check: no native binaries in the artifact | CI, release | yes |
 | `consumer-check/`: resolves the documented setup twice, with Gradle (`build.gradle`) and with Maven from the published POM (`pom.xml`); both fail if `driver` or `driver-bundle` reaches the classpath, the Gradle check also fails on a native file in the jar | CI, release | yes |
