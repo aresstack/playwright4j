@@ -95,6 +95,25 @@ tasks.register('firefoxSmoke', Test) {
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
 
+// The environment a browser process starts with (setEnv and inheritance) for launch() and
+// launchPersistentContext() of Chromium and Firefox. Uses a fake browser script, no real browser.
+tasks.register('launchEnvironmentTest', Test) {
+    description = 'Checks that setEnv reaches the browser process and the default environment is inherited.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.LaunchEnvironmentTest' }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+    environment 'PLAYWRIGHT4J_ENV_INHERITED', 'from-test-jvm'
+
+    systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
+}
+
 // Diagnostic: prints the automation signals a page can observe (navigator.webdriver, UA, request
 // headers, injected globals, browser command line) for a browser launched through playwright4j.
 // Firefox: FIREFOX_EXECUTABLE. Chrome/Edge: PROBE_BROWSER=chromium plus PROBE_CHANNEL or
