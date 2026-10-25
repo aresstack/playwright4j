@@ -151,6 +151,10 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace
 
+      - name: Firefox smoke with playwright4j.bidi.nativeBehavior
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon --stacktrace
+
       - name: Show failed Firefox tests
         if: failure()
         shell: pwsh

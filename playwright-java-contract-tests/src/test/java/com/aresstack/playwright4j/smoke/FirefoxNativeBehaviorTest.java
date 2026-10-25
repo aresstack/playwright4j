@@ -38,13 +38,21 @@ public class FirefoxNativeBehaviorTest {
             + " new MutationObserver(records => window.__styleChanges += records.length)"
             + ".observe(document.getElementById('field'), { attributes: true, attributeFilter: ['style'] }); }";
 
+    // The task may run every Firefox smoke with the property set (-Pplaywright4j.bidi.nativeBehavior).
+    private final String configured = System.getProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY);
+
     @AfterEach
-    void clearProperty() {
-        System.clearProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY);
+    void restoreProperty() {
+        if (configured == null) {
+            System.clearProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY);
+        } else {
+            System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, configured);
+        }
     }
 
     @Test
     void withoutThePropertyPlaywrightsBehaviourStays() throws Throwable {
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "false");
         runGuarded(executable -> {
             try (Playwright playwright = Playwright.create();
                  Browser browser = playwright.firefox().launch(launchOptions(executable))) {

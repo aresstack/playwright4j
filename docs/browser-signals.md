@@ -229,6 +229,24 @@ What it does not change:
 - Synthetic `fill()`/`selectOption()` events, direct mouse movement and scrolling (#41-#43), and
   dialogs or HTTP authentication answered without a handler (#48).
 
+Why `remote.prefs.recommended` matters: Firefox's Remote Agent, which serves WebDriver BiDi,
+applies its recommended preferences at startup to every preference that has no user value and
+resets them at shutdown. That list repeats most of Playwright's test values
+(`dom.disable_open_during_load=false`, `focusmanager.testmode=true`, `geo.provider.testing=true`,
+`network.manage-offline-status=false`, ...) and adds more, such as `dom.permissions.testing.enabled`
+and `dom.input_events.security.minNumTicks=0`. Measured with Firefox 158 over BiDi: with
+Playwright's lines removed but the Remote Agent's preferences on, a `window.open` during page load
+still opened a popup; with `remote.prefs.recommended=false` Firefox blocked it. Camoufox does not
+set `remote.prefs.recommended` in `camoufox.cfg`, and its values there are `defaultPref`, so they
+apply once neither Playwright nor the Remote Agent sets a user value.
+
+Measured on Linux with the property set: `firefoxSmoke` (including `FirefoxNativeBehaviorTest`) passes
+with Firefox 158.0.1 and with Camoufox 156.0.1-beta.36 with both BiDi fixes
+(`hotpatch_omni.py`), and so does `camoufoxSmoke` (fingerprint through `setEnv`, second page with
+the fixes). With Camoufox the popup blocker stays on, as `camoufox.cfg` leaves it. The window-count
+checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. CI on Windows runs
+`firefoxSmoke` with and without the property.
+
 The property may become the default once its compatibility with the Playwright API is shown;
 until then it is opt-in.
 
