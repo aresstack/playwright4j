@@ -80,6 +80,7 @@ tasks.register('firefoxSmoke', Test) {
         // Counts the real Firefox windows (EnumWindows on Windows, xdotool on Linux/X11).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxPersistentWindowTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxCacheBehaviorTest'
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxMainWorldTest'
     }
 
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
