@@ -42,13 +42,13 @@ final class NodeCompatProcessEnvTest {
         RecordingProcessLauncher launcher = new RecordingProcessLauncher();
         try (GraalPlaywrightRuntime runtime = runtime("linux", launcher)) {
             eval(runtime, "require('child_process').spawn('tool', ['a'], { env: { A: '1', B: 'x = y', DROPPED: undefined } }); ''");
-            assertEquals("A=1\u001FB=x = y", launcher.environment);
+            assertEquals("A=1\u001EB=x = y", launcher.environment);
 
             eval(runtime, "require('child_process').spawn('tool', ['a'], {}); ''");
             assertNull(launcher.environment, "no env: the child inherits the host environment");
 
             eval(runtime, "require('child_process').spawn('tool', ['a'], { env: { ...process.env, MOZ_CRASHREPORTER: '1' } }); ''");
-            assertEquals("Path=/bin\u001FSystemRoot=C:\\Windows\u001FMOZ_CRASHREPORTER=1", launcher.environment);
+            assertEquals("Path=/bin\u001ESystemRoot=C:\\Windows\u001EMOZ_CRASHREPORTER=1", launcher.environment);
         }
     }
 
@@ -59,11 +59,16 @@ final class NodeCompatProcessEnvTest {
         JdkHostProcessLauncher.applyEnvironment(builder, null);
         assertEquals("1", builder.environment().get("PLAYWRIGHT4J_ENV_INHERITED"));
 
-        JdkHostProcessLauncher.applyEnvironment(builder, "A=1\u001FB=x = y");
+        JdkHostProcessLauncher.applyEnvironment(builder, "A=1\u001EB=x = y");
         Map<String, String> expected = new LinkedHashMap<>();
         expected.put("A", "1");
         expected.put("B", "x = y");
         assertEquals(expected, new LinkedHashMap<>(builder.environment()));
+
+        // Camoufox fingerprint chunks: long and non-ASCII values are passed on unchanged.
+        String chunk = "{\"x\":\"\u00fc\u4e2d\"}" + "a".repeat(2047);
+        JdkHostProcessLauncher.applyEnvironment(builder, "CAMOU_CONFIG_1=" + chunk);
+        assertEquals(chunk, builder.environment().get("CAMOU_CONFIG_1"));
     }
 
     private static GraalPlaywrightRuntime runtime(String platform, HostProcessLauncher launcher) {
@@ -91,15 +96,18 @@ final class NodeCompatProcessEnvTest {
         String environment;
 
         @Override
+        @org.graalvm.polyglot.HostAccess.Export
         public String launchChromium(String command, String arguments, String workingDirectory) {
             throw new UnsupportedOperationException();
         }
 
         @Override
+        @org.graalvm.polyglot.HostAccess.Export
         public void close(String processId) {
         }
 
         @Override
+        @org.graalvm.polyglot.HostAccess.Export
         public String spawnProcess(String command, String arguments, String workingDirectory) {
             throw new UnsupportedOperationException("expected spawnProcessWithEnvironment");
         }
@@ -112,14 +120,17 @@ final class NodeCompatProcessEnvTest {
         }
 
         @Override
+        @org.graalvm.polyglot.HostAccess.Export
         public void writeStdin(String processId, String base64) {
         }
 
         @Override
+        @org.graalvm.polyglot.HostAccess.Export
         public void endStdin(String processId) {
         }
 
         @Override
+        @org.graalvm.polyglot.HostAccess.Export
         public String drainProcessEvents() {
             return "";
         }

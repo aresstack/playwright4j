@@ -37,7 +37,7 @@ public interface HostProcessLauncher {
 
     /**
      * Like {@link #launchChromium} but with the child's complete environment, given as
-     * unit-separator delimited {@code NAME=value} entries. {@code null} inherits this process's
+     * {@code NAME=value} entries, delimited like the arguments. {@code null} inherits this process's
      * environment. Playwright semantics: the given environment replaces the inherited one.
      */
     @HostAccess.Export

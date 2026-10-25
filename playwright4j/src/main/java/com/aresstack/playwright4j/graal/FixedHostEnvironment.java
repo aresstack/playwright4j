@@ -66,6 +66,6 @@ public final class FixedHostEnvironment implements HostEnvironment {
     @Override
     @HostAccess.Export
     public String environmentNames() {
-        return String.join("\u001F", environmentValues.keySet());
+        return String.join("\u001E", environmentValues.keySet());
     }
 }

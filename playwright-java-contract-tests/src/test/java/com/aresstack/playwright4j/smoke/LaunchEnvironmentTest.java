@@ -37,7 +37,8 @@ public class LaunchEnvironmentTest {
     private static final boolean WINDOWS = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
     private static final String INHERITED = "PLAYWRIGHT4J_ENV_INHERITED";
     private static final String TEST_VARIABLE = "PLAYWRIGHT4J_ENV_TEST";
-    private static final String TEST_VALUE = "harmless value with spaces = and equals";
+    // Long like a Camoufox CAMOU_CONFIG_n chunk (2047 characters on Windows).
+    private static final String TEST_VALUE = "harmless value with spaces = and equals " + "x".repeat(2047);
 
     private static Path directory;
     private static Path record;
