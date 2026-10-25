@@ -87,6 +87,14 @@ jobs:
         shell: pwsh
         run: mvn -B -f consumer-check/pom.xml verify "-Dplaywright4j.version=0.0.0-ci"
 
+      - name: Consumer check — Spring Boot fat jar launches Chrome (driver classpath from nested jars)
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          ./gradlew.bat -p consumer-check/spring-boot bootJar "-Pplaywright4jVersion=0.0.0-ci" --no-daemon --stacktrace
+          java "-Dchannel=chrome" -jar consumer-check/spring-boot/build/libs/playwright4j-spring-boot-check.jar
+          if ($LASTEXITCODE -ne 0) { Write-Error "Spring Boot consumer check failed ($LASTEXITCODE)"; exit 1 }
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4

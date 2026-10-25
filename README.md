@@ -168,6 +168,26 @@ Truffle) contain GraalVM's own native support libraries, for example `libtruffle
 `truffle-api`, which the Truffle runtime may load on a stock JDK. Those are part of GraalVM,
 are not downloaded separately and are not used to control a browser.
 
+### Driver JVM
+
+The Playwright Core runs in a separate driver JVM started with the same `java` as the application.
+Its classpath is taken from where playwright4j and GraalVM were actually loaded (the class loader
+chain and the classes' code sources), not from `java.class.path`, so Spring Boot executable jars,
+application servers and custom class loaders work. Jars nested in another jar (Spring Boot
+`BOOT-INF/lib/`) are copied once into `<java.io.tmpdir>/playwright4j-driver/classpath/`.
+
+| System property | Effect |
+| --- | --- |
+| `playwright4j.driver.jvmArgs` | Extra driver JVM options, whitespace separated, `"..."` keeps spaces, e.g. `-Dplaywright4j.driver.jvmArgs="-Xmx1g -Dhttps.proxyHost=proxy"`. Applied last, so they win over forwarded properties. |
+| `playwright4j.driver.classpath` | Replaces the detection with an explicit path list, for containers (e.g. OSGi) whose class loaders expose no file locations. |
+
+These properties of the application JVM are forwarded to the driver JVM when set: the
+`javax.net.ssl.trustStore*`/`keyStore*` settings, `jdk.tls.client.protocols`, `https.protocols`,
+`http(s).proxyHost`/`Port`, `http.nonProxyHosts`, `socksProxy*`, `java.net.useSystemProxies`,
+`jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path` and the `playwright4j.debug*`
+settings. Store passwords are passed in an owner-only temporary file that the driver deletes at
+startup, never on the command line.
+
 ## Tests and known limitations
 
 - Chrome/Edge smokes, the Firefox BiDi smoke, `launch-server`/`connect` tests and a

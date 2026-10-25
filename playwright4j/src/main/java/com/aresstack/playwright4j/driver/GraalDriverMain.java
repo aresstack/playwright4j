@@ -19,7 +19,33 @@ public final class GraalDriverMain {
     private GraalDriverMain() {
     }
 
+    /** Same name as Driver.SECRET_PROPERTIES_FILE_PROPERTY (that class is not on every driver classpath). */
+    static final String SECRET_PROPERTIES_FILE_PROPERTY = "playwright4j.driver.secretPropertiesFile";
+
+    /**
+     * Applies the TLS store passwords the parent JVM passed in an owner-only file (not on the command
+     * line, where other users could read them) and deletes the file. Runs before any TLS use.
+     */
+    static void loadSecretProperties() throws IOException {
+        String file = System.getProperty(SECRET_PROPERTIES_FILE_PROPERTY);
+        if (file == null || file.isEmpty()) {
+            return;
+        }
+        java.nio.file.Path path = Paths.get(file);
+        java.util.Properties secrets = new java.util.Properties();
+        try (java.io.InputStream input = java.nio.file.Files.newInputStream(path)) {
+            secrets.load(input);
+        } finally {
+            java.nio.file.Files.deleteIfExists(path);
+            System.clearProperty(SECRET_PROPERTIES_FILE_PROPERTY);
+        }
+        for (String name : secrets.stringPropertyNames()) {
+            System.setProperty(name, secrets.getProperty(name));
+        }
+    }
+
     public static void main(String[] args) throws IOException {
+        loadSecretProperties();
         Map<String, String> environment = new LinkedHashMap<String, String>(System.getenv());
         environment.putIfAbsent("PW_LANG_NAME", "java");
         // Playwright-Core builds its default User-Agent as "... <PW_LANG_NAME>/<PW_LANG_NAME_VERSION>".
