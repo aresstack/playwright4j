@@ -17,6 +17,11 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
   [`docs/camoufox.md`](docs/camoufox.md)).
 - Windows CI now checks Camoufox over WebDriver BiDi: one native window on a persistent start and
   the fingerprint via setEnv (#34, #35). The release gate runs the same checks.
+- Opt-in `-Dplaywright4j.bidi.nativeBehavior=true` (Firefox and Camoufox over WebDriver BiDi): keeps
+  the browser's own preferences instead of Playwright's test values (popup blocker, timers, focus,
+  cookie and tracking protection, HTTPS-First, and `remote.prefs.recommended=false`), no default
+  viewport, screenshot caret untouched, and a warning on main-world preload scripts. Default off;
+  see [`docs/browser-signals.md`](docs/browser-signals.md) (#40, #44 to #47, #51).
 - The driver JVM receives the application's TLS, proxy and VLC system properties, and
   `playwright4j.driver.jvmArgs` / `playwright4j.driver.classpath` (#32).
 
