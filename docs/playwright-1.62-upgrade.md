@@ -29,11 +29,12 @@ compile successfully.
 
 ## Known failures / investigation
 
-- **End-to-end Chromium browser smoke test is still failing/hanging.**
-  Playwright Core 1.62 successfully receives and answers `initialize`,
-  and Chrome launches and exposes a CDP WebSocket endpoint; the transport
-  does not complete the browser connection yet. Do not claim runtime
-  compatibility from the successful publication or compilation.
+- Chrome, Edge and Firefox smokes pass on Windows CI (PR #29).
+- Firefox: 1.62 extends the injected script of every new document right away, with
+  `userActivation: true`; these setup evaluations are now sent without activation (#26 rule).
+- `util.formatWithOptions` added: without it any `DEBUG=pw:*` line ended the driver.
+- Upstream Playwright Java tests imported from v1.62.0; `TestInstall` (Node.js driver
+  installer) is excluded.
 - Fixed: the Chromium hang. The bundle defines `PipeTransport` (driver protocol) and
   `PipeTransport2` (CDP over `--remote-debugging-pipe`); only the first was replaced, so
   Chrome kept using fd 3/4. `patchCoreBundleSource` now replaces both, plus
