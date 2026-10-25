@@ -24,6 +24,9 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
 
 - TLS hostname verification stays on unless `ignoreHTTPSErrors` is set; `crypto.randomBytes` and
   `randomUUID` use `SecureRandom` (#25).
+- `APIRequestContext` honours the `proxy` option: HTTP proxies, CONNECT tunnels for https and Basic
+  proxy credentials; SOCKS and `https://` proxies fail with a clear error instead of connecting
+  directly (#53).
 - `setEnv` reaches the browser process for `launch()` and `launchPersistentContext()`, as in
   Playwright: it replaces the inherited environment (#30).
 - Playwright's force-kill reaches the real browser process tree; `child.kill()` escalates after
