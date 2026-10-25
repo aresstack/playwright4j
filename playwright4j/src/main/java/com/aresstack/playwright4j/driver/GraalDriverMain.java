@@ -20,13 +20,13 @@ public final class GraalDriverMain {
     }
 
     /** Same name as Driver.SECRET_PROPERTIES_FILE_PROPERTY (that class is not on every driver classpath). */
-    static final String SECRET_PROPERTIES_FILE_PROPERTY = "playwright4j.driver.secretPropertiesFile";
+    public static final String SECRET_PROPERTIES_FILE_PROPERTY = "playwright4j.driver.secretPropertiesFile";
 
     /**
      * Applies the TLS store passwords the parent JVM passed in an owner-only file (not on the command
      * line, where other users could read them) and deletes the file. Runs before any TLS use.
      */
-    static void loadSecretProperties() throws IOException {
+    public static void loadSecretProperties() throws IOException {
         String file = System.getProperty(SECRET_PROPERTIES_FILE_PROPERTY);
         if (file == null || file.isEmpty()) {
             return;
