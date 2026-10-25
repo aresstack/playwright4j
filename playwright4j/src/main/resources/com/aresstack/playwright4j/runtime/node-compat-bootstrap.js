@@ -5657,6 +5657,109 @@
     };
   }
 
+  // playwright4j.bidi.naturalPointer (Firefox over BiDi, off by default): Playwright moves the
+  // mouse to the target in one jump and presses and releases it at once (#43). With the property,
+  // a move without the caller's `steps` follows a slightly curved path with a minimum-jerk speed
+  // profile and a duration that grows with the distance (Fitts' law), and a click without the
+  // caller's `delay` pauses before the press, holds the button and pauses between clicks.
+  const NATURAL_POINTER = {
+    // Fitts' law T = a + b * log2(1 + D / W) for a target width W.
+    moveBaseMillis: 90, moveMillisPerBit: 90, targetWidth: 24,
+    segmentMillis: 16, maxSegments: 60, maxCurve: 0.12, jitter: 0.15,
+    settleMillis: [30, 90], holdMillis: [55, 130], betweenClicksMillis: [90, 170]
+  };
+
+  function naturalPointer() {
+    return host.naturalPointer() === true;
+  }
+
+  function randomBetween(range) {
+    return range[0] + Math.random() * (range[1] - range[0]);
+  }
+
+  // The intermediate points from (fromX, fromY) to (x, y); the last one is the target itself.
+  function naturalPointerPath(fromX, fromY, x, y) {
+    const distance = Math.hypot(x - fromX, y - fromY);
+    if (distance < 1) {
+      return [{ x: x, y: y, duration: 0 }];
+    }
+    const config = NATURAL_POINTER;
+    const millis = (config.moveBaseMillis + config.moveMillisPerBit * Math.log2(1 + distance / config.targetWidth))
+      * (1 + (Math.random() * 2 - 1) * config.jitter);
+    const segments = Math.max(2, Math.min(config.maxSegments, Math.round(millis / config.segmentMillis)));
+    const duration = Math.round(millis / segments);
+    // A quadratic Bezier whose control point lies off the straight line, on a random side.
+    const bend = (Math.random() * 2 - 1) * config.maxCurve * distance;
+    const controlX = (fromX + x) / 2 - (y - fromY) / distance * bend;
+    const controlY = (fromY + y) / 2 + (x - fromX) / distance * bend;
+    const points = [];
+    for (let i = 1; i <= segments; i++) {
+      const t = i / segments;
+      const s = t * t * t * (10 - 15 * t + 6 * t * t);
+      const u = 1 - s;
+      points.push(i === segments ? { x: x, y: y, duration: duration } : {
+        x: Math.round(u * u * fromX + 2 * u * s * controlX + s * s * x),
+        y: Math.round(u * u * fromY + 2 * u * s * controlY + s * s * y),
+        duration: duration
+      });
+    }
+    return points;
+  }
+
+  function installNaturalPointer(bidiPage) {
+    const mouse = bidiPage._page.mouse;
+    const originalMove = mouse.move;
+    const originalClick = mouse.click;
+    mouse.move = async function (progress, x, y, options) {
+      options = options || {};
+      if (!naturalPointer() || options.steps !== undefined) {
+        return originalMove.call(this, progress, x, y, options);
+      }
+      const path = naturalPointerPath(this._x, this._y, x, y);
+      this._x = x;
+      this._y = y;
+      // One action sequence on Playwright's own pointer source, so pressed buttons carry over.
+      await progress.race(bidiPage._session.send('input.performActions', {
+        context: bidiPage._session.sessionId,
+        actions: [{
+          type: 'pointer',
+          id: 'pw_mouse',
+          parameters: { pointerType: 'mouse' },
+          actions: path.map(function (point) {
+            return { type: 'pointerMove', x: point.x, y: point.y, duration: point.duration };
+          })
+        }]
+      }));
+    };
+    mouse.click = async function (progress, x, y, options) {
+      options = options || {};
+      if (!naturalPointer() || options.delay !== undefined) {
+        return originalClick.call(this, progress, x, y, options);
+      }
+      const clickCount = options.clickCount || 1;
+      await this.move(progress, x, y, { forClick: true, steps: options.steps });
+      await progress.wait(randomBetween(NATURAL_POINTER.settleMillis));
+      for (let cc = 1; cc <= clickCount; ++cc) {
+        await this.down(progress, Object.assign({}, options, { clickCount: cc }));
+        await progress.wait(randomBetween(NATURAL_POINTER.holdMillis));
+        await this.up(progress, Object.assign({}, options, { clickCount: cc }));
+        if (cc < clickCount) {
+          await progress.wait(randomBetween(NATURAL_POINTER.betweenClicksMillis));
+        }
+      }
+    };
+  }
+
+  function patchBidiPageNaturalPointer(BidiPage) {
+    const originalInitialize = BidiPage.prototype._initialize;
+    BidiPage.prototype._initialize = function () {
+      if (isBidiFirefox(this._browserContext._browser)) {
+        installNaturalPointer(this);
+      }
+      return originalInitialize.apply(this, arguments);
+    };
+  }
+
   // Firefox sends no browsingContext.load for the initial about:blank of a top-level context it
   // creates (browsingContext.create), so its main frame only ever reaches "commit". The persistent
   // launch (launchPersistentContext) waits for "load" on that default page and would hang until its
@@ -6638,6 +6741,7 @@
           patchBidiPageNativeCaret(BidiPage);
           patchBidiPageNativePreloadWarning(BidiPage);
           patchBidiPageCacheBehavior(BidiPage);
+          patchBidiPageNaturalPointer(BidiPage);
         });
       }
     };
