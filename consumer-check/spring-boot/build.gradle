@@ -12,7 +12,7 @@ def playwright4jVersion = findProperty('playwright4jVersion') ?: '0.1.0-SNAPSHOT
 
 dependencies {
     implementation "com.aresstack:playwright4j:${playwright4jVersion}"
-    implementation('com.microsoft.playwright:playwright:1.59.0') {
+    implementation('com.microsoft.playwright:playwright:1.62.0') {
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
     }
