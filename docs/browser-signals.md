@@ -148,7 +148,7 @@ default `false`) changes only the mouse's timing and path:
 |---|---|---|
 | `mouse.move`, `hover`, the move before a click, `dragTo` without `steps` | one jump to the target | a curved path (quadratic Bezier, bend up to 12% of the distance to a random side) with a minimum-jerk speed profile; duration from Fitts' law, 90 ms + 90 ms per bit for a 24 px target, ±15% |
 | `click`, `dblclick`, `mouse.click` without `delay` | press and release at once | 30–90 ms pause after the move, button held 55–130 ms, 90–170 ms between the clicks of a double click |
-| `steps` or `delay` set by the caller | as given | as given: `steps` keeps Playwright's straight path, `delay` keeps Playwright's press timing |
+| `steps` or `delay` set by the caller, including `delay: 0` | as given | as given: `steps` keeps Playwright's straight path, any `delay` (also `0`) keeps Playwright's press timing |
 | `mouse.down`, `mouse.up`, `mouse.wheel`, keyboard, touch | unchanged | unchanged |
 
 The path is sent as one `input.performActions` sequence on Playwright's own pointer source, so a

@@ -81,6 +81,13 @@ public class FirefoxNaturalPointerTest {
             List<Map<String, Object>> events = events(page);
             assertTrue(number(first(events, "mouseup"), "t") - number(first(events, "mousedown"), "t") >= 300, events.toString());
             assertEquals(1, count(events, "click"), events.toString());
+
+            // An explicit delay of 0 keeps Playwright's immediate press and release.
+            page.evaluate("window.__events = []");
+            page.mouse().click(400, 300, new Mouse.ClickOptions().setDelay(0));
+            events = events(page);
+            assertTrue(number(first(events, "mouseup"), "t") - number(first(events, "mousedown"), "t") < 50, events.toString());
+            assertEquals(1, count(events, "click"), events.toString());
         }));
     }
 

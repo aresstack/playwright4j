@@ -5733,7 +5733,7 @@
     };
     mouse.click = async function (progress, x, y, options) {
       options = options || {};
-      if (!naturalPointer() || options.delay) {
+      if (!naturalPointer() || options.delay !== undefined) {
         return originalClick.call(this, progress, x, y, options);
       }
       const clickCount = options.clickCount || 1;
