@@ -6624,15 +6624,19 @@
   // create that world, and sends it with userActivation: true. Firefox then marks the page as
   // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
-  // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
+  // The same holds for every other utility-world evaluation: Playwright reads the page there
+  // (page.content(), textContent(), count(), screenshots), and a read must not
+  // activate the page (#37). Only the caller's main-world evaluations keep upstream behaviour.
   // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
   // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend (the recorder).
   const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
-  function isPlaywrightSetupEvaluation(method, params, utilityWorldName) {
+  function isEvaluationWithoutActivation(method, params, utilityWorldName) {
+    if (params.target && params.target.sandbox === utilityWorldName) {
+      return true;
+    }
     if (method === 'script.evaluate') {
       const expression = String(params.expression || '');
-      return (expression === '1 + 1' && params.target && params.target.sandbox === utilityWorldName)
-        || PLAYWRIGHT_SETUP_SCRIPT.test(expression);
+      return PLAYWRIGHT_SETUP_SCRIPT.test(expression);
     }
     if (method === 'script.callFunction' && Array.isArray(params.arguments)) {
       return params.arguments.some(function (argument) {
@@ -6654,7 +6658,7 @@
           utilityWorldTouchSessions.add(session);
           const originalSend = session.send;
           session.send = function (method, params) {
-            if (params && params.userActivation === true && isPlaywrightSetupEvaluation(method, params, utilityWorldName)) {
+            if (params && params.userActivation === true && isEvaluationWithoutActivation(method, params, utilityWorldName)) {
               arguments[1] = Object.assign({}, params, { userActivation: false });
             }
             return originalSend.apply(this, arguments);
@@ -6675,6 +6679,15 @@
         awaitPromise: true,
         userActivation: false
       });
+    };
+  }
+
+  // Before a screenshot Playwright appends and removes a <style> in every frame to restart CSS
+  // animations in step, a DOM change the page can observe (#40). Firefox keeps animations stable
+  // without it, as Playwright's Juggler Firefox, which does not toggle either.
+  function patchBidiPageNoScreenshotStyleToggle(BidiPage) {
+    BidiPage.prototype.shouldToggleStyleSheetToSyncAnimations = function () {
+      return false;
     };
   }
 
@@ -6808,6 +6821,7 @@
           patchBidiPageInitialBlankLoad(BidiPage);
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
+          patchBidiPageNoScreenshotStyleToggle(BidiPage);
           patchBidiPageFirefoxLastTab(BidiPage);
           patchBidiPageNativeCaret(BidiPage);
           patchBidiPageNativePreloadWarning(BidiPage);
@@ -6826,6 +6840,13 @@
     source = replaceCoreBundleAnchor(source, 'new BidiFirefox(this)', 'new (' + hooks + '.bidiFirefox(BidiFirefox))(this)', 1);
     source = replaceCoreBundleAnchor(source, 'BidiBrowser.connect(',
       hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2).connect(', 2);
+    // Locator actions dispatch __playwright_mark_target__/__playwright_reset_targets__ into the
+    // page for the trace viewer's snapshots (#38). Only a trace that records snapshots reads them.
+    const snapshotsRecorded = '?.browserContext?.tracing?._snapshotter?.started()';
+    source = replaceCoreBundleAnchor(source, '      async _markAsTargetElement(progress2) {\n',
+      '      async _markAsTargetElement(progress2) {\n        if (!this._page' + snapshotsRecorded + ')\n          return;\n', 1);
+    source = replaceCoreBundleAnchor(source, 'markTargets: options.markTargets }',
+      'markTargets: this.frame._page' + snapshotsRecorded + ' ? options.markTargets : void 0 }', 2);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
     // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
     // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's
