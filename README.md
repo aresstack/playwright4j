@@ -118,6 +118,16 @@ BrowserContext context = playwright.firefox().launchPersistentContext(
 
 Everything after `launch()` / `launchPersistentContext()` is the regular Playwright API.
 
+On Firefox, `com.aresstack.playwright4j.bidi.FirefoxBidi` adds read-only WebDriver BiDi access to a
+page: the current DOM, response bodies and cookies, read without running script in the page (since
+`0.3.0`, see [docs/passive-acquisition.md](docs/passive-acquisition.md)):
+
+```java
+try (FirefoxBidi bidi = FirefoxBidi.open(page)) {
+    String text = FirefoxBidi.text(bidi.css("main"));
+}
+```
+
 ## Supported browsers
 
 | Browser | Browser type / channel | Protocol | Status |

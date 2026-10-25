@@ -5796,6 +5796,89 @@
   // BidiPage.requestGC evaluates TestUtils.gc() and reports any failure as "Method not implemented.".
   // With dom.testing.testutils.enabled off by default (see patchBidiFirefoxProfilePrefs) say how to
   // turn it back on instead.
+  // Read-only WebDriver BiDi access for com.aresstack.playwright4j.bidi.FirefoxBidi. Firefox accepts
+  // one BiDi session, Playwright's, so a second client cannot connect. FirefoxBidi reaches this
+  // object through BrowserContext.newCDPSession(page), the only page-bound session channel of the
+  // Playwright protocol, and attaches with "playwright4j.bidi.attach" before anything else is
+  // accepted. Only commands that run no script in the page and leave Playwright's state alone pass.
+  const BIDI_READ_COMMANDS = new Set([
+    'browsingContext.getTree',
+    'browsingContext.locateNodes',
+    'network.getData',
+    'storage.getCookies'
+  ]);
+  const BIDI_DEFAULT_DATA_TIMEOUT_MS = 10000;
+
+  function createBidiReadSession(SdkObject, context, target) {
+    const frame = typeof target.mainFrame === 'function' ? target.mainFrame() : target;
+    const session = frame._page.delegate._session;
+    class BidiReadSession extends SdkObject {
+      constructor() {
+        super(context, 'cdp-session');
+        this._attached = false;
+      }
+
+      async send(progress, method, params) {
+        if (method === 'playwright4j.bidi.attach') {
+          if (!this._attached) {
+            this._attached = true;
+            this._forwardEvents();
+          }
+          return { context: frame._id };
+        }
+        if (!this._attached) {
+          throw new Error('Firefox over WebDriver BiDi has no CDP session. Use '
+            + 'com.aresstack.playwright4j.bidi.FirefoxBidi.open(page) for read-only BiDi access.');
+        }
+        if (!BIDI_READ_COMMANDS.has(method)) {
+          throw new Error('FirefoxBidi does not send ' + method + '; read-only commands: '
+            + Array.from(BIDI_READ_COMMANDS).join(', '));
+        }
+        params = Object.assign({}, params);
+        if (method !== 'network.getData') {
+          return await progress.race(session.send(method, params));
+        }
+        // Firefox can hold network.getData for seconds (reported for 304 revalidations);
+        // a caller reading many responses must not stall on one of them.
+        const timeout = typeof params.timeout === 'number' ? params.timeout : BIDI_DEFAULT_DATA_TIMEOUT_MS;
+        delete params.timeout;
+        let timer;
+        const expired = new Promise(function (resolve, reject) {
+          timer = setTimeout(function () {
+            reject(new Error('network.getData for request ' + params.request + ' timed out after ' + timeout + ' ms'));
+          }, timeout);
+        });
+        try {
+          return await progress.race(Promise.race([session.send(method, params), expired]));
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      _forwardEvents() {
+        const self = this;
+        const originalEmit = session.emit;
+        session.emit = function (name, params) {
+          if (typeof name === 'string' && (name.indexOf('network.') === 0 || name.indexOf('browsingContext.') === 0)) {
+            self.emit('event', { method: name, params: params });
+          }
+          return originalEmit.apply(this, arguments);
+        };
+        this._restore = function () {
+          session.emit = originalEmit;
+        };
+      }
+
+      async detach() {
+        if (this._restore) {
+          this._restore();
+        }
+        this.emit('close');
+      }
+    }
+    return new BidiReadSession();
+  }
+
   function patchBidiPageRequestGC(BidiPage) {
     const originalRequestGC = BidiPage.prototype.requestGC;
     if (typeof originalRequestGC !== 'function') {
@@ -6767,6 +6850,7 @@
         };
         networkManager._answerAuthRequired.call(Object.create(networkManager, { _session: { value: delayedCancel } }), params);
       },
+      bidiRead: createBidiReadSession,
       bidiPage: function (BidiPage) {
         return patchOnce(BidiPage, function () {
           bidiPageClasses.push(BidiPage);
@@ -6851,6 +6935,19 @@
       'return this._retryPointerAction(progress2, "drop", false, async (progress3, point) => {\n'
       + '          const mainContext = await progress3.race(' + hooks + '.isBidiPage(this._page.delegate)'
       + ' ? this._frame.utilityContext() : this._frame.mainContext());', 1);
+    // Firefox sends the cached body of a 304 revalidation through network.getData; Response.body()
+    // treats every 3xx as a redirect without a body. Only responses from BiDi pages are marked.
+    source = replaceCoreBundleAnchor(source,
+      '        const response2 = new Response2(request2.request, params2.response.status, params2.response.statusText, fromBidiHeaders(params2.response.headers), timing, getResponseBody, false);\n',
+      '        const response2 = new Response2(request2.request, params2.response.status, params2.response.statusText, fromBidiHeaders(params2.response.headers), timing, getResponseBody, false);\n'
+      + '        response2._playwright4jBodyOn304 = true;\n', 1);
+    source = replaceCoreBundleAnchor(source, '            if (this._status >= 300 && this._status <= 399)\n',
+      '            if (this._status >= 300 && this._status <= 399 && !(this._status === 304 && this._playwright4jBodyOn304))\n', 1);
+    source = replaceCoreBundleAnchor(source, '      async newCDPSession(params2, progress2) {\n',
+      '      async newCDPSession(params2, progress2) {\n'
+      + '        if (this._object._browser._browserSession && (params2.page || params2.frame))\n'
+      + '          return { session: new CDPSessionDispatcher(this, ' + hooks
+      + '.bidiRead(SdkObject, this._object, (params2.page || params2.frame)._object)) };\n', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks

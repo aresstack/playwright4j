@@ -38,6 +38,9 @@ dependencies {
     implementation 'org.jcodec:jcodec:0.2.5'
     implementation 'org.jcodec:jcodec-javase:0.2.5'
 
+    // FirefoxBidi works on the caller's Playwright Java objects; callers bring that dependency.
+    compileOnly 'com.microsoft.playwright:playwright:1.62.0'
+
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
     testImplementation 'com.microsoft.playwright:playwright:1.62.0'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.13.1'
