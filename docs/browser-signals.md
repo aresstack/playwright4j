@@ -175,6 +175,24 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   Playwright's behaviour (`userActivation: true`, like `userGesture` over CDP), so a caller's
   `page.evaluate` or `locator(...).click()` still activates the page. This differs from the official
   driver.
+- Reading activates the page: Playwright sends every evaluation in its utility world with
+  `userActivation: true`, so `page.content()`, `textContent()`, `count()`, `isVisible()`,
+  `title()`, `setContent()` or `screenshot()` mark the page as activated by the user (#37).
+  playwright4j sends all utility-world evaluations with `userActivation: false`, as Playwright's
+  Juggler Firefox does. Main-world evaluations keep `true`; besides `page.evaluate` they include
+  `evaluateAll` and the client-side reads built on it (`allTextContents()`, `allInnerTexts()`), and
+  the element handles the API returns in the main world, which `locator.boundingBox()` and
+  `elementHandle()` resolve first (#50), so these still activate the page.
+- Target markers: before a locator action or `evaluateAll`, Playwright dispatches
+  `__playwright_reset_targets__` and `__playwright_mark_target__` events in the page, which page
+  listeners receive (#38). Only a trace that records snapshots reads them, so playwright4j
+  dispatches them only while such a trace runs, in every browser.
+- Screenshot style toggle: before a screenshot Playwright appends and removes an empty `<style>`
+  in every frame to restart CSS animations in step (#40). playwright4j skips it for Firefox over
+  BiDi, as Playwright already does for its Juggler Firefox. Measured with Firefox 158: an
+  animation started right before a screenshot with `animations: "disabled"` was finished and two
+  consecutive screenshots were identical in 20 of 20 runs, with and without the toggle. The caret
+  (`caret-color` in the `style` attribute of editable elements) stays Playwright's default.
 
 **Caused by playwright4j, not page-observable**
 
