@@ -95,6 +95,48 @@ tasks.register('firefoxSmoke', Test) {
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
 
+// Camoufox over WebDriver BiDi (moz-firefox channel): its fingerprint configuration
+// (CAMOU_CONFIG_1..n) reaches the browser through setEnv. Opt-in: CAMOUFOX_EXECUTABLE;
+// CAMOUFOX_BIDI_FIXES=true also checks a second page. See docs/camoufox.md.
+tasks.register('camoufoxSmoke', Test) {
+    description = 'Checks that a Camoufox fingerprint configuration passed with setEnv applies (WebDriver BiDi).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.CamoufoxFingerprintTest' }
+    outputs.upToDateWhen { false }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+    environment 'MOZ_ENABLE_WAYLAND', '0'
+
+    systemProperty 'junit.jupiter.execution.timeout.default', '120 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
+}
+
+// A manual Camoufox session over WebDriver BiDi for comparing with Camoufox's own launcher, see
+// docs/camoufox.md. Runs only with CAMOUFOX_MANUAL=true; waits until the browser window is closed.
+tasks.register('camoufoxManual', Test) {
+    description = 'Opens Camoufox over WebDriver BiDi with given launch options and waits until its window is closed.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.CamoufoxManualSessionTest' }
+    outputs.upToDateWhen { false }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+    environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
+    environment 'MOZ_ENABLE_WAYLAND', '0'
+
+    systemProperty 'junit.jupiter.execution.timeout.default', '12 h'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
+}
+
 // The environment a browser process starts with (setEnv and inheritance) for launch() and
 // launchPersistentContext() of Chromium and Firefox. Uses a fake browser script, no real browser.
 tasks.register('launchEnvironmentTest', Test) {

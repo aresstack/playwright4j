@@ -5689,8 +5689,9 @@
   //    profile (browser.tabs.closeWindowWithLastTab=false, see patchBidiFirefoxUserJs) Firefox
   //    itself replaces the last tab of a window, closed in its UI or over BiDi, with a blank tab
   //    (contextDestroyed, then contextCreated in the same window). These blank tabs are hidden:
-  //    not reported as pages, and the next newPage() of the persistent context takes one over. A
-  //    hidden tab the user navigates somewhere becomes a page.
+  //    not reported as pages, and the next newPage() of the persistent context takes one over (the
+  //    one opened before closing the last page) or opens a tab in place of Firefox's replacement.
+  //    A hidden tab the user navigates somewhere becomes a page.
   function isBidiFirefox(browser) {
     return !!browser && !!browser.options && browser.options.name === 'firefox';
   }
@@ -5704,13 +5705,14 @@
   let reportFirefoxTabAsPage;
 
   // Per browser: the window of every top-level tab (id -> clientWindow), the hidden blank tabs
-  // (id -> browsingContext.Info), the windows whose last tab just closed (clientWindow -> deadline
-  // for Firefox's replacement tab) and, while keepLastFirefoxTab opens one, the tabs being opened.
+  // (id -> browsingContext.Info), the hidden tabs keepLastFirefoxTab opened (ids), the windows
+  // whose last tab just closed (clientWindow -> deadline for Firefox's replacement tab) and, while
+  // keepLastFirefoxTab opens one, the tabs being opened.
   function firefoxTabs(browser) {
     if (browser.__playwright4jFirefoxTabs) {
       return browser.__playwright4jFirefoxTabs;
     }
-    const tabs = { windows: new Map(), hidden: new Map(), replacing: new Map(), opening: undefined };
+    const tabs = { windows: new Map(), hidden: new Map(), kept: new Set(), replacing: new Map(), opening: undefined };
     browser.__playwright4jFirefoxTabs = tabs;
     // Events of tabs without a page (hidden tabs, or tabs of no browser context) reach only the
     // browser session.
@@ -5748,6 +5750,7 @@
   function revealFirefoxTab(browser, info) {
     const tabs = firefoxTabs(browser);
     tabs.hidden.delete(info.context);
+    tabs.kept.delete(info.context);
     tabs.windows.set(info.context, info.clientWindow);
     reportFirefoxTabAsPage.call(browser, Object.assign({}, info, { parent: null }));
     return browser._bidiPages.get(info.context);
@@ -5760,6 +5763,7 @@
     const tabs = firefoxTabs(browser);
     tabs.windows.delete(event.context);
     tabs.hidden.delete(event.context);
+    tabs.kept.delete(event.context);
     if (!browser._defaultContext || event.userContext !== 'default' || !event.clientWindow) {
       return;
     }
@@ -5873,6 +5877,7 @@
     tabs.hidden.forEach(function (info, id) {
       if (!hidden.some(function (open) { return open.context === id; })) {
         tabs.hidden.delete(id);
+        tabs.kept.delete(id);
       }
     });
     const blank = hidden.filter(function (info) { return FIREFOX_BLANK_TAB_URLS.indexOf(info.url) >= 0; });
@@ -5885,7 +5890,9 @@
         }
       }
     }
-    const untouched = blank.find(function (info) { return info.url === 'about:blank'; });
+    // The blank tab opened before closing the very last page (see keepLastFirefoxTab) is taken over
+    // as it is.
+    const untouched = blank.find(function (info) { return info.url === 'about:blank' && tabs.kept.has(info.context); });
     if (untouched) {
       const bidiPage = revealFirefoxTab(browser, untouched);
       if (bidiPage) {
@@ -5901,10 +5908,13 @@
     if (!blank.length) {
       return undefined;
     }
-    // Firefox's own replacement tab shows about:newtab, a privileged page that may not navigate to
-    // every URL (data: is refused): open a fresh tab in its place.
+    // Any other is Firefox's own replacement tab. It loads about:newtab, a privileged page that may
+    // not navigate to every URL (data: is refused), and shows its initial about:blank until that
+    // page commits, which can take seconds while Firefox starts the process for it: open a fresh
+    // tab in its place, whatever it shows now.
     const replaced = blank[0].context;
     tabs.hidden.delete(replaced);
+    tabs.kept.delete(replaced);
     const { context } = await browser._browserSession.send('browsingContext.create', {
       type: 'tab',
       referenceContext: replaced,
@@ -5977,6 +5987,7 @@
         context: keptTab, url: 'about:blank', userContext: 'default', clientWindow: clientWindow,
         originalOpener: null, parent: null, children: null
       });
+      tabs.kept.add(keptTab);
     } finally {
       tabs.opening = undefined;
       // Another tab opened at the same moment (by the user or a page) is a regular page.

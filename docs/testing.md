@@ -32,7 +32,8 @@ processes Playwright started, not only `context.pages()`: on Windows with `EnumW
 compiled in memory by PowerShell's `Add-Type`), on Linux with `xdotool` (needs an X display,
 e.g. `xvfb-run`, and Firefox on X11; the `firefoxSmoke` task sets `MOZ_ENABLE_WAYLAND=0`).
 Without either, or with `FIREFOX_HEADLESS=true`, the window counts are skipped and only the page
-assertions run. It checks:
+assertions run. Camoufox processes and windows count as Firefox (see [camoufox.md](camoufox.md)).
+It checks:
 
 - `launchPersistentContext` takes over the tab Firefox opens at startup: one window, one page,
   after a cold start and after a restart with the same profile; with a home page set, the first
@@ -46,6 +47,10 @@ assertions run. It checks:
   sent once the Firefox window has the keyboard focus; if that fails, or the tab is still shown
   afterwards, the test fails with `PLAYWRIGHT4J_REQUIRE_FIREFOX=true` (CI) and is skipped
   otherwise;
+- the same while Firefox starts its child processes slowly (`MOZ_DEBUG_CHILD_PAUSE=3`): Firefox's
+  replacement tab shows `about:blank` until its `about:newtab` commits seconds later, and the page
+  `newPage()` returns still navigates to a `data:` URL after that (Firefox refuses `data:` in the
+  privileged new tab page);
 - Firefox ending without `context.close()` closes the context, and the profile starts again;
 - another running Firefox keeps its windows;
 - `browser.newContext()`: the first page gets a window, further pages of that context are tabs;

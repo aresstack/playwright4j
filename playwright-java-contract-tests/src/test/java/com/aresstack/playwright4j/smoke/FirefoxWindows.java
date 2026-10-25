@@ -18,9 +18,13 @@ import java.util.concurrent.TimeUnit;
  * Reads the visible top-level Firefox browser windows from the operating system, so a test can
  * count real windows instead of trusting {@code context.pages()}. Windows: EnumWindows through
  * PowerShell (class MozillaWindowClass, visible, not owned). Linux/X11: xdotool (visible windows
- * of WM_CLASS firefox). Each window carries the id of the process that owns it.
+ * of WM_CLASS firefox, or camoufox for Camoufox). Each window carries the id of the process that
+ * owns it.
  */
 final class FirefoxWindows {
+    // xdotool matches the class as a regular expression.
+    private static final String X11_CLASS = "firefox|camoufox";
+
     static final class Window {
         final long pid;
         final String title;
@@ -134,7 +138,7 @@ final class FirefoxWindows {
         List<Window> windows = new ArrayList<>();
         String ids;
         try {
-            ids = run("xdotool", "search", "--onlyvisible", "--class", "firefox");
+            ids = run("xdotool", "search", "--onlyvisible", "--class", X11_CLASS);
         } catch (IOException noMatch) {
             // xdotool exits with 1 when no window matches.
             return windows;
@@ -234,7 +238,8 @@ final class FirefoxWindows {
         }
         String id;
         try {
-            id = run("xdotool", "search", "--onlyvisible", "--pid", Long.toString(pid), "--class", "firefox").trim().split("\\s+")[0];
+            // --all: the window must match both the process and the class (xdotool's default is any).
+            id = run("xdotool", "search", "--all", "--onlyvisible", "--pid", Long.toString(pid), "--class", X11_CLASS).trim().split("\\s+")[0];
             run("xdotool", "windowfocus", "--sync", id);
             Thread.sleep(300);
             // xdotool key types into whatever has the focus; windowfocus may give up quietly.

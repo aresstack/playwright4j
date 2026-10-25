@@ -154,7 +154,7 @@ final class FirefoxTestSupport {
         Map<Long, FirefoxProcess> details = new HashMap<>();
         if (WINDOWS) {
             try {
-                String output = FirefoxWindows.powerShell("Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | "
+                String output = FirefoxWindows.powerShell("Get-CimInstance Win32_Process -Filter \"Name='firefox.exe' OR Name='camoufox.exe'\" | "
                         + "ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }");
                 for (String line : output.split("\\R")) {
                     String[] fields = line.split("\t", 3);
@@ -194,7 +194,9 @@ final class FirefoxTestSupport {
                 .filter(ProcessHandle::isAlive)
                 .filter(p -> p.info().command()
                         .map(c -> Paths.get(c).getFileName().toString().toLowerCase(Locale.ROOT))
-                        .map(n -> n.equals("firefox") || n.equals("firefox.exe") || n.equals("firefox-bin"))
+                        // Camoufox is a Firefox build under its own name.
+                        .map(n -> n.equals("firefox") || n.equals("firefox.exe") || n.equals("firefox-bin")
+                                || n.equals("camoufox") || n.equals("camoufox.exe") || n.equals("camoufox-bin"))
                         .orElse(false));
     }
 
