@@ -180,7 +180,7 @@ jobs:
         shell: pwsh
         run: |
           $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
-          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace --tests '*FirefoxPersistentWindowTest*'
+          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --no-daemon --stacktrace --tests '*FirefoxPersistentWindowTest*' --tests '*FirefoxBidiTest*'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # CAMOU_CONFIG from setEnv, and one native window on the persistent start (#34).
           $env:CAMOUFOX_BIDI_FIXES = "true"

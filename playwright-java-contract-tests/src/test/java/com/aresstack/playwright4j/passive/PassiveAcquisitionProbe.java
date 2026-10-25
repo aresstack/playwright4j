@@ -1,5 +1,6 @@
 package com.aresstack.playwright4j.passive;
 
+import com.aresstack.playwright4j.bidi.FirefoxBidi;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -7,7 +8,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
-import com.microsoft.playwright.CDPSession;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.Response;
@@ -36,8 +36,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Prototype measurement for passive data acquisition from Firefox over WebDriver BiDi: response
  * bodies through {@link Response#body()} (network.getData on Playwright's data collector), the
- * current DOM through browsingContext.locateNodes (via the read-only BiDi pass-through behind
- * {@code BrowserContext.newCDPSession(page)} on Firefox), and the page-visible side effects of each
+ * current DOM through browsingContext.locateNodes ({@link FirefoxBidi}), and the page-visible side effects of each
  * read compared with {@code page.content()} and a locator read.
  *
  * <p>The page reports what it observes (user activation, focus, events, DOM mutations, globals)
@@ -164,9 +163,8 @@ public final class PassiveAcquisitionProbe {
             }
         });
 
-        CDPSession bidi = context.newCDPSession(page);
-        String browsingContext = bidi.send("playwright4j.context").get("context").getAsString();
-        out.append("pass-through: browsing context ").append(browsingContext).append("\n");
+        FirefoxBidi bidi = FirefoxBidi.open(page);
+        out.append("FirefoxBidi: browsing context ").append(bidi.browsingContext()).append("\n");
         List<JsonObject> completed = new CopyOnWriteArrayList<>();
         bidi.on("network.responseCompleted", event -> {
             if (!event.getAsJsonObject("request").get("url").getAsString().endsWith("/report")) {
@@ -198,36 +196,20 @@ public final class PassiveAcquisitionProbe {
         JsonObject before = settledReport();
         out.append("\n## Reads and page-visible side effects\n\nbaseline: ").append(sideEffects(before)).append("\n");
 
-        JsonObject locate = new JsonObject();
-        locate.addProperty("context", browsingContext);
-        JsonObject locator = new JsonObject();
-        locator.addProperty("type", "css");
-        locator.addProperty("value", "html");
-        locate.add("locator", locator);
-        JsonObject serialization = new JsonObject();
-        // The Java client drops JSON nulls, so "no limit" (null) cannot be sent; 64 levels cover the page.
-        serialization.addProperty("maxDomDepth", 64);
-        serialization.addProperty("includeShadowTree", "open");
-        locate.add("serializationOptions", serialization);
         long start = System.nanoTime();
-        JsonObject nodes = bidi.send("browsingContext.locateNodes", locate);
+        JsonArray nodes = bidi.css("html");
         long locateMs = (System.nanoTime() - start) / 1_000_000;
-        String tree = GSON.toJson(nodes);
-        StringBuilder text = new StringBuilder();
-        collectText(nodes.getAsJsonArray("nodes"), text);
-        out.append(String.format(Locale.ROOT, "locateNodes(css html, depth 64): %d ms, %d bytes JSON, text=%s%n",
-                locateMs, tree.length(), abbreviate(text.toString().replaceAll("\\s+", " ").trim(), 300)));
-        out.append("  contains JS-rendered text 'rendered:alpha,beta': ").append(text.indexOf("rendered:alpha,beta") >= 0)
-                .append(", 'target:true': ").append(text.indexOf("target:true") >= 0)
-                .append(", 'sw:true': ").append(text.indexOf("sw:true") >= 0).append('\n');
+        String text = FirefoxBidi.text(nodes);
+        out.append(String.format(Locale.ROOT, "locateNodes(css html, depth %d): %d ms, %d bytes JSON, text=%s%n",
+                FirefoxBidi.DEFAULT_MAX_DOM_DEPTH, locateMs, GSON.toJson(nodes).length(), abbreviate(text, 300)));
+        out.append("  contains JS-rendered text 'rendered:alpha,beta': ").append(text.contains("rendered:alpha,beta"))
+                .append(", 'target:true': ").append(text.contains("target:true"))
+                .append(", 'sw:true': ").append(text.contains("sw:true")).append('\n');
         JsonObject afterLocate = settledReport();
         out.append("after locateNodes: ").append(diff(before, afterLocate)).append('\n');
 
-        locator.addProperty("type", "xpath");
-        locator.addProperty("value", "//div[@id='app']");
-        serialization.addProperty("maxDomDepth", 1);
-        JsonObject app = bidi.send("browsingContext.locateNodes", locate);
-        out.append("locateNodes(xpath #app, depth 1): ").append(abbreviate(GSON.toJson(app), 400)).append('\n');
+        JsonArray app = bidi.xpath("//div[@id='app']");
+        out.append("locateNodes(xpath #app): ").append(abbreviate(GSON.toJson(app), 400)).append('\n');
         JsonObject afterXpath = settledReport();
         out.append("after xpath locateNodes: ").append(diff(afterLocate, afterXpath)).append('\n');
 
@@ -242,7 +224,7 @@ public final class PassiveAcquisitionProbe {
         JsonObject afterLocator = settledReport();
         out.append("after locator textContent: ").append(diff(afterContent, afterLocator)).append('\n');
 
-        bidi.detach();
+        bidi.close();
     }
 
     private JsonObject settledReport() throws InterruptedException {
@@ -304,43 +286,19 @@ public final class PassiveAcquisitionProbe {
                 response.fromServiceWorker(), ms, result);
     }
 
-    private static String describeGetData(CDPSession bidi, JsonObject event) {
+    private static String describeGetData(FirefoxBidi bidi, JsonObject event) {
         JsonObject request = event.getAsJsonObject("request");
         JsonObject response = event.getAsJsonObject("response");
-        JsonObject params = new JsonObject();
-        params.addProperty("request", request.get("request").getAsString());
-        params.addProperty("dataType", "response");
         long start = System.nanoTime();
         String result;
         try {
-            JsonObject data = bidi.send("network.getData", params);
-            JsonObject bytes = data.getAsJsonObject("bytes");
-            result = "ok " + bytes.get("type").getAsString() + " " + bytes.get("value").getAsString().length() + " chars";
+            result = "ok " + bidi.responseBody(request.get("request").getAsString()).length + " bytes";
         } catch (RuntimeException e) {
             result = "FAILED " + abbreviate(e.getMessage().replaceAll("\\s+", " "), 220);
         }
         long ms = (System.nanoTime() - start) / 1_000_000;
         return String.format(Locale.ROOT, "  %-28s %3d fromCache=%-5s %5d ms  %s", path(request.get("url").getAsString()),
                 response.get("status").getAsInt(), response.has("fromCache") && response.get("fromCache").getAsBoolean(), ms, result);
-    }
-
-    private static void collectText(JsonArray nodes, StringBuilder text) {
-        if (nodes == null) {
-            return;
-        }
-        for (JsonElement element : nodes) {
-            JsonObject value = element.getAsJsonObject().getAsJsonObject("value");
-            if (value == null) {
-                continue;
-            }
-            if (value.has("nodeType") && value.get("nodeType").getAsInt() == 3 && value.has("nodeValue")) {
-                text.append(value.get("nodeValue").getAsString()).append(' ');
-            }
-            if (value.has("localName") && "script".equals(value.get("localName").getAsString())) {
-                continue;
-            }
-            collectText(value.getAsJsonArray("children"), text);
-        }
     }
 
     private void serve(ServerSocket server) {

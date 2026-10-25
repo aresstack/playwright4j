@@ -1,59 +1,82 @@
-# Passive data acquisition (prototype)
+# Reading pages without script: FirefoxBidi
 
-Status: prototype, not part of a release. It explores reading page data from Firefox over WebDriver
-BiDi without running script in the page.
+Playwright reads page content through scripts it runs in the page: `page.content()`, locators and
+`evaluate`. A page can notice some of that; `page.content()`, for example, marks the page as
+user-activated (`navigator.userActivation`). On Firefox, `com.aresstack.playwright4j.bidi.FirefoxBidi`
+reads the same information over WebDriver BiDi instead, without running script in the page:
 
-## Read-only BiDi access through `newCDPSession`
-
-Firefox accepts one WebDriver BiDi session, and Playwright holds it: a second client gets
-`session not created: Maximum number of active sessions`. On Firefox,
-`BrowserContext.newCDPSession(page)` therefore returns a session that sends commands on Playwright's
-own BiDi session and forwards its events (`network.*`, `browsingContext.*`, ...) for that page.
-Chromium keeps its CDP session unchanged.
-
-Only read-only commands are passed through: `browsingContext.getTree`,
-`browsingContext.locateNodes`, `network.getData`, `network.addDataCollector`,
-`network.removeDataCollector`, `network.disownData`, `storage.getCookies`. Anything else, in
-particular `script.*`, is refused. `playwright4j.context` answers the page's browsing context id.
+| Method | BiDi command | Returns |
+| --- | --- | --- |
+| `css(selector)`, `xpath(expression)`, `locateNodes(locator, maxNodeCount, maxDomDepth)` | `browsingContext.locateNodes` | Matching nodes with their attributes and descendants, as the page has them now |
+| `FirefoxBidi.text(nodes)` | – | Their text, without script and style contents |
+| `getTree()` | `browsingContext.getTree` | The page's browsing context and its frames |
+| `on(event, listener)`, `off(event, listener)` | `network.*`, `browsingContext.*` events | Requests, responses, navigations of this page |
+| `responseBody(requestId)`, `responseBody(requestId, timeout)` | `network.getData` | A response body by the `request.request` id of a network event |
+| `cookies(filter)` | `storage.getCookies` | Cookies of the page's context |
 
 ```java
-CDPSession bidi = context.newCDPSession(page);
-String browsingContext = bidi.send("playwright4j.context").get("context").getAsString();
+try (FirefoxBidi bidi = FirefoxBidi.open(page)) {
+    Map<String, String> requests = new ConcurrentHashMap<>();
+    bidi.on("network.responseCompleted", event -> {
+        JsonObject request = event.getAsJsonObject("request");
+        requests.put(request.get("url").getAsString(), request.get("request").getAsString());
+    });
 
-JsonObject params = new JsonObject();
-params.addProperty("context", browsingContext);
-JsonObject locator = new JsonObject();
-locator.addProperty("type", "css");
-locator.addProperty("value", "main");
-params.add("locator", locator);
-JsonObject serialization = new JsonObject();
-serialization.addProperty("maxDomDepth", 64); // the Java client drops JSON nulls, so "no limit" cannot be sent
-params.add("serializationOptions", serialization);
-JsonObject nodes = bidi.send("browsingContext.locateNodes", params);
+    page.navigate("https://example.org/search?q=java");
+    page.waitForLoadState();
 
-bidi.on("network.responseCompleted", event -> { /* event.request.request is the id for network.getData */ });
+    String results = FirefoxBidi.text(bidi.css("#results"));
+    byte[] json = bidi.responseBody(requests.get("https://example.org/api/search?q=java"));
+}
 ```
 
-## Measurement
+`FirefoxBidi` only sends commands that run no script and leave Playwright's own state alone. It
+uses Playwright's BiDi session: Firefox accepts one session, so a second client next to Playwright
+is refused (`session not created: Maximum number of active sessions`). Use it from the thread that
+uses the page. Events arrive while Playwright waits for the browser (`page.waitForTimeout`,
+`page.waitForLoadState`, any other call), not while the thread sleeps.
+
+On Chrome and Edge, `FirefoxBidi.open` throws `UnsupportedOperationException`; Playwright drives
+them over CDP, where `BrowserContext.newCDPSession(page)` gives the equivalent access (for example
+`DOMSnapshot.captureSnapshot`, which also returns layout and styles).
+
+## Limits
+
+- **DOM**: nodes, attributes and text. No layout, computed styles or visibility, no property-only
+  state such as the current value of a typed-in input field, and no closed shadow roots. The
+  default depth is 64 levels below each matched node; the Playwright Java client drops JSON nulls,
+  so "no limit" cannot be requested.
+- **Response bodies**: what Playwright's data collector keeps, bodies up to 20 MB of the page's
+  requests. Network data is what the server sent, not what the page made of it. `responseBody`
+  fails after 10 s by default: Firefox has been reported to hold `network.getData` for seconds on
+  304 revalidations.
+- **Service workers**: their responses arrive and have bodies, but Firefox does not mark them as
+  service worker responses, so `Response.fromServiceWorker()` is always false.
+
+## Response.body() for 304
+
+Over BiDi, `Response.body()` of a 304 revalidation returns the body Firefox took from its cache.
+Playwright treats every 3xx status as a redirect without a body; for Firefox playwright4j answers
+304 like a 200. Redirects (301, 302, 303, 307, 308) still have no body in `Response.body()`;
+`FirefoxBidi.responseBody` returns what Firefox received for them.
+
+## What a page sees
 
 `./gradlew :playwright-java-contract-tests:passiveAcquisition` with `FIREFOX_EXECUTABLE` set runs
 `PassiveAcquisitionProbe`: a local page with a cached script (`max-age`), a revalidated style sheet
 (`ETag`, 304), a fetched JSON, a redirect, and a service worker that answers one request itself and
 passes another to the network. It reads every response with `Response.body()` and with
-`network.getData`, reads the DOM with `browsingContext.locateNodes`, `page.content()` and a locator,
-and records what the page itself observes after each read (user activation, focus, events, DOM
-mutations, new globals) and the request heads the server receives. The report is written to
+`FirefoxBidi.responseBody`, reads the DOM with `FirefoxBidi`, `page.content()` and a locator, and
+records what the page observes after each read (user activation, focus, events, DOM mutations, new
+globals) and the request heads the server receives. The report is written to
 `build/reports/passive-acquisition/report.txt`.
 
-Results with Firefox 158.0.1 and Camoufox 156.0.1-beta.36 (with the BiDi fixes), Linux, headed:
+Firefox 158.0.1 and Camoufox 156.0.1-beta.36 (with the BiDi fixes, see [camoufox.md](camoufox.md))
+give the same results:
 
-| Read | Result |
-| --- | --- |
-| `Response.body()` | Works for 200 responses, cache hits and service worker responses (20-70 ms). Fails for 304 and every other 3xx with "Response body is unavailable for redirect responses". `fromServiceWorker()` is always false over BiDi. |
-| `network.getData` | Returns a body for every completed response, including 304 (the cached body) and redirects. No multi-second wait on 304 was seen against a local server. |
-| `browsingContext.locateNodes` | Returns the current DOM including script-rendered text (44 ms, 6 KB for the test page). The page observes no change. |
-| `page.content()` | Sets `navigator.userActivation.hasBeenActive` and `isActive` to true. |
-| Passive monitoring | No cache-bypass headers; the cached script is not requested again; the style sheet is revalidated with `If-None-Match`. |
-
-Every page already has the global `__pw_bidiInsertText` before any read; it comes from Playwright's
-page setup, not from these reads.
+- `FirefoxBidi` reads (whole document, 64 levels, about 45 ms for the test page) change nothing the
+  page can observe; the text rendered by the page's scripts is included.
+- Reading response bodies changes no request: no cache-bypass headers, the cached script is not
+  requested again, the style sheet is revalidated with `If-None-Match`.
+- `FirefoxBidiTest` (part of `firefoxSmoke`) checks the DOM, response body, cookie and 304 reads and
+  that the page stays without user activation.
