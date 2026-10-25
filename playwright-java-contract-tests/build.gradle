@@ -86,6 +86,8 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxReadSideEffectsTest'
         // Unhandled dialogs and auth challenges answered after a delay, opt-in (#48).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxUnhandledPromptDelayTest'
+        // Mouse paths and click timing under playwright4j.bidi.naturalPointer (#43).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNaturalPointerTest'
     }
 
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'

@@ -9,6 +9,13 @@ public final class Playwright4JHost {
      */
     public static final String NATIVE_BEHAVIOR_PROPERTY = "playwright4j.bidi.nativeBehavior";
 
+    /**
+     * {@code -Dplaywright4j.bidi.naturalPointer=true} moves the mouse along a curved path and gives
+     * clicks a human press and release timing, where the caller sets no {@code steps} or {@code delay}
+     * (Firefox over WebDriver BiDi only; see docs/browser-signals.md).
+     */
+    public static final String NATURAL_POINTER_PROPERTY = "playwright4j.bidi.naturalPointer";
+
     private final HostEnvironment environment;
     private final HostFileSystem fileSystem;
     private final HostHttpClient httpClient;
@@ -112,6 +119,12 @@ public final class Playwright4JHost {
     @HostAccess.Export
     public boolean nativeBehavior() {
         return Boolean.parseBoolean(System.getProperty(NATIVE_BEHAVIOR_PROPERTY, "").trim());
+    }
+
+    /** Read on every use, so the driver follows the property as the JVM sees it. */
+    @HostAccess.Export
+    public boolean naturalPointer() {
+        return Boolean.parseBoolean(System.getProperty(NATURAL_POINTER_PROPERTY, "").trim());
     }
 
     @HostAccess.Export

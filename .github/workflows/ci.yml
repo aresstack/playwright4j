@@ -121,7 +121,8 @@ jobs:
     # Covers launch() headless and launchPersistentContext() headed with a profile directory
     # (the GPT Desktop path; headed exercises the Windows launcher-process handoff).
     runs-on: windows-2022
-    timeout-minutes: 30
+    # Firefox and Camoufox, each with and without playwright4j.bidi.nativeBehavior: about 35 minutes.
+    timeout-minutes: 50
 
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
