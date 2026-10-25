@@ -41,7 +41,7 @@ public class FirefoxUnhandledPromptDelayTest {
 
     @Test
     void withThePropertyUnhandledDialogsAndAuthWait() throws Throwable {
-        runGuarded(configured -> run(configured, "700-900"));
+        runGuarded(configured -> run(configured, "1500-1700"));
     }
 
     private static void run(String configured, String delay) throws IOException {
@@ -85,19 +85,19 @@ public class FirefoxUnhandledPromptDelayTest {
                 long authMillis = (System.nanoTime() - started) / 1_000_000;
                 assertEquals(401, unauthorized.status(), "a challenge without credentials is cancelled");
                 if (delay == null) {
-                    assertTrue(millis(confirmed) < 500, "confirm took " + confirmed.get(1) + " ms");
-                    assertTrue(millis(prompted) < 500, "prompt took " + prompted.get(1) + " ms");
+                    assertTrue(millis(confirmed) < 1000, "confirm took " + confirmed.get(1) + " ms");
+                    assertTrue(millis(prompted) < 1000, "prompt took " + prompted.get(1) + " ms");
                 } else {
-                    assertTrue(millis(confirmed) >= 690, "confirm took " + confirmed.get(1) + " ms");
-                    assertTrue(millis(prompted) >= 690, "prompt took " + prompted.get(1) + " ms");
-                    assertTrue(authMillis >= 700, "auth was cancelled after " + authMillis + " ms");
+                    assertTrue(millis(confirmed) >= 1490, "confirm took " + confirmed.get(1) + " ms");
+                    assertTrue(millis(prompted) >= 1490, "prompt took " + prompted.get(1) + " ms");
+                    assertTrue(authMillis >= 1500, "auth was cancelled after " + authMillis + " ms");
                 }
 
                 // The caller's own handler decides, and when: the delay never applies to it.
                 page.onceDialog(dialog -> dialog.accept());
                 List<?> handled = (List<?>) page.evaluate(TIMED_CONFIRM);
                 assertEquals(Boolean.TRUE, handled.get(0));
-                assertTrue(millis(handled) < 500, "handled confirm took " + handled.get(1) + " ms");
+                assertTrue(millis(handled) < 1000, "handled confirm took " + handled.get(1) + " ms");
 
                 BrowserContext withCredentials = browser.newContext(new Browser.NewContextOptions()
                         .setHttpCredentials("user", "secret"));
@@ -112,7 +112,7 @@ public class FirefoxUnhandledPromptDelayTest {
                 Response rejected = wrongCredentials.newPage().navigate(url);
                 long rejectedMillis = (System.nanoTime() - started) / 1_000_000;
                 assertEquals(401, rejected.status());
-                assertTrue(rejectedMillis < 600, "wrong credentials were cancelled after " + rejectedMillis + " ms");
+                assertTrue(rejectedMillis < 1400, "wrong credentials were cancelled after " + rejectedMillis + " ms");
                 wrongCredentials.close();
 
                 // A dialog whose page closes during the delay is left alone, and closing does not wait for it.

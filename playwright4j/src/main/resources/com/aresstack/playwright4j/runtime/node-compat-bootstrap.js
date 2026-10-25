@@ -6403,8 +6403,12 @@
   // Firefox's Remote Agent sets its own recommended test preferences at startup, the ones above
   // among them, for every preference without a user value (remote/shared/RecommendedPreferences).
   // Leaving Playwright's lines out would hand them to the Remote Agent, so it is told not to.
+  // Without them Firefox's 3 s successive-dialog limit applies: the next dialog within it gets a
+  // "prevent more dialogs" checkbox, and Camoufox (tab-modal prompts) never reports that dialog over
+  // BiDi, so the page and the caller's call hang. 0 is what the Remote Agent sets.
   const NATIVE_BEHAVIOR_ADDED_PREFS = {
-    'remote.prefs.recommended': false
+    'remote.prefs.recommended': false,
+    'dom.successive_dialog_time_limit': 0
   };
 
   function nativeBehavior() {
