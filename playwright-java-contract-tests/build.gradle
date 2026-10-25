@@ -64,7 +64,7 @@ tasks.register('channelSmoke', Test) {
     // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
     // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
-    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true }
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
 
 // Firefox over WebDriver BiDi (moz-firefox channel) against an installed Firefox. Point
