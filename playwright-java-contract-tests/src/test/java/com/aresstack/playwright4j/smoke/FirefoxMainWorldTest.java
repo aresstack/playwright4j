@@ -95,6 +95,7 @@ public class FirefoxMainWorldTest {
                 page.setContent("<div id=zone style='width:200px;height:100px'>drop</div><script>"
                         + "const Native = DataTransfer;"
                         + "window.DataTransfer = function () { document.body.dataset.mainWorld = 'yes'; return new Native(); };"
+                        + "zone.addEventListener('dragover', e => e.preventDefault());"
                         + "zone.addEventListener('drop', e => { e.preventDefault();"
                         + "  zone.dataset.dropped = e.dataTransfer.files[0].name + ':' + e.isTrusted; });"
                         + "</script>");
