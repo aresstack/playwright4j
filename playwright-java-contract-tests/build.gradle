@@ -85,8 +85,6 @@ tasks.register('firefoxSmoke', Test) {
     environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
     // Firefox inherits it: on a Wayland desktop it opens X11 (XWayland) windows xdotool can count.
     environment 'MOZ_ENABLE_WAYLAND', '0'
-    // TEMPORARY (PR #29 diagnosis): BiDi protocol trace on stderr.
-    environment 'DEBUG', 'pw:protocol'
 
     systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
