@@ -163,6 +163,16 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   `page.evaluate` or `locator(...).click()` still activates the page. This differs from the official
   driver.
 
+- Text input: since Playwright 1.62 the BiDi layer installs `window.__pw_bidiInsertText` in the main
+  world of every document (`BidiBrowserContext.initialize` → `extendInjectedScript`) and types
+  every character outside the US keyboard layout (`ä`, `ß`, `é`, emoji), and all text of
+  `insertText`/`fill`, through it as an untrusted `InputEvent` without key events. playwright4j
+  does not install it and types such text as WebDriver BiDi `keyDown`/`keyUp` actions, one per
+  grapheme; Firefox then dispatches trusted `keydown`, `keypress`, `beforeinput`, `input` and
+  `keyup` to the focused element, also inside iframes. Line breaks and tabs are typed as Enter and
+  Tab. `FirefoxKeyboardInputTest` (task `firefoxSmoke`) checks both. This differs from the
+  official driver (issue #36).
+
 **Caused by playwright4j, not page-observable**
 
 - The GraalJS runtime starts Chrome with `--remote-debugging-port=0` instead of a pipe, because a

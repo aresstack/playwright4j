@@ -6187,9 +6187,9 @@
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
   // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
   // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
-  // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend. Since 1.62 a
-  // BiDi context extends the injected script of every new document right away
-  // (BidiBrowserContext.initialize), so all of them run before any input.
+  // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend. Upstream 1.62
+  // also extends the injected script of every new document right away
+  // (BidiBrowserContext.initialize); playwright4j drops that call (see patchBidiKeyboardSendText).
   const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
   function isPlaywrightSetupEvaluation(method, params, utilityWorldName) {
     if (method === 'script.evaluate') {
@@ -6238,6 +6238,72 @@
         awaitPromise: true,
         userActivation: false
       });
+    };
+  }
+
+  // Playwright 1.62 types text it cannot press on the US keyboard layout (ä, ö, ü, ß, é, emoji,
+  // and all text of insertText/fill) through window.__pw_bidiInsertText: a function it installs
+  // in the main world of every document (BidiBrowserContext.initialize -> extendInjectedScript)
+  // and that inserts the text through the DOM with an untrusted InputEvent. Pages can see both
+  // the global and the events. WebDriver BiDi accepts any single grapheme as the value of a
+  // keyDown/keyUp action, and Firefox then dispatches trusted keydown, keypress, beforeinput,
+  // input and keyup events to the focused element, also inside iframes, as for a person typing.
+  // So sendText types one grapheme after the other, and the main-world install is dropped
+  // (patchCoreBundleSource). Line breaks and tabs are typed as Enter and Tab.
+  const BIDI_KEY_ENTER = '';
+  const BIDI_KEY_TAB = '';
+  const BIDI_SEND_TEXT_CHUNK = 100;
+
+  function splitGraphemes(text) {
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+      return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), function (part) {
+        return part.segment;
+      });
+    }
+    // Without Intl.Segmenter: code points, with combining marks, variation selectors, emoji
+    // modifiers and zero-width-joiner sequences kept on the code point before them.
+    const graphemes = [];
+    let joinNext = false;
+    for (const codePoint of text) {
+      const attaches = /^[\p{M}︀-️\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}‍]$/u.test(codePoint);
+      if (graphemes.length && (attaches || joinNext)) {
+        graphemes[graphemes.length - 1] += codePoint;
+      } else {
+        graphemes.push(codePoint);
+      }
+      joinNext = codePoint === '‍';
+    }
+    return graphemes;
+  }
+
+  function bidiKeyValuesForText(text) {
+    return splitGraphemes(String(text).replace(/\r\n?/g, '\n')).map(function (grapheme) {
+      if (grapheme === '\n') {
+        return BIDI_KEY_ENTER;
+      }
+      if (grapheme === '\t') {
+        return BIDI_KEY_TAB;
+      }
+      // WebDriver reserves U+E000..U+E05D for named keys (Shift, Enter, ...); typing them as text
+      // would press those keys instead.
+      if (/[-]/.test(grapheme)) {
+        throw new Error('Cannot type U+' + grapheme.charCodeAt(0).toString(16).toUpperCase()
+          + ' over WebDriver BiDi: the code point is reserved for a named key');
+      }
+      return grapheme;
+    });
+  }
+
+  function patchBidiKeyboardSendText(RawKeyboard) {
+    RawKeyboard.prototype.sendText = async function (progress, text) {
+      const values = bidiKeyValuesForText(text);
+      for (let start = 0; start < values.length; start += BIDI_SEND_TEXT_CHUNK) {
+        const actions = [];
+        values.slice(start, start + BIDI_SEND_TEXT_CHUNK).forEach(function (value) {
+          actions.push({ type: 'keyDown', value: value }, { type: 'keyUp', value: value });
+        });
+        await this._performActions(progress, actions);
+      }
     };
   }
 
@@ -6363,6 +6429,11 @@
           patchBidiPageTouchUtilityWorld(BidiPage, '__playwright_utility_world__');
           patchBidiPageFirefoxLastTab(BidiPage);
         });
+      },
+      bidiKeyboard: function (RawKeyboard) {
+        return patchOnce(RawKeyboard, function () {
+          patchBidiKeyboardSendText(RawKeyboard);
+        });
       }
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
@@ -6376,6 +6447,10 @@
     source = replaceCoreBundleAnchor(source, 'BidiBrowser.connect(',
       hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2).connect(', 2);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
+    // Text is typed as real key events (patchBidiKeyboardSendText), so nothing needs
+    // window.__pw_bidiInsertText in the pages' main world any more.
+    source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
+    source = replaceCoreBundleAnchor(source, '        promises2.push(this.extendInjectedScript(source7));\n', '', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
