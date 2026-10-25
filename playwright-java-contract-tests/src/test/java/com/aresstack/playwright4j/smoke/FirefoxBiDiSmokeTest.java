@@ -60,7 +60,7 @@ public class FirefoxBiDiSmokeTest {
                     .setHeadless(true);
             Browser browser = playwright.firefox().launch(options);
             try {
-                for (int round = 0; round < rounds; round++) {
+                for (int round = 0; round < 2; round++) {
                     BrowserContext context = browser.newContext();
                     Page page = context.newPage();
                     page.setContent("<html><body><h1>Firefox BiDi smoke</h1></body></html>");
@@ -85,7 +85,7 @@ public class FirefoxBiDiSmokeTest {
     private static void runPersistentSmoke(String configured, int rounds) throws Exception {
         Path userDataDir = Files.createTempDirectory("playwright4j-firefox-profile");
         try (Playwright playwright = Playwright.create()) {
-            for (int round = 0; round < 2; round++) {
+            for (int round = 0; round < rounds; round++) {
                 // What the profile holds and what the start tab goes through, for the message if the
                 // page does not show its document. Collected without browser calls, so building the
                 // message cannot wait on the browser or hide the failure.
