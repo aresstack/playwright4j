@@ -897,23 +897,126 @@
     return pipe;
   }
 
+  // Child processes by their pid, so that Playwright's force kill (process.kill(-pid, 'SIGKILL'),
+  // or spawnSync('taskkill /pid <pid> /T /F') on Windows) reaches the host process it means.
+  // The pid is the real OS pid where the host has one, otherwise a stand-in unique to this runtime.
+  const childProcessesByPid = {};
+  let nextStandInPid = 4000000;
+
+  function registerChildProcess(child, processId) {
+    let pid = -1;
+    try {
+      pid = Number(host.processLauncher().pid(String(processId)));
+    } catch (error) {
+      // A launcher without pids: use a stand-in.
+    }
+    child.pid = pid > 0 ? pid : nextStandInPid++;
+    childProcessesByPid[child.pid] = child;
+  }
+
+  function unregisterChildProcess(child) {
+    if (child && childProcessesByPid[child.pid] === child) {
+      delete childProcessesByPid[child.pid];
+    }
+  }
+
+  // Node's signal semantics on top of the host: SIGKILL ends the process tree at once, any other
+  // signal asks the process to terminate and kills its tree only after a grace period.
+  function signalHostProcess(processId, signal) {
+    const launcher = host.processLauncher();
+    if (signal === 'SIGKILL' || signal === 9) {
+      launcher.kill(String(processId));
+    } else {
+      launcher.close(String(processId));
+    }
+  }
+
+  function noSuchProcess(syscall, pid) {
+    const error = new Error(syscall + ' ESRCH');
+    error.code = 'ESRCH';
+    error.errno = -3;
+    error.syscall = syscall;
+    error.pid = pid;
+    return error;
+  }
+
+  // process.kill: only the children this runtime spawned are reachable (a negative pid, Node's
+  // process-group form, means the same child's tree). Signal 0 tests for existence, as in Node.
+  function killChildProcessByPid(pid, signal) {
+    const child = childProcessesByPid[Math.abs(Number(pid))];
+    if (!child) {
+      throw noSuchProcess('kill', pid);
+    }
+    if (signal === 0) {
+      return true;
+    }
+    signalHostProcess(child.__playwright4jProcessId, signal === undefined ? 'SIGTERM' : signal);
+    child.killed = true;
+    return true;
+  }
+
+  // Playwright's Windows force kill runs `taskkill /pid <pid> /T /F` through spawnSync with a
+  // shell. Recognise it and end the host process tree; no taskkill.exe is started. Returns null
+  // for any other command.
+  function taskkillFor(command, args) {
+    const words = [String(command || '')].concat((args || []).map(String)).join(' ').trim().split(/\s+/);
+    if (words.length === 0 || !/^taskkill(\.exe)?$/i.test(words[0].replace(/^.*[\\/]/, ''))) {
+      return null;
+    }
+    const pids = [];
+    let force = false;
+    for (let index = 1; index < words.length; index++) {
+      const word = words[index].toLowerCase();
+      if (word === '/pid' && index + 1 < words.length) {
+        pids.push(Number(words[++index]));
+      } else if (word === '/f') {
+        force = true;
+      }
+    }
+    const stdout = [];
+    const stderr = [];
+    pids.forEach(function (pid) {
+      const child = childProcessesByPid[pid];
+      if (!child) {
+        stderr.push('ERROR: The process "' + pid + '" not found.');
+        return;
+      }
+      signalHostProcess(child.__playwright4jProcessId, force ? 'SIGKILL' : 'SIGTERM');
+      stdout.push('SUCCESS: Sent termination signal to the process with PID ' + pid + '.');
+    });
+    return {
+      pid: 0,
+      status: stderr.length > 0 ? 128 : 0,
+      signal: null,
+      output: [null, global.Buffer.from(stdout.join('\r\n')), global.Buffer.from(stderr.join('\r\n'))],
+      stdout: global.Buffer.from(stdout.join('\r\n')),
+      stderr: global.Buffer.from(stderr.join('\r\n'))
+    };
+  }
+
   function closeSpawnedProcess(child, exitCode) {
     if (!child || child.__playwright4jClosed) {
       return;
     }
     child.__playwright4jClosed = true;
+    unregisterChildProcess(child);
+    delete browserProcessesById[child.__playwright4jProcessId];
     child.killed = true;
     const code = typeof exitCode === 'number' ? exitCode : 0;
     child.emit('exit', code, null);
     child.emit('close', code, null);
   }
 
+  // Chromium processes by host id; the host reports their real exit (see the drain below).
+  const browserProcessesById = {};
+
   function createSpawnedProcess(processId, endpoint) {
     const child = new EventEmitter();
-    child.pid = Math.floor(Math.random() * 1000000) + 1;
     child.killed = false;
     child.__playwright4jClosed = false;
     child.__playwright4jProcessId = processId;
+    registerChildProcess(child, processId);
+    browserProcessesById[processId] = child;
     child.stdin = createProcessStream();
     child.stdout = createProcessStream();
     child.stderr = createProcessStream();
@@ -924,10 +1027,10 @@
       createBrowserPipe(processId, endpoint, child),
       createBrowserPipe(processId, endpoint, child)
     ];
-    child.kill = function () {
+    child.kill = function (signal) {
       if (!child.__playwright4jClosed) {
         try {
-          host.processLauncher().close(processId);
+          signalHostProcess(processId, signal);
         } catch (error) {
           // Already gone.
         }
@@ -960,9 +1063,9 @@
 
   function createGeneralProcess(processId) {
     const child = new EventEmitter();
-    child.pid = Math.floor(Math.random() * 1000000) + 1;
     child.killed = false;
     child.__playwright4jProcessId = processId;
+    registerChildProcess(child, processId);
 
     const stdin = new Writable();
     stdin._write = function (chunk, encoding, callback) {
@@ -983,11 +1086,12 @@
     child.stdout = stdout;
     child.stderr = stderr;
     child.stdio = [stdin, stdout, stderr];
-    child.kill = function () {
+    // Node semantics: the 'exit' event follows when the host reports the real exit.
+    child.kill = function (signal) {
       if (!child.killed) {
         child.killed = true;
         try {
-          host.processLauncher().close(processId);
+          signalHostProcess(processId, signal);
         } catch (error) {
           // Already gone.
         }
@@ -1012,6 +1116,11 @@
       const parts = lines[index].split(PROC_UNIT);
       const entry = generalProcessesById[parts[1]];
       if (!entry) {
+        if (parts[0] === 'exit' && browserProcessesById[parts[1]]) {
+          // A Chromium process ended (e.g. after a force kill) before its CDP connection closed.
+          closeSpawnedProcess(browserProcessesById[parts[1]], parseInt(parts[2], 10));
+          handled++;
+        }
         continue;
       }
       if (parts[0] === 'data') {
@@ -1022,6 +1131,7 @@
         entry.stdout.push(null);
         entry.stderr.push(null);
         entry.child.killed = true;
+        unregisterChildProcess(entry.child);
         entry.child.emit('exit', code, null);
         entry.child.emit('close', code, null);
         delete generalProcessesById[parts[1]];
@@ -1069,11 +1179,31 @@
     return result;
   }
 
+  // Node's spawn semantics: options.env, when given, is the child's complete environment (it
+  // replaces the inherited one); entries whose value is undefined are dropped. Playwright passes
+  // either the launch option `env` (setEnv in the Java API) or process.env, amended per browser
+  // (e.g. MOZ_CRASHREPORTER for Firefox). Returns null to inherit the host's environment.
+  // The values are handed to the host only and never logged (they may carry secrets).
+  function environmentFor(options) {
+    if (!options || !options.env) {
+      return null;
+    }
+    const entries = [];
+    Object.keys(options.env).forEach(function (name) {
+      const value = options.env[name];
+      if (value !== undefined && value !== null) {
+        entries.push(String(name) + '=' + String(value));
+      }
+    });
+    return entries.join(ARGUMENT_SEPARATOR);
+  }
+
   modules.child_process = {
     spawn: function (command, args, options) {
       const argList = (args || []).map(function (value) { return String(value); });
       const joinedArguments = argList.join(ARGUMENT_SEPARATOR);
       const workingDirectory = options && options.cwd ? String(options.cwd) : global.process.cwd();
+      const environment = environmentFor(options);
 
       // Firefox over WebDriver BiDi (Playwright's moz-firefox channel) also passes
       // --remote-debugging-port, but together with a -profile/--profile directory. It is run as a
@@ -1084,7 +1214,7 @@
       }) && (argList.indexOf('-profile') >= 0 || argList.indexOf('--profile') >= 0);
       if (isFirefoxBiDi) {
         const firefoxArguments = withFirefoxInstanceFlags(argList).join(ARGUMENT_SEPARATOR);
-        const firefoxId = String(host.processLauncher().spawnProcess(String(command), firefoxArguments, workingDirectory));
+        const firefoxId = String(host.processLauncher().spawnProcessWithEnvironment(String(command), firefoxArguments, workingDirectory, environment));
         return createGeneralProcess(firefoxId);
       }
 
@@ -1105,13 +1235,13 @@
             + '. playwright4j runs a Chromium-only runtime; only the chromium browser'
             + ' (chrome / msedge channels) is available.');
         }
-        const generalId = String(host.processLauncher().spawnProcess(String(command), joinedArguments, workingDirectory));
+        const generalId = String(host.processLauncher().spawnProcessWithEnvironment(String(command), joinedArguments, workingDirectory, environment));
         return createGeneralProcess(generalId);
       }
 
       // launchChromium throws on failure; let it propagate so Playwright's launch promise
       // rejects with a real error instead of hanging.
-      const result = String(host.processLauncher().launchChromium(String(command), joinedArguments, workingDirectory));
+      const result = String(host.processLauncher().launchChromiumWithEnvironment(String(command), joinedArguments, workingDirectory, environment));
       const separatorIndex = result.indexOf(ARGUMENT_SEPARATOR);
       const processId = separatorIndex < 0 ? result : result.substring(0, separatorIndex);
       const endpoint = separatorIndex < 0 ? '' : result.substring(separatorIndex + 1);
@@ -1119,7 +1249,11 @@
     },
     execFile: unsupported('child_process.execFile'),
     execFileSync: unsupported('child_process.execFileSync'),
-    spawnSync: function () {
+    spawnSync: function (command, args) {
+      const taskkill = taskkillFor(command, Array.isArray(args) ? args : []);
+      if (taskkill) {
+        return taskkill;
+      }
       return { status: 0, stdout: global.Buffer.from(''), stderr: global.Buffer.from('') };
     }
   };
@@ -4403,13 +4537,89 @@
     URLSearchParams: global.URLSearchParams
   };
 
+  // process.env backed by the host environment, enumerable ({...process.env}, Object.keys) so a
+  // spawn that passes it on keeps the inherited variables, and writable like Node's (assignments
+  // and deletes stay local to this runtime). Names are case-insensitive on Windows, as in Node.
+  function createProcessEnv() {
+    const caseInsensitive = host.environment().platform() === 'win32';
+    const overrides = {};
+    const deleted = {};
+    function key(name) {
+      return caseInsensitive ? String(name).toUpperCase() : String(name);
+    }
+    function hostNames() {
+      const names = String(host.environment().environmentNames());
+      return names ? names.split(ARGUMENT_SEPARATOR) : [];
+    }
+    function names() {
+      const seen = {};
+      const result = [];
+      hostNames().concat(Object.keys(overrides).map(function (k) { return overrides[k].name; })).forEach(function (name) {
+        const k = key(name);
+        if (!seen[k] && !deleted[k]) {
+          seen[k] = true;
+          result.push(Object.prototype.hasOwnProperty.call(overrides, k) ? overrides[k].name : name);
+        }
+      });
+      return result;
+    }
+    function has(name) {
+      const k = key(name);
+      if (Object.prototype.hasOwnProperty.call(overrides, k)) {
+        return true;
+      }
+      if (deleted[k]) {
+        return false;
+      }
+      return hostNames().some(function (hostName) { return key(hostName) === k; });
+    }
+    function value(name) {
+      const k = key(name);
+      if (Object.prototype.hasOwnProperty.call(overrides, k)) {
+        return overrides[k].value;
+      }
+      if (deleted[k]) {
+        return undefined;
+      }
+      return host.environment().getEnvironmentValue(String(name));
+    }
+    return new Proxy({}, {
+      get: function (target, name) {
+        if (typeof name === 'symbol') {
+          return undefined;
+        }
+        return value(name);
+      },
+      set: function (target, name, newValue) {
+        const k = key(name);
+        delete deleted[k];
+        overrides[k] = { name: String(name), value: String(newValue) };
+        return true;
+      },
+      deleteProperty: function (target, name) {
+        const k = key(name);
+        delete overrides[k];
+        deleted[k] = true;
+        return true;
+      },
+      has: function (target, name) {
+        return typeof name !== 'symbol' && has(name);
+      },
+      ownKeys: function () {
+        return names();
+      },
+      getOwnPropertyDescriptor: function (target, name) {
+        if (typeof name === 'symbol' || !has(name)) {
+          return undefined;
+        }
+        return { value: value(name), writable: true, enumerable: true, configurable: true };
+      }
+    });
+  }
+
   global.process = new EventEmitter();
   Object.assign(global.process, {
-    env: new Proxy({}, {
-      get: function (target, name) {
-        return host.environment().getEnvironmentValue(String(name));
-      }
-    }),
+    env: createProcessEnv(),
     argv: [],
     platform: host.environment().platform(),
     arch: host.environment().architecture(),
@@ -4460,8 +4670,8 @@
       global.__playwright4jExitRequested = true;
       return undefined;
     },
-    kill: function () {
-      return true;
+    kill: function (pid, signal) {
+      return killChildProcessByPid(pid, signal);
     },
     version: 'v20.0.0',
     versions: {

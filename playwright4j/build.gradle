@@ -105,6 +105,8 @@ test {
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
     systemProperty 'playwright4j.chrome.headless', findProperty('playwright4j.chrome.headless') ?: 'false'
     systemProperty 'playwright4j.chrome.url', findProperty('playwright4j.chrome.url') ?: 'data:text/html,<title>Playwright4J Chrome Spike</title><h1>Playwright4J Chrome Spike</h1>'
+    // Full assertion messages in the console: the CI log is often the only place a failure is seen.
+    testLogging { exceptionFormat "full" }
 }
 
 publishing {
