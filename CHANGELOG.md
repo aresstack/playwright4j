@@ -47,7 +47,6 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
 
 - Firefox is covered by smoke tests only; the upstream contract suite runs against Chromium (#11).
 - CI runs on Windows only.
-- Not yet addressed, planned after 0.3.0: #41 to #43 and #48.
 - Signals by which a page can tell Playwright's Firefox BiDi automation from a manual session are
   tracked in #36 to #45.
 - See [`problems.md`](problems.md) for the documented divergences.
