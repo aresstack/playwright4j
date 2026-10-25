@@ -238,7 +238,8 @@ final class FirefoxWindows {
         }
         String id;
         try {
-            id = run("xdotool", "search", "--onlyvisible", "--pid", Long.toString(pid), "--class", X11_CLASS).trim().split("\\s+")[0];
+            // --all: the window must match both the process and the class (xdotool's default is any).
+            id = run("xdotool", "search", "--all", "--onlyvisible", "--pid", Long.toString(pid), "--class", X11_CLASS).trim().split("\\s+")[0];
             run("xdotool", "windowfocus", "--sync", id);
             Thread.sleep(300);
             // xdotool key types into whatever has the focus; windowfocus may give up quietly.

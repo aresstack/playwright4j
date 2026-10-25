@@ -48,10 +48,10 @@ Results with Camoufox 158.0-beta.40 (`firefoxSmoke` task, `FIREFOX_EXECUTABLE` p
 | `FirefoxPersistentWindowTest.anotherRunningFirefoxIsLeftAlone` | hangs | foreground tabs |
 | `FirefoxPersistentWindowTest.newContextGetsOneWindowAndItsPagesOpenAsTabs` | fails | new windows |
 
-The window tests find Firefox processes and X11 windows by the names `firefox` / `firefox-bin`.
-Camoufox's are called `camoufox` / `camoufox-bin`, so for this run the names were extended locally.
-Without that, `FirefoxPersistentWindowTest` sees no windows, and the leftover-process check of every
-Firefox smoke test checks nothing.
+At the time of this run the window tests found Firefox processes and X11 windows only by the names
+`firefox` / `firefox-bin`, so the Camoufox names were added locally. Since this branch the tests
+count `camoufox`, `camoufox.exe` and `camoufox-bin` processes and X11 windows of class `camoufox` as
+Firefox; no local change is needed.
 
 ## Camoufox behaviour 1: no new windows
 
@@ -105,8 +105,9 @@ level). Juggler's content script (`additions/juggler/content/main.js`) therefore
 and sets `docShell.forceActiveState = true` and `docShell.overrideHasFocus = true`. A docShell forced
 active never becomes hidden, so no `visibilitychange` comes.
 
-In a persistent context playwright4j's first `newPage()` takes over the start tab; every further
-`newPage()` opens a foreground tab (Playwright behaviour) and hangs; `page.bringToFront()` would hang the same way.
+In a persistent context the start tab becomes the first page when `launchPersistentContext`
+returns; every `newPage()` opens a foreground tab (Playwright behaviour) and hangs, and
+`page.bringToFront()` would hang the same way.
 
 Fix options:
 
@@ -222,7 +223,9 @@ Linux with Camoufox 156.0.1-beta.36, released and with the fixes: passes.
 The acceptance check compares two runs of the same Camoufox copy with the same fingerprint:
 
 - **A**: Camoufox's own launcher (npm package `camoufox` 0.5.8 with `playwright-core` 1.62.0), which
-  drives Camoufox over Juggler. This is the reference (100 points at amiabot.app).
+  drives Camoufox over Juggler. This is the reference: the launcher GPT Desktop used before (its
+  earlier reference test reached 100 points at amiabot.app; in the comparison below it scored 75
+  without pointer or scroll input).
 - **B**: playwright4j over WebDriver BiDi.
 
 Two tools start both runs with identical launch options: `docs/camoufox/juggler-reference.mjs` for
@@ -335,6 +338,9 @@ Fingerprint through `setEnv` (Windows: `camoufox.exe`):
 CAMOUFOX_EXECUTABLE=/path/to/camoufox/camoufox-bin CAMOUFOX_BIDI_FIXES=true \
   ./gradlew :playwright-java-contract-tests:camoufoxSmoke
 ```
+
+It runs headed; on Linux without a display prefix it with `xvfb-run -a` or set
+`FIREFOX_HEADLESS=true`.
 
 Window and tab behaviour:
 

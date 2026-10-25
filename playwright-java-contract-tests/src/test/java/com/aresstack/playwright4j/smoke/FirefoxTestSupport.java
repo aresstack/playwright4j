@@ -154,7 +154,7 @@ final class FirefoxTestSupport {
         Map<Long, FirefoxProcess> details = new HashMap<>();
         if (WINDOWS) {
             try {
-                String output = FirefoxWindows.powerShell("Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | "
+                String output = FirefoxWindows.powerShell("Get-CimInstance Win32_Process -Filter \"Name='firefox.exe' OR Name='camoufox.exe'\" | "
                         + "ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }");
                 for (String line : output.split("\\R")) {
                     String[] fields = line.split("\t", 3);
