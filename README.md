@@ -180,12 +180,13 @@ application servers and custom class loaders work. Jars nested in another jar (S
 | --- | --- |
 | `playwright4j.driver.jvmArgs` | Extra driver JVM options, whitespace separated, `"..."` keeps spaces, e.g. `-Dplaywright4j.driver.jvmArgs="-Xmx1g -Dhttps.proxyHost=proxy"`. Applied last, so they win over forwarded properties. |
 | `playwright4j.driver.classpath` | Replaces the detection with an explicit path list, for containers (e.g. OSGi) whose class loaders expose no file locations. |
+| `playwright4j.bidi.naturalPointer` | `true` moves the mouse along a curved path and gives clicks a press-and-release timing, where the caller sets no `steps` or `delay` (Firefox and Camoufox over WebDriver BiDi only; default `false`). See [docs/browser-signals.md](docs/browser-signals.md#natural-pointer-opt-in). |
 
 These properties of the application JVM are forwarded to the driver JVM when set: the
 `javax.net.ssl.trustStore*`/`keyStore*` settings, `jdk.tls.client.protocols`, `https.protocols`,
 `http(s).proxyHost`/`Port`, `http.nonProxyHosts`, `socksProxy*`, `java.net.useSystemProxies`,
-`jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path` and the `playwright4j.debug*`
-settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver allows Basic proxy
+`jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path`, `playwright4j.bidi.naturalPointer`
+and the `playwright4j.debug*` settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver allows Basic proxy
 credentials on `CONNECT`, which `APIRequestContext` needs with an authenticating proxy. Store passwords are passed in an owner-only temporary file that the driver deletes at
 startup, never on the command line.
 

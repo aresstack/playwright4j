@@ -137,6 +137,26 @@ main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElemen
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
 
+### Natural pointer opt-in
+
+Playwright moves the mouse to an action's target in one `pointerMove` and sends the press and
+release right after it, so a page sees a single `mousemove` and a click of a few milliseconds
+(issue #43). `-Dplaywright4j.bidi.naturalPointer=true` (Firefox and Camoufox over WebDriver BiDi;
+default `false`) changes only the mouse's timing and path:
+
+| Action | Playwright (property off) | With the property |
+|---|---|---|
+| `mouse.move`, `hover`, the move before a click, `dragTo` without `steps` | one jump to the target | a curved path (quadratic Bezier, bend up to 12% of the distance to a random side) with a minimum-jerk speed profile; duration from Fitts' law, 90 ms + 90 ms per bit for a 24 px target, ±15% |
+| `click`, `dblclick`, `mouse.click` without `delay` | press and release at once | 30–90 ms pause after the move, button held 55–130 ms, 90–170 ms between the clicks of a double click |
+| `steps` or `delay` set by the caller | as given | as given: `steps` keeps Playwright's straight path, `delay` keeps Playwright's press timing |
+| `mouse.down`, `mouse.up`, `mouse.wheel`, keyboard, touch | unchanged | unchanged |
+
+The path is sent as one `input.performActions` sequence on Playwright's own pointer source, so a
+button held with `mouse.down()` stays held. The pauses count against the action's timeout. The
+property is independent of `playwright4j.bidi.nativeBehavior`, which only covers browser
+configuration and technical side effects. `FirefoxNaturalPointerTest` (part of `firefoxSmoke`)
+guards both settings.
+
 ### Chrome
 
 | Signal | Chrome without automation | Official driver | playwright4j 0.2.1 |
