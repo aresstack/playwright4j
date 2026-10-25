@@ -1,0 +1,5 @@
+// Standalone build: a Spring Boot executable jar (nested BOOT-INF/lib jars, own class loader, so
+// java.class.path is only the outer jar) that really launches a browser through playwright4j.
+// Run: ./gradlew -p consumer-check/spring-boot bootJar -Pplaywright4jVersion=<v>
+//      java -jar consumer-check/spring-boot/build/libs/playwright4j-spring-boot-check.jar
+rootProject.name = 'playwright4j-spring-boot-check'
