@@ -196,6 +196,42 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
 - Bindings from `page.exposeBinding` and scripts from `addInitScript` are visible to pages in all
   engines.
 
+## Native behavior (opt-in)
+
+`-Dplaywright4j.bidi.nativeBehavior=true` (default `false`) keeps the controlled browser's own
+behaviour where Playwright changes it for testing. It applies to Firefox over WebDriver BiDi
+(`moz-firefox`), Camoufox included; Chrome and Edge over CDP are unchanged, and so is the Java
+API. Set it in the application JVM before `Playwright.create()`; the driver JVM receives it. It
+does not make automation undetectable: `navigator.webdriver` stays `true`, and nothing here
+spoofs a value or works around a challenge. Without the property everything stays as Playwright
+does it.
+
+What it changes, each part independent of the others:
+
+| Area | Playwright | With `nativeBehavior` | Caller's override |
+| --- | --- | --- | --- |
+| Preferences (#44, #45, #46) | Writes test values to `user.js`: `dom.disable_open_during_load=false` (popup blocker off), `dom.min_background_timeout_value*=0`, `dom.timeout.enable_budget_timer_throttling=false`, `layout.testing.top-level-always-active=true` (background timers and rendering not throttled), `focusmanager.testmode=true`, `browser.contentblocking.features.standard` without Total Cookie Protection and fingerprinting/cryptomining lists, `dom.security.https_first=false`, `network.http.speculative-parallel-limit=0`, `network.manage-offline-status=false`, `geo.provider.testing=true` | These lines are left out of `user.js`, and values an earlier launch left in a persistent profile's `prefs.js` are removed, so the browser's defaults apply: Firefox's, or for Camoufox the values `camoufox.cfg` sets (it keeps the popup blocker, HTTPS-First and cookie partitioning on and sets `focusmanager.testmode` and `geo.provider.testing` itself). | `firefoxUserPrefs` still sets any of them. |
+| Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`. |
+| Default viewport (#47) | 1280x720 at device scale factor 1, `screen` set to the same size, which replaces the window and screen the browser or Camoufox's fingerprint reports | No viewport emulation, as with `setViewportSize(null)`; `page.viewportSize()` is `null`. Applies to `newContext()` and `launchPersistentContext()`. | A caller's `viewport`, `deviceScaleFactor` or `isMobile` is kept, with Playwright's checks. |
+| Screenshot caret (#40) | `caret: "hide"` by default, which writes `caret-color` into the focused element's style | `caret: "initial"` by default; the element's style is not touched. | `setCaret(ScreenshotCaret.HIDE)` still hides it. |
+| Preload scripts (#51) | `exposeBinding`/`exposeFunction`, `addInitScript`, `clock`, `routeWebSocket` and tracing snapshots install scripts or globals in the page's main world | Unchanged, because they are what the caller asked for. The first one per context logs a warning on the driver's stderr that names the property. | - |
+
+What it does not change:
+
+- `navigator.webdriver` and the remote-control indicator (see above).
+- Scripts Playwright itself runs in the page's main world, user activation and `__playwright_*`
+  events during reads, and the style toggle during screenshots (#36-#39, #50): they are fixed or
+  tracked separately, independent of this property.
+- The other Playwright profile preferences (telemetry, updates, Safe Browsing, first-run pages and
+  similar) that keep the browser from reaching out on its own.
+- Context options the caller sets, such as `locale`, `timezoneId`, `userAgent` or `geolocation`,
+  which override Camoufox's own values; leave them unset with Camoufox.
+- Synthetic `fill()`/`selectOption()` events, direct mouse movement and scrolling (#41-#43), and
+  dialogs or HTTP authentication answered without a handler (#48).
+
+The property may become the default once its compatibility with the Playwright API is shown;
+until then it is opt-in.
+
 **Not covered**
 
 - Juggler Firefox (Playwright's own build) was not measured; see the reference run above.
