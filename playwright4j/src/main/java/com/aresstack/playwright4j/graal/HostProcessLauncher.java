@@ -34,4 +34,20 @@ public interface HostProcessLauncher {
     /** Drains queued process events (stdout/stderr data, exit) as a newline-separated batch. */
     @HostAccess.Export
     String drainProcessEvents();
+
+    /**
+     * Like {@link #launchChromium} but with the child's complete environment, given as
+     * {@code NAME=value} entries, delimited like the arguments. {@code null} inherits this process's
+     * environment. Playwright semantics: the given environment replaces the inherited one.
+     */
+    @HostAccess.Export
+    default String launchChromiumWithEnvironment(String command, String arguments, String workingDirectory, String environment) {
+        return launchChromium(command, arguments, workingDirectory);
+    }
+
+    /** Like {@link #spawnProcess} but with the child's complete environment, see {@link #launchChromiumWithEnvironment}. */
+    @HostAccess.Export
+    default String spawnProcessWithEnvironment(String command, String arguments, String workingDirectory, String environment) {
+        return spawnProcess(command, arguments, workingDirectory);
+    }
 }

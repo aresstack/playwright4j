@@ -45,6 +45,12 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     @Override
     @HostAccess.Export
     public String spawnProcess(String command, String arguments, String workingDirectory) {
+        return spawnProcessWithEnvironment(command, arguments, workingDirectory, null);
+    }
+
+    @Override
+    @HostAccess.Export
+    public String spawnProcessWithEnvironment(String command, String arguments, String workingDirectory, String environment) {
         List<String> argumentList = new ArrayList<String>();
         if (arguments != null && !arguments.isEmpty()) {
             for (String argument : arguments.split(ARGUMENT_SEPARATOR, -1)) {
@@ -69,6 +75,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             if (workingDirectory != null && !workingDirectory.trim().isEmpty()) {
                 processBuilder.directory(new File(workingDirectory));
             }
+            applyEnvironment(processBuilder, environment);
             process = processBuilder.start();
         } catch (IOException exception) {
             throw new IllegalStateException("Cannot spawn process: " + commandLine, exception);
@@ -81,6 +88,33 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         startProcessReader(processId, process.getErrorStream(), "stderr");
         startExitWatcher(processId, process);
         return processId;
+    }
+
+    /**
+     * Gives the child exactly the given environment (Playwright/Node semantics: {@code spawn}'s
+     * {@code env} replaces the inherited one), or leaves it inherited for {@code null}. Values are
+     * never logged: they may carry secrets (e.g. a Camoufox fingerprint in CAMOU_CONFIG_*).
+     */
+    static void applyEnvironment(ProcessBuilder processBuilder, String environment) {
+        if (environment == null) {
+            return;
+        }
+        Map<String, String> childEnvironment = processBuilder.environment();
+        childEnvironment.clear();
+        if (environment.isEmpty()) {
+            return;
+        }
+        for (String entry : environment.split(ARGUMENT_SEPARATOR, -1)) {
+            int equals = entry.indexOf('=', 1);
+            if (equals > 0) {
+                try {
+                    childEnvironment.put(entry.substring(0, equals), entry.substring(equals + 1));
+                } catch (IllegalArgumentException invalidOnThisPlatform) {
+                    // e.g. a NUL character, or a Windows "=C:" drive variable on a POSIX host.
+                }
+            }
+        }
+        Playwright4JDebug.log("[pw4j-launcher] environment=" + childEnvironment.size() + " variables (values not logged)");
     }
 
     private static boolean isFfmpeg(String command) {
@@ -218,6 +252,12 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     @Override
     @HostAccess.Export
     public String launchChromium(String command, String arguments, String workingDirectory) {
+        return launchChromiumWithEnvironment(command, arguments, workingDirectory, null);
+    }
+
+    @Override
+    @HostAccess.Export
+    public String launchChromiumWithEnvironment(String command, String arguments, String workingDirectory, String environment) {
         List<String> browserArguments = browserArguments(arguments);
         Path userDataDirectory = userDataDirectory(browserArguments);
 
@@ -241,6 +281,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             if (workingDirectory != null && !workingDirectory.trim().isEmpty()) {
                 processBuilder.directory(new File(workingDirectory));
             }
+            applyEnvironment(processBuilder, environment);
             processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             processBuilder.redirectErrorStream(false);
             process = processBuilder.start();
