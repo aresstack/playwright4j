@@ -72,7 +72,7 @@ public class FirefoxMainWorldTest {
                 assertEquals("Größe→✓", page.inputValue("#outer"));
                 assertEquals("Größe", frame.inputValue("#inner"));
                 page.waitForTimeout(200);
-assertEquals("", page.getAttribute("html", "data-globals"), "page globals");
+                assertEquals("", page.getAttribute("html", "data-globals"), "page globals");
                 assertEquals("", frame.getAttribute("html", "data-globals"), "iframe globals");
                 assertEquals("", page.getAttribute("html", "data-seen"), "main world of the page");
                 assertEquals("", frame.getAttribute("html", "data-seen"), "main world of the iframe");
