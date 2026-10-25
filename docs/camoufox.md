@@ -353,7 +353,8 @@ released and with the fixes: passes.
 The Windows CI job `firefox-smoke` installs the default pinned release with
 `hotpatch_omni.py --install` (the archive and both changed files checked, see
 [Installing](#installing-camoufox-with-the-fixes)) and runs `FirefoxPersistentWindowTest` and
-`camoufoxSmoke` against it.
+`camoufoxSmoke` against it, then `firefoxSmoke` and `camoufoxSmoke` again with
+`playwright4j.bidi.nativeBehavior=true` ([browser signals](browser-signals.md)).
 
 ## Comparison with Camoufox's own launcher (manual)
 
