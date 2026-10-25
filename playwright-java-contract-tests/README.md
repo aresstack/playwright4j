@@ -42,7 +42,7 @@ Run the imported upstream suite with:
 gradlew :playwright-java-contract-tests:upstreamTest
 ```
 
-The upstream tests must match the Playwright Java API version used by this module. The default dependency is `com.microsoft.playwright:playwright:1.59.0`; override it with:
+The upstream tests must match the Playwright Java API version used by this module. The default dependency is `com.microsoft.playwright:playwright:1.62.0`; override it with:
 
 ```bash
 gradlew :playwright-java-contract-tests:upstreamTest -PupstreamPlaywrightVersion=<version>

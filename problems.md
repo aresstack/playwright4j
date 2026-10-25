@@ -63,9 +63,10 @@ preemptively as Playwright on Node does. The driver JVM enables Basic for `CONNE
 
 ## UNSUPPORTED_ENGINE_FAST_FAIL — Firefox / WebKit
 
-Playwright4J is **Chromium-only** (channels `chrome` / `msedge`). Fixtures that request WebKit or
-Firefox (e.g. `TestFixtureDeviceOption` — device "iPhone 14" → defaultBrowserType webkit — and
-`TestFixtureOptions` — `setBrowserName("webkit")`) **fail fast with a clear error**
-(`Unsupported browser engine: …`) instead of hanging. This is deliberate. Firefox support is planned
-for a separate branch/version (it needs Playwright's Firefox/Juggler pipe transport rather than the
-Chromium CDP/WebSocket path used today).
+Playwright4J supports Chromium (channels `chrome` / `msedge`, over CDP) and Firefox (channel
+`moz-firefox`, over WebDriver BiDi). WebKit and Firefox over Playwright's Juggler protocol are not
+supported. Fixtures that request WebKit (e.g. `TestFixtureDeviceOption` — device "iPhone 14" →
+defaultBrowserType webkit — and `TestFixtureOptions` — `setBrowserName("webkit")`) **fail fast with
+a clear error** (`Unsupported browser engine: …`) instead of hanging. This is deliberate. The upstream
+contract suite runs against Chromium only; Firefox is covered by the smoke tests listed in
+[`docs/testing.md`](docs/testing.md).

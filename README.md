@@ -17,10 +17,10 @@ Node.js runtime, native helper executables, or browser downloads.
 - **Official Playwright Java API**: your code uses `com.microsoft.playwright.*`, there is
   no Playwright4J-specific API to learn
 
-> **Version note.** The current release is `0.2.1`. It fixes Firefox
-> `launchPersistentContext()` (persistent profile), which fails in `0.2.0`. The older release
-> `0.1.0` supports Chrome and Edge only and does not resolve with Maven (its POM declares
-> `org.graalvm.polyglot:js` without `<type>pom</type>`); use `0.2.1` instead.
+> **Version note.** The current release is `0.3.0`, built on Playwright Core `1.62.0`. Use it
+> with Playwright Java `1.62.0`. Changes since `0.2.1` are listed in [`CHANGELOG.md`](CHANGELOG.md).
+> The release `0.1.0` supports Chrome and Edge only and does not resolve with Maven (its POM
+> declares `org.graalvm.polyglot:js` without `<type>pom</type>`).
 
 ## Quick start
 
@@ -35,8 +35,8 @@ Gradle:
 
 ```groovy
 dependencies {
-    implementation 'com.aresstack:playwright4j:0.2.1'
-    implementation('com.microsoft.playwright:playwright:1.59.0') {
+    implementation 'com.aresstack:playwright4j:0.3.0'
+    implementation('com.microsoft.playwright:playwright:1.62.0') {
         exclude group: 'com.microsoft.playwright', module: 'driver'
         exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
     }
@@ -49,12 +49,12 @@ Maven:
 <dependency>
   <groupId>com.aresstack</groupId>
   <artifactId>playwright4j</artifactId>
-  <version>0.2.1</version>
+  <version>0.3.0</version>
 </dependency>
 <dependency>
   <groupId>com.microsoft.playwright</groupId>
   <artifactId>playwright</artifactId>
-  <version>1.59.0</version>
+  <version>1.62.0</version>
   <exclusions>
     <exclusion>
       <groupId>com.microsoft.playwright</groupId>
@@ -69,7 +69,7 @@ Maven:
 ```
 
 Keep the Playwright Java API version aligned with the Playwright Core version bundled in
-Playwright4J (currently 1.59.0).
+Playwright4J (currently 1.62.0).
 
 ### 2. Launch a browser
 
@@ -157,9 +157,9 @@ the server is the same JVM driver started in `--node-compat` mode
 - Chrome and Edge are driven over CDP. Firefox is driven over WebDriver BiDi using
   Playwright's own BiDi implementation; Firefox exposes the BiDi WebSocket itself.
 - The Playwright Core JavaScript package is taken from Microsoft's
-  `com.microsoft.playwright:driver-bundle` **at build time** and copied into the jar as
-  `driver/package/**`. The Node.js executables in that artifact are dropped, and the
-  build fails if a native file ends up in the package. `driver-bundle` is not a runtime
+  `com.microsoft.playwright:driver` artifact **at build time** and copied into the jar as
+  `driver/package/**`. Microsoft's `Driver` class is not copied, and the build fails if a
+  native file ends up in the package. Neither `driver` nor `driver-bundle` is a runtime
   dependency of Playwright4J.
 
 **About native code.** Playwright4J itself ships no native executables: no Node.js, no
@@ -218,7 +218,7 @@ Modules:
 | `consumer-check/` | Standalone build that consumes the library like a user and checks the classpath |
 
 The upstream Playwright Core version is pinned in `playwright4j/build.gradle`
-(`playwrightDriverBundle 'com.microsoft.playwright:driver-bundle:1.59.0'`).
+(`playwrightDriverArchive 'com.microsoft.playwright:driver:1.62.0'`).
 
 ## Publishing
 
