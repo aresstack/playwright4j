@@ -156,6 +156,22 @@ tasks.register('launchEnvironmentTest', Test) {
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
 
+// APIRequestContext with Playwright's proxy option, against a local stub proxy (no browser).
+tasks.register('apiRequestProxyTest', Test) {
+    description = 'Checks that APIRequestContext sends its requests through the configured proxy.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching 'com.aresstack.playwright4j.smoke.ApiRequestProxyTest' }
+
+    environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
+
+    systemProperty 'junit.jupiter.execution.timeout.default', '90 s'
+    systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
+    testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
+}
+
 // Diagnostic: prints the automation signals a page can observe (navigator.webdriver, UA, request
 // headers, injected globals, browser command line) for a browser launched through playwright4j.
 // Firefox: FIREFOX_EXECUTABLE. Chrome/Edge: PROBE_BROWSER=chromium plus PROBE_CHANNEL or

@@ -3302,6 +3302,22 @@
     return JSON.stringify(tls);
   }
 
+  // Playwright routes APIRequestContext traffic through a proxy by passing a proxy agent:
+  // HttpsProxyAgent keeps the proxy as a URL in `proxy`, SocksProxyAgent its URL in `proxyUrl`.
+  // The host connects through that proxy itself; Playwright already applied `bypass`.
+  function agentProxyUrl(agent) {
+    if (!agent) {
+      return '';
+    }
+    if (typeof agent.proxyUrl === 'string') {
+      return agent.proxyUrl;
+    }
+    if (agent.proxy && typeof agent.proxy.href === 'string') {
+      return agent.proxy.href;
+    }
+    return '';
+  }
+
   function createHttpRequest(defaultProtocol, first, second, third) {
     // Node signatures: request(url[, options][, cb]) or request(options[, cb]).
     let urlString = null;
@@ -3390,7 +3406,7 @@
         const bodyBase64 = bodyChunks.length > 0 ? global.Buffer.concat(bodyChunks).toString('base64') : '';
         // Non-blocking: the response is delivered later via __playwright4jDrainHttp, so the
         // JS thread stays free and Playwright's timeout/abort can take effect mid-request.
-        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options));
+        requestId = host.httpClient().startRequest(method, url, flattenRequestHeaders(options), bodyBase64, extractTlsOptions(options), agentProxyUrl(options.agent));
       } catch (error) {
         Promise.resolve().then(function () {
           request.emit('error', error);
@@ -3667,6 +3683,11 @@
       return result;
     };
 
+    // WHATWG userinfo percent-encode set; '%' is not in it, so encoding is idempotent.
+    function encodeUserinfo(value) {
+      return String(value).replace(/[\u0000-\u0020"#<>?`{}\/:;=@\[\\\]^|\u007f-\u{10ffff}]/gu, encodeURIComponent);
+    }
+
     global.URL = class URL {
       constructor(value, base) {
         let text = String(value);
@@ -3781,6 +3802,24 @@
         this._search = query ? '?' + query : '';
         this._searchParams = new global.URLSearchParams(query);
         this._searchDirty = false;
+      }
+
+      // Node encodes credentials on assignment (url.password = 'p@ss' gives 'p%40ss'), so href
+      // stays parseable; Playwright assigns proxy credentials this way.
+      get username() {
+        return this._username;
+      }
+
+      set username(value) {
+        this._username = encodeUserinfo(value);
+      }
+
+      get password() {
+        return this._password;
+      }
+
+      set password(value) {
+        this._password = encodeUserinfo(value);
       }
 
       get host() {

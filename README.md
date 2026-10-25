@@ -185,7 +185,8 @@ These properties of the application JVM are forwarded to the driver JVM when set
 `javax.net.ssl.trustStore*`/`keyStore*` settings, `jdk.tls.client.protocols`, `https.protocols`,
 `http(s).proxyHost`/`Port`, `http.nonProxyHosts`, `socksProxy*`, `java.net.useSystemProxies`,
 `jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path` and the `playwright4j.debug*`
-settings. Store passwords are passed in an owner-only temporary file that the driver deletes at
+settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver allows Basic proxy
+credentials on `CONNECT`, which `APIRequestContext` needs with an authenticating proxy. Store passwords are passed in an owner-only temporary file that the driver deletes at
 startup, never on the command line.
 
 ## Tests and known limitations

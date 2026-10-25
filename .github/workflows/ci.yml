@@ -42,6 +42,11 @@ jobs:
         shell: pwsh
         run: ./gradlew.bat :playwright-java-contract-tests:launchEnvironmentTest --no-daemon --stacktrace
 
+      - name: APIRequestContext proxy
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:apiRequestProxyTest --no-daemon --stacktrace
+
       - name: Chrome smoke (BROWSER_CHANNEL=chrome)
         shell: pwsh
         env:
