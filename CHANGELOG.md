@@ -15,6 +15,8 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
 
 - Camoufox over WebDriver BiDi, with documentation and opt-in checks (#31,
   [`docs/camoufox.md`](docs/camoufox.md)).
+- Windows CI now checks Camoufox over WebDriver BiDi: one native window on a persistent start and
+  the fingerprint via setEnv (#34, #35). The release gate runs the same checks.
 - The driver JVM receives the application's TLS, proxy and VLC system properties, and
   `playwright4j.driver.jvmArgs` / `playwright4j.driver.classpath` (#32).
 
@@ -37,6 +39,7 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
 
 - Firefox is covered by smoke tests only; the upstream contract suite runs against Chromium (#11).
 - CI runs on Windows only.
+- Not yet addressed, planned after 0.3.0: #41 to #43 and #48.
 - Signals by which a page can tell Playwright's Firefox BiDi automation from a manual session are
   tracked in #36 to #45.
 - See [`problems.md`](problems.md) for the documented divergences.
