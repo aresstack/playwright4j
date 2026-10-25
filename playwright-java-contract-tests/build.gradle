@@ -84,6 +84,8 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxMainWorldTest'
         // Reading a page leaves no user activation, Playwright events or DOM changes (#37, #38, #40).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxReadSideEffectsTest'
+        // Unhandled dialogs and auth challenges answered after a delay, opt-in (#48).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxUnhandledPromptDelayTest'
         // Mouse paths and click timing under playwright4j.bidi.naturalPointer (#43).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNaturalPointerTest'
     }

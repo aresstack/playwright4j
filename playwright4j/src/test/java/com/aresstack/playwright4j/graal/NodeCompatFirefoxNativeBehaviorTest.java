@@ -30,6 +30,7 @@ final class NodeCompatFirefoxNativeBehaviorTest {
     private static final String NO_HTTPS_FIRST = "user_pref(\"dom.security.https_first\", false);";
     private static final String TRACKING_OFF = "user_pref(\"browser.contentblocking.features.standard\", \"-tp,tpPrivate,cookieBehavior0,-cm,-fp\");";
     private static final String NO_REMOTE_AGENT_PREFS = "user_pref(\"remote.prefs.recommended\", false);";
+    private static final String NO_DIALOG_LIMIT = "user_pref(\"dom.successive_dialog_time_limit\", 0);";
     private static final String TESTUTILS_OFF = "user_pref(\"dom.testing.testutils.enabled\", false);";
 
     @TempDir
@@ -56,6 +57,7 @@ final class NodeCompatFirefoxNativeBehaviorTest {
         List<String> lines = userJs();
         assertTrue(lines.containsAll(Arrays.asList(POPUPS_ALLOWED, TEST_FOCUS, NO_HTTPS_FIRST, TRACKING_OFF)), lines.toString());
         assertFalse(lines.contains(NO_REMOTE_AGENT_PREFS), lines.toString());
+        assertFalse(lines.contains(NO_DIALOG_LIMIT), lines.toString());
     }
 
     @Test
@@ -79,6 +81,8 @@ final class NodeCompatFirefoxNativeBehaviorTest {
         }
         // The Remote Agent would set most of them again.
         assertTrue(lines.contains(NO_REMOTE_AGENT_PREFS), lines.toString());
+        // Successive dialogs must stay reported over BiDi (Camoufox hung on the third one).
+        assertTrue(lines.contains(NO_DIALOG_LIMIT), lines.toString());
         // Everything else Playwright and playwright4j write stays.
         assertTrue(lines.contains(TESTUTILS_OFF), lines.toString());
         assertTrue(lines.contains("user_pref(\"app.normandy.api_url\", \"\");"), lines.toString());

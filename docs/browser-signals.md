@@ -137,6 +137,31 @@ main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElemen
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
 
+### Dialogs and HTTP authentication without a handler (Firefox)
+
+Playwright answers a JavaScript dialog (`alert`, `confirm`, `prompt`, `beforeunload`) that no
+`onDialog` handler takes at once: dismissed, or accepted for `beforeunload`. An HTTP auth challenge
+without matching `httpCredentials` is cancelled at once, too. A page can time this: `confirm()`
+returns within a few milliseconds, where a person needs hundreds (issue #48).
+
+`-Dplaywright4j.bidi.unhandledPromptDelay=MIN-MAX` (milliseconds, or one value; `0 <= MIN <= MAX
+<= 10000`) delays exactly these answers by a random time in that range, for pages over WebDriver
+BiDi (Firefox, Camoufox). It is off by default and separate from `nativeBehavior`. Set it before
+`Playwright.create()`; an invalid value fails there.
+
+- The answer stays Playwright's: dismiss, accept for `beforeunload`, cancel for auth. Only when it
+  is sent changes.
+- A dialog handler the caller registered, and `httpCredentials` that match, still answer at once:
+  the caller decides how and when. So does the cancel after configured credentials were rejected.
+- The delay adds to the action that opened the dialog or the request (an `evaluate`, a click, a
+  navigation). The upper bound keeps it well below Playwright's default 30 s timeout; a caller
+  with short timeouts must allow for it.
+- A dialog whose page closes during the delay is not answered; a handler registered during the
+  delay does not receive it, as without the delay.
+
+To control the timing of each answer, register a dialog handler that waits before it accepts or
+dismisses. `FirefoxUnhandledPromptDelayTest` (part of `firefoxSmoke`) guards both modes.
+
 ### Natural pointer opt-in
 
 Playwright moves the mouse to an action's target in one `pointerMove` and sends the press and
@@ -262,7 +287,7 @@ What it changes, each part independent of the others:
 | Area | Playwright | With `nativeBehavior` | Caller's override |
 | --- | --- | --- | --- |
 | Preferences (#44, #45, #46) | Writes test values to `user.js`: `dom.disable_open_during_load=false` (popup blocker off), `dom.min_background_timeout_value*=0`, `dom.timeout.enable_budget_timer_throttling=false`, `layout.testing.top-level-always-active=true` (background timers and rendering not throttled), `focusmanager.testmode=true`, `browser.contentblocking.features.standard` without Total Cookie Protection and fingerprinting/cryptomining lists, `dom.security.https_first=false`, `network.http.speculative-parallel-limit=0`, `network.manage-offline-status=false`, `geo.provider.testing=true` | These lines are left out of `user.js`, so the browser's defaults apply: Firefox's, or for Camoufox the values `camoufox.cfg` sets (it keeps the popup blocker, HTTPS-First and cookie partitioning on and sets `focusmanager.testmode` and `geo.provider.testing` itself). | `firefoxUserPrefs` still sets any of them. |
-| Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`. |
+| Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. Only `dom.successive_dialog_time_limit=0` is kept from that list: with Firefox's 3 s limit the next dialog gets a "prevent more dialogs" checkbox, and Camoufox (tab-modal prompts) never reports that dialog over BiDi, so the page and the call that opened it hang. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`, or `dom.successive_dialog_time_limit`. |
 | Default viewport (#47) | 1280x720 at device scale factor 1, `screen` set to the same size, which replaces the window and screen the browser or Camoufox's fingerprint reports | No viewport emulation, as with `setViewportSize(null)`; `page.viewportSize()` is `null`. Applies to `newContext()` and `launchPersistentContext()`. | A caller's `viewport`, `deviceScaleFactor` or `isMobile` is kept, with Playwright's checks. |
 | Screenshot caret (#40) | `caret: "hide"` by default, which writes `caret-color` into the focused element's style | `caret: "initial"` by default; the element's style is not touched. | `setCaret(ScreenshotCaret.HIDE)` still hides it. |
 | Preload scripts (#51) | `exposeBinding`/`exposeFunction`, `addInitScript`, `clock`, `routeWebSocket` and tracing snapshots install scripts or globals in the page's main world | Unchanged, because they are what the caller asked for. The first one per context logs a warning on the driver's stderr that names the property. | - |
