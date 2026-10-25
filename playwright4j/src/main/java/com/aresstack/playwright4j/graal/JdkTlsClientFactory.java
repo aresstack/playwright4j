@@ -42,18 +42,36 @@ final class JdkTlsClientFactory {
     private final Map<String, HttpClient> cache = new ConcurrentHashMap<String, HttpClient>();
 
     HttpClient clientFor(String tlsOptions, HttpClient defaultClient) {
-        if (tlsOptions == null || tlsOptions.isEmpty()) {
+        return clientFor(tlsOptions, null, defaultClient);
+    }
+
+    /**
+     * Like {@link #clientFor(String, HttpClient)}, additionally routing every request through the
+     * given {@code http://[user:password@]host[:port]} proxy, or directly when {@code proxy} is null.
+     */
+    HttpClient clientFor(String tlsOptions, ProxyServer proxy, HttpClient defaultClient) {
+        boolean hasTls = tlsOptions != null && !tlsOptions.isEmpty();
+        if (!hasTls && proxy == null) {
             return defaultClient;
         }
-        HttpClient cached = cache.get(tlsOptions);
+        String key = (hasTls ? tlsOptions : "") + "\n" + (proxy == null ? "" : proxy.key());
+        HttpClient cached = cache.get(key);
         if (cached != null) {
             return cached;
         }
         try {
-            HttpClient built = build(tlsOptions);
-            cache.put(tlsOptions, built);
+            HttpClient.Builder builder = hasTls ? tlsBuilder(tlsOptions) : HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10));
+            if (proxy != null) {
+                proxy.configure(builder);
+            }
+            HttpClient built = builder.build();
+            cache.put(key, built);
             return built;
         } catch (Exception exception) {
+            if (proxy != null) {
+                // Falling back to the direct default client would silently bypass the proxy.
+                throw new IllegalStateException("Failed to apply client certificate options: " + exception, exception);
+            }
             System.err.println("[playwright4j-tls] Failed to apply client certificate options: " + exception);
             return defaultClient;
         }
@@ -91,7 +109,7 @@ final class JdkTlsClientFactory {
         return jsonBoolean(tlsOptions, "rejectUnauthorized", true);
     }
 
-    private HttpClient build(String tlsOptions) throws Exception {
+    private HttpClient.Builder tlsBuilder(String tlsOptions) throws Exception {
         boolean rejectUnauthorized = jsonBoolean(tlsOptions, "rejectUnauthorized", true);
         SSLContext sslContext = buildSslContext(tlsOptions);
 
@@ -105,7 +123,7 @@ final class JdkTlsClientFactory {
             parameters.setEndpointIdentificationAlgorithm(null);
             builder.sslParameters(parameters);
         }
-        return builder.build();
+        return builder;
     }
 
     private KeyManager[] buildKeyManagers(String tlsOptions) throws Exception {

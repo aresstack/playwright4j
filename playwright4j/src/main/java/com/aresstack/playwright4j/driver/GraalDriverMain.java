@@ -46,6 +46,12 @@ public final class GraalDriverMain {
 
     public static void main(String[] args) throws IOException {
         loadSecretProperties();
+        // Playwright authenticates to a proxy with Basic, also on the CONNECT for https targets
+        // (APIRequestContext proxy); the JDK refuses Basic there unless the scheme is enabled.
+        // An explicit setting, forwarded by Driver from the parent JVM, wins.
+        if (System.getProperty("jdk.http.auth.tunneling.disabledSchemes") == null) {
+            System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
+        }
         Map<String, String> environment = new LinkedHashMap<String, String>(System.getenv());
         environment.putIfAbsent("PW_LANG_NAME", "java");
         // Playwright-Core builds its default User-Agent as "... <PW_LANG_NAME>/<PW_LANG_NAME_VERSION>".

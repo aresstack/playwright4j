@@ -20,9 +20,13 @@ public interface HostHttpClient {
      * Starts a non-blocking HTTP request and returns an opaque request id. The result is
      * retrieved later via {@link #pollRequest(String)} so the single GraalJS thread is never
      * blocked and Playwright's progress timeouts can fire while the request is in flight.
+     *
+     * @param proxy the proxy URL taken from the Node request's {@code agent} (Playwright's
+     *              {@code proxy} option), e.g. {@code http://user:pass@host:port}, or an empty
+     *              string to connect directly
      */
     @HostAccess.Export
-    String startRequest(String method, String url, String headers, String body, String tlsOptions);
+    String startRequest(String method, String url, String headers, String body, String tlsOptions, String proxy);
 
     /**
      * Returns the completed {@link HostHttpResponse} for the given request id, or {@code null}
