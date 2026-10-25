@@ -1337,6 +1337,12 @@
     }
   };
 
+  // The debug package bundled with Playwright 1.62 formats DEBUG=pw:* output with
+  // util.formatWithOptions(inspectOptions, ...args); the options only style the output.
+  modules.util.formatWithOptions = function (inspectOptions) {
+    return modules.util.format.apply(modules.util, Array.prototype.slice.call(arguments, 1));
+  };
+
   // ws inside Playwright 1.62's bundled utilities expects Node's util.types API.
   modules.util.types = {
     isUint8Array: function (value) { return value instanceof Uint8Array; }
