@@ -4,10 +4,12 @@
 This page records whether playwright4j can drive it over WebDriver BiDi (Playwright's `moz-firefox`
 channel), what fails and why, and how to reproduce the measurement.
 
-**Status (25 October 2026, master `4cb607f`, Playwright Core 1.59): not usable yet.** Camoufox
-starts and a persistent context opens on the tab Camoufox started with, but every further
-`newPage()` and every `newContext()` fails because of two
-Camoufox behaviours described below. Nothing in this page is part of a release.
+**Status (25 October 2026, master after #30, Playwright Core 1.59).** A released Camoufox starts
+and a persistent context opens on the tab Camoufox started with, but every further `newPage()` and
+every `newContext()` fails because of two Camoufox behaviours described below. With two small fixes
+to Camoufox's Remote Agent code (applied to `omni.ja`, see [Fixes](#fixes)) launch, persistent
+contexts, new pages and new contexts work. The fingerprint configuration reaches Camoufox through
+`setEnv` (since #30). Nothing in this page is part of a release.
 
 ## What was measured
 
@@ -94,6 +96,12 @@ Raw WebDriver BiDi, same Xvfb display, fresh profile, no Playwright involved:
 
 The preference `focusmanager.testmode` does not change this (checked both ways on both browsers).
 
+Cause: Camoufox registers its Juggler window actor on every start, also without `-juggler-pipe`
+(`additions/juggler/components/Juggler.js` calls `ActorManagerParent.addJSWindowActors` at module
+level). Juggler's content script (`additions/juggler/content/main.js`) therefore runs in every page
+and sets `docShell.forceActiveState = true` and `docShell.overrideHasFocus = true`. A docShell forced
+active never becomes hidden, so no `visibilitychange` comes.
+
 In a persistent context playwright4j's first `newPage()` takes over the start tab; every further
 `newPage()` opens a foreground tab (Playwright behaviour) and hangs; `page.bringToFront()` would hang the same way.
 
@@ -104,6 +112,69 @@ Fix options:
    new page would then not be the selected tab, and `bringToFront()` still could not work. This is a
    departure from Playwright behaviour.
 
+## Fixes
+
+Both fixes change only Remote Agent JavaScript. Pages see no difference: a background tab still
+reports `visible` and `document.hasFocus()` stays `true`, as in released Camoufox. For Firefox nothing
+changes (its application name is `Firefox`, and `docShell.forceActiveState` does not exist there).
+
+1. `remote/shared/WindowManager.sys.mjs`: open windows for `Camoufox` as for `Firefox`.
+
+   ```diff
+        switch (lazy.AppInfo.name) {
+   +      // Camoufox is Firefox under another application name.
+   +      case "Camoufox":
+          case "Firefox": {
+   ```
+
+2. `remote/webdriver-bidi/modules/windowglobal/browsingContext.sys.mjs`, `_awaitVisibilityState`:
+   do not wait for `hidden` when the docShell is forced active.
+
+   ```diff
+   +    if (value === "hidden" && win.docShell?.forceActiveState) {
+   +      // Camoufox: Juggler forces the docShell active, so this document stays
+   +      // "visible" while in the background and no visibilitychange will come.
+   +      // Do not wait for it; the page-visible state is left unchanged.
+   +      return;
+   +    }
+   +
+        try {
+          // Otherwise, wait for the next visibilitychange event.
+   ```
+
+The fixes are meant for Camoufox upstream. To try them without building Camoufox,
+[`camoufox/hotpatch_omni.py`](camoufox/hotpatch_omni.py) applies them to a copy of an installed
+Camoufox (it keeps `omni.ja.orig`):
+
+```bash
+python docs/camoufox/hotpatch_omni.py <copy of the Camoufox folder> window visibility
+```
+
+Start the patched copy with a fresh profile (or once with `-purgecaches`). The texts it replaces are
+the same in Camoufox 156.0.1-beta.36 and 158.0-beta.40.
+
+## Results with the fixes
+
+Camoufox 156.0.1-beta.36 with both fixes, persistent context headed:
+
+| Run | Result |
+| --- | --- |
+| Linux, `FirefoxPersistentWindowTest` (process and window names extended to `camoufox` locally) | 5 of 6 pass |
+| Windows (Angelo, master `4cb607f`, fixes reconstructed from the description, process name extended locally) | `FirefoxBiDiSmokeTest` 2 of 2; `firefoxSmoke` 6 of 8 |
+| Linux and Windows, `camoufoxSmoke` (fingerprint through `setEnv`, two pages) | Linux: passes; Windows: not yet run |
+
+Remaining failures:
+
+- `persistentContextUsesTheStartTabAndOpensPagesAsTabs` (Linux and Windows): `prefs.js` after close
+  lacks `user_pref("browser.startup.page", 0);`. Camoufox already has 0 as its default
+  (`settings/camoufox.cfg`), and Firefox writes to `prefs.js` only values that differ from the
+  default. The preference applies; the test's way of proving it does not hold for Camoufox.
+- `lastTabClosedInFirefoxLeavesTheContextOpenWithoutPages` (Windows only): after Ctrl+W on the last
+  tab and `newPage()`, navigating to a `data:` URL is refused (`browsingContext.navigate`:
+  unsupported operation). Firefox refuses `data:` navigations in privileged pages such as
+  `about:newtab`, the page Firefox loads into the tab that replaces the closed one. Under
+  investigation; it passes on Linux with the same build.
+
 ## Fingerprint configuration
 
 Camoufox reads its fingerprint in C++ from environment variables `CAMOU_CONFIG_1`, `CAMOU_CONFIG_2`,
@@ -112,9 +183,25 @@ Camoufox reads its fingerprint in C++ from environment variables `CAMOU_CONFIG_1
 `CAMOU_CONFIG_1={"navigator.platform":"P4JTest","navigator.hardwareConcurrency":3}`, a page reads
 `P4JTest` and `3`.
 
-playwright4j does not pass `BrowserType.LaunchOptions.setEnv` to the browser process yet, so this
-configuration cannot be set through Playwright's API today. The variables have to be in the
-environment of the JVM that starts the driver.
+Since #30 playwright4j passes `setEnv` to the browser process. As in Playwright, `setEnv` replaces
+the whole environment, so pass the inherited one along (on Windows the browser needs variables such
+as `SystemRoot`):
+
+```java
+Map<String, String> env = new HashMap<>(System.getenv());
+env.put("CAMOU_CONFIG_1", configJson);   // split into CAMOU_CONFIG_1, _2, ... above 2047 characters on Windows
+BrowserContext context = playwright.firefox().launchPersistentContext(userDataDir,
+    new BrowserType.LaunchPersistentContextOptions()
+        .setChannel("moz-firefox")
+        .setExecutablePath(Paths.get(camoufoxExecutable))
+        .setEnv(env));
+```
+
+The official Camoufox launchers split the JSON into chunks of 2047 characters on Windows and 32767
+elsewhere. `CamoufoxFingerprintTest` (task `camoufoxSmoke`) checks that a configured
+`navigator.platform` and `navigator.hardwareConcurrency` reach the first page (and, with
+`CAMOUFOX_BIDI_FIXES=true`, a second page), and that they are absent without `setEnv`. Measured on
+Linux with Camoufox 156.0.1-beta.36, released and with the fixes: passes.
 
 ## Juggler instead of BiDi (comparison)
 
@@ -131,6 +218,15 @@ Juggler has no version negotiation, so the embedded Playwright Core has to match
 This route is not planned at the moment.
 
 ## Reproducing
+
+Fingerprint through `setEnv` (Windows: `camoufox.exe`):
+
+```bash
+CAMOUFOX_EXECUTABLE=/path/to/camoufox/camoufox-bin CAMOUFOX_BIDI_FIXES=true \
+  ./gradlew :playwright-java-contract-tests:camoufoxSmoke
+```
+
+Window and tab behaviour:
 
 1. Download a Camoufox build from <https://github.com/daijro/camoufox/releases> and unpack it.
 2. Run the Firefox smoke tests against it (Linux needs an X server, e.g. `xvfb-run`, and `xdotool`
