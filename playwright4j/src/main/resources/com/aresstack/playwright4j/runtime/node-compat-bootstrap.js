@@ -5778,6 +5778,30 @@
     };
   }
 
+  // BidiPage._createUtilityWorld evaluates at {context, sandbox}, so the answer comes from whatever
+  // sandbox realm the context holds when Firefox runs it. During a navigation Firefox creates and
+  // destroys short-lived realms (#66). If the answering realm is destroyed before the answer arrives,
+  // Playwright kept a utility context whose UtilityScript handle lives in that dead realm: every
+  // utility evaluate then fails, and page.title() turns the failure into "". Remember recently
+  // destroyed realms so that answer is dropped; the next window realm creates the world again.
+  const DESTROYED_REALMS_KEPT = 64;
+
+  function patchBidiPageStaleUtilityWorld(BidiPage) {
+    const originalOnRealmDestroyed = BidiPage.prototype._onRealmDestroyed;
+    BidiPage.prototype._onRealmDestroyed = function (params) {
+      const destroyed = this._playwright4jDestroyedRealms || (this._playwright4jDestroyedRealms = []);
+      destroyed.push(params.realm);
+      if (destroyed.length > DESTROYED_REALMS_KEPT) {
+        destroyed.shift();
+      }
+      return originalOnRealmDestroyed.apply(this, arguments);
+    };
+  }
+
+  function isRealmDestroyed(bidiPage, realm) {
+    return (bidiPage._playwright4jDestroyedRealms || []).indexOf(realm) >= 0;
+  }
+
   // Playwright's BiDi Firefox profile (third_party/firefoxPrefs.js, taken from Puppeteer) enables
   // dom.testing.testutils.enabled only for page.requestGC(). That pref exposes a TestUtils global to
   // every web page, which neither a normal Firefox nor Playwright's own Firefox build (Juggler) has.
@@ -7004,6 +7028,7 @@
           patchBidiBrowserCacheBehavior(BidiBrowser);
         });
       },
+      isRealmDestroyed: isRealmDestroyed,
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
@@ -7046,6 +7071,7 @@
           patchBidiPageNativeScroll(BidiPage, nullProgress);
           bidiPageClasses.push(BidiPage);
           patchBidiPageInitialBlankLoad(BidiPage);
+          patchBidiPageStaleUtilityWorld(BidiPage);
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
           patchBidiPageNoScreenshotStyleToggle(BidiPage);
@@ -7081,6 +7107,10 @@
       '      _onAuthRequired(params2) {\n        ' + hooks + '.onBidiAuthRequired(this, params2);\n      }\n'
       + '      _answerAuthRequired(params2) {\n        const isBasic = ', 1);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
+    source = replaceCoreBundleAnchor(source,
+      '          if (await frame.mainContext() !== mainContext)\n            return;\n          const delegate = new BidiExecutionContext(',
+      '          if (await frame.mainContext() !== mainContext || ' + hooks + '.isRealmDestroyed(this, result2.realm))\n'
+      + '            return;\n          const delegate = new BidiExecutionContext(', 1);
     // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
     // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's
     // evaluations and main-world handles stay there, as the API defines.
@@ -7143,7 +7173,7 @@
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
-      + '.bidiFirefox(BidiFirefox), WSServer: WSServer, createProfile: createProfile, '
+      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), WSServer: WSServer, createProfile: createProfile, '
       + 'generateSelfSignedCertificate: generateSelfSignedCertificate };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
