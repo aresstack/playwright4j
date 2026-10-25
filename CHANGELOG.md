@@ -33,6 +33,8 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
 - Firefox no longer enables `dom.testing.testutils.enabled` and does not activate a page on load
   without input (#26, [`docs/browser-signals.md`](docs/browser-signals.md)).
 - Firefox keeps the `user.js` of a persistent profile (#28).
+- Firefox: `route()` in one context no longer makes the whole browser bypass the HTTP cache; the
+  bypass now applies only to the routing pages (#49).
 - `newPage()` after the last Firefox tab was closed no longer adopts Firefox's replacement tab (#31).
 
 ### Known limitations
