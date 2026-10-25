@@ -53,8 +53,12 @@ public class FirefoxCacheBehaviorTest {
                     .setHeadless(true));
             try {
                 BrowserContext routing = browser.newContext();
-                routing.route("**/never-requested/**", route -> route.abort());
-                routing.newPage();
+                List<String> routed = new CopyOnWriteArrayList<>();
+                routing.route("**/asset.js", route -> {
+                    routed.add(route.request().url());
+                    route.resume();
+                });
+                Page routingPage = routing.newPage();
 
                 Page page = browser.newContext().newPage();
                 page.navigate(url);
@@ -63,6 +67,11 @@ public class FirefoxCacheBehaviorTest {
                 // A cacheable asset is fetched once; the second navigation takes it from the cache.
                 assertEquals(1, assetRequests.size(), "requests for /asset.js: " + assetRequests);
                 assertTrue(!assetRequests.get(0).contains("no-cache"), "request headers: " + assetRequests);
+
+                // The routing context still sees the asset although the browser has it cached.
+                routingPage.navigate(url);
+                assertEquals(Boolean.TRUE, routingPage.evaluate("window.assetLoaded"));
+                assertEquals(1, routed.size(), "routed requests: " + routed);
             } finally {
                 browser.close();
             }
