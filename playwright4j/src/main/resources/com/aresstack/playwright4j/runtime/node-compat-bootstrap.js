@@ -6144,6 +6144,47 @@
     };
   }
 
+  // Playwright's BiDi browser answers a context.route() with network.setCacheBehavior "bypass"
+  // for the whole browser (BidiBrowser.updateCacheBehavior, no contexts filter), so every other
+  // context and tab skips the HTTP cache too (#49). Send it per top-level browsing context
+  // instead, for the pages whose own or whose context's routes need it.
+  const pageCacheBehavior = new WeakMap();
+  function syncBidiPageCacheBehavior(bidiPage) {
+    const networkManager = bidiPage._networkManager;
+    const wanted = bidiPage._page.needsRequestInterception() || !!(networkManager && networkManager._credentials)
+      ? 'bypass' : 'default';
+    if (pageCacheBehavior.get(bidiPage) === wanted || (!pageCacheBehavior.has(bidiPage) && wanted === 'default')) {
+      return Promise.resolve();
+    }
+    pageCacheBehavior.set(bidiPage, wanted);
+    return bidiPage._session.sendMayFail('network.setCacheBehavior',
+        { cacheBehavior: wanted, contexts: [bidiPage._session.sessionId] });
+  }
+  function patchBidiBrowserCacheBehavior(BidiBrowser) {
+    BidiBrowser.prototype.updateCacheBehavior = async function () {
+      await Promise.all([...this._bidiPages.values()].map(syncBidiPageCacheBehavior));
+    };
+    const originalOnBrowsingContextCreated = BidiBrowser.prototype._onBrowsingContextCreated;
+    BidiBrowser.prototype._onBrowsingContextCreated = function (event) {
+      const result = originalOnBrowsingContextCreated.apply(this, arguments);
+      const bidiPage = !event.parent && this._bidiPages.get(event.context);
+      if (bidiPage) {
+        syncBidiPageCacheBehavior(bidiPage);
+      }
+      return result;
+    };
+  }
+  // BidiNetworkManager sets the page's cache behaviour from the page's own routes only; it would
+  // reset a page whose context still routes.
+  function patchBidiPageCacheBehavior(BidiPage) {
+    const originalUpdateRequestInterception = BidiPage.prototype.updateRequestInterception;
+    BidiPage.prototype.updateRequestInterception = async function () {
+      await originalUpdateRequestInterception.apply(this, arguments);
+      pageCacheBehavior.delete(this);
+      await syncBidiPageCacheBehavior(this);
+    };
+  }
+
   function patchBidiFirefoxUserJs(BidiFirefox) {
     // BrowserType._prepareToLaunch knows whether the launch is persistent, prepareUserDataDir does
     // not: pass it along on a copy of the launch options.
@@ -6354,6 +6395,7 @@
       bidiBrowser: function (BidiBrowser, BidiBrowserContext) {
         return patchOnce(BidiBrowser, function () {
           patchBidiBrowserFirefoxTabs(BidiBrowser, BidiBrowserContext);
+          patchBidiBrowserCacheBehavior(BidiBrowser);
         });
       },
       bidiPage: function (BidiPage) {
@@ -6362,6 +6404,7 @@
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, '__playwright_utility_world__');
           patchBidiPageFirefoxLastTab(BidiPage);
+          patchBidiPageCacheBehavior(BidiPage);
         });
       }
     };
