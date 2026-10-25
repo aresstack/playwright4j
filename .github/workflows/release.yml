@@ -128,7 +128,7 @@ jobs:
   publish:
     needs: upstream-gate-check
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
 
