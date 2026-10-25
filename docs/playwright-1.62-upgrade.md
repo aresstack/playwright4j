@@ -34,10 +34,13 @@ compile successfully.
   and Chrome launches and exposes a CDP WebSocket endpoint; the transport
   does not complete the browser connection yet. Do not claim runtime
   compatibility from the successful publication or compilation.
-- Existing Playwright4J tests that import the old unbundled
-  `lib/server/transport`, `utils/wsServer` and `utils/crypto` modules
-  need migrating to supported entry points. The previous run reported
-  13 failures among 41 tests, including these references.
+- Fixed: the Chromium hang. The bundle defines `PipeTransport` (driver protocol) and
+  `PipeTransport2` (CDP over `--remote-debugging-pipe`); only the first was replaced, so
+  Chrome kept using fd 3/4. `patchCoreBundleSource` now replaces both, plus
+  `WebSocketTransport`, and re-applies the BiDi patches (#26/#27/#28) at the bundle's first
+  use of `BidiFirefox`, `BidiBrowser` and `BidiPage`.
+- Shim tests reach bundle-internal classes through
+  `globalThis.__playwright4jCoreBundle.internals` instead of the removed modules.
 - New optional Node modules that are not used for browser automation
   (e.g. inspector, vm, fetch Request/Response, Web TransformStream) have
   explicit fail-fast stubs to permit Core initialization. These are NOT

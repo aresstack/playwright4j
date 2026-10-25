@@ -57,7 +57,7 @@ final class HostBackedWebSocketTransportTest {
         GraalPlaywrightRuntime runtime = new GraalPlaywrightRuntime(host, driverBundleSource);
         runtime.loadNodeCompatibilityLayer();
         runtime.evaluateCommonJsEntry(driverBundleSource.packageResourceName("playwright4j-transport-test.js"),
-                "const { WebSocketTransport } = require('./lib/server/transport');"
+                "const { WebSocketTransport } = (require('playwright-core/lib/coreBundle'), globalThis.__playwright4jCoreBundle.internals);"
                         + "globalThis.__closes = 0;"
                         + "WebSocketTransport.connect(undefined, 'ws://127.0.0.1:1/fake').then((transport) => {"
                         + "  transport.onclose = (reason) => { globalThis.__closes++; globalThis.__closeReason = reason; };"

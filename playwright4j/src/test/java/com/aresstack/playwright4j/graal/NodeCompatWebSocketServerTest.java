@@ -44,7 +44,7 @@ final class NodeCompatWebSocketServerTest {
 
     private static final String SERVER_SCRIPT = ""
             + "(function () {\n"
-            + "  const { WSServer } = require('playwright-core/lib/server/utils/wsServer');\n"
+            + "  const { WSServer } = (require('playwright-core/lib/coreBundle'), globalThis.__playwright4jCoreBundle.internals);\n"
             + "  const test = globalThis.__wsTest = { endpoint: null, events: [], sockets: {}, connections: 0 };\n"
             + "  const server = new WSServer({\n"
             + "    onRequest: function (request, response) { response.end('not a websocket'); },\n"
