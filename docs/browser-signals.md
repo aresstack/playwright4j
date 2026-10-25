@@ -169,8 +169,11 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   `insertText`/`fill`, through it as an untrusted `InputEvent` without key events. playwright4j
   does not install it and types such text as WebDriver BiDi `keyDown`/`keyUp` actions, one per
   grapheme; Firefox then dispatches trusted `keydown`, `keypress`, `beforeinput`, `input` and
-  `keyup` to the focused element, also inside iframes. Line breaks and tabs are typed as Enter and
-  Tab. `FirefoxKeyboardInputTest` (task `firefoxSmoke`) checks both. This differs from the
+  `keyup` to the focused element, also inside iframes. `keyboard.type`/`insertText` type line
+  breaks and tabs as Enter and Tab. `fill()` only sets the content and never submits: it refuses
+  text with a line break for a single-line `<input>` before typing anything, types a line break
+  as Enter into a `<textarea>` and as Shift+Enter into a rich-text (contenteditable) element.
+  `FirefoxKeyboardInputTest` (task `firefoxSmoke`) checks all of it. This differs from the
   official driver (issue #36).
 
 **Caused by playwright4j, not page-observable**

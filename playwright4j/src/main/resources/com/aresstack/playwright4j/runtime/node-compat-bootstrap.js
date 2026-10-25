@@ -6249,9 +6249,13 @@
   // keyDown/keyUp action, and Firefox then dispatches trusted keydown, keypress, beforeinput,
   // input and keyup events to the focused element, also inside iframes, as for a person typing.
   // So sendText types one grapheme after the other, and the main-world install is dropped
-  // (patchCoreBundleSource). Line breaks and tabs are typed as Enter and Tab.
+  // (patchCoreBundleSource). For keyboard.type/insertText line breaks and tabs are typed as Enter
+  // and Tab, as a person would. fill() only sets the content and must never submit: it refuses
+  // line breaks for a single-line <input> before any input, types them as Enter into a <textarea>
+  // and as Shift+Enter (a line break, not a new paragraph or a "send") into rich-text editors.
   const BIDI_KEY_ENTER = '';
   const BIDI_KEY_TAB = '';
+  const BIDI_KEY_SHIFT = '';
   const BIDI_SEND_TEXT_CHUNK = 100;
 
   function splitGraphemes(text) {
@@ -6294,17 +6298,40 @@
     });
   }
 
+  function bidiKeyActions(value, shiftEnter) {
+    if (shiftEnter && value === BIDI_KEY_ENTER) {
+      return [{ type: 'keyDown', value: BIDI_KEY_SHIFT }, { type: 'keyDown', value: value },
+        { type: 'keyUp', value: value }, { type: 'keyUp', value: BIDI_KEY_SHIFT }];
+    }
+    return [{ type: 'keyDown', value: value }, { type: 'keyUp', value: value }];
+  }
+
   function patchBidiKeyboardSendText(RawKeyboard) {
-    RawKeyboard.prototype.sendText = async function (progress, text) {
+    // lineBreak: 'enter' (default) or 'shift-enter'.
+    RawKeyboard.prototype.pw4jSendText = async function (progress, text, lineBreak) {
       const values = bidiKeyValuesForText(text);
       for (let start = 0; start < values.length; start += BIDI_SEND_TEXT_CHUNK) {
         const actions = [];
         values.slice(start, start + BIDI_SEND_TEXT_CHUNK).forEach(function (value) {
-          actions.push({ type: 'keyDown', value: value }, { type: 'keyUp', value: value });
+          actions.push.apply(actions, bidiKeyActions(value, lineBreak === 'shift-enter'));
         });
         await this._performActions(progress, actions);
       }
     };
+    RawKeyboard.prototype.sendText = function (progress, text) {
+      return this.pw4jSendText(progress, text, 'enter');
+    };
+  }
+
+  // fill() after Playwright's own preparation (focus, select all) found an element that needs the
+  // text typed: a <textarea> or a rich-text element (contenteditable). Other engines keep upstream
+  // insertText.
+  function fillTypedText(keyboard, progress, value, richText) {
+    const raw = keyboard && keyboard._raw;
+    if (raw && typeof raw.pw4jSendText === 'function') {
+      return raw.pw4jSendText(progress, value, richText ? 'shift-enter' : 'enter');
+    }
+    return keyboard.insertText(progress, value);
   }
 
   function installKnownModuleFallbacks(resourceName, exportsObject) {
@@ -6434,7 +6461,11 @@
         return patchOnce(RawKeyboard, function () {
           patchBidiKeyboardSendText(RawKeyboard);
         });
-      }
+      },
+      rejectsFillLineBreaks: function (keyboard) {
+        return !!(keyboard && keyboard._raw && typeof keyboard._raw.pw4jSendText === 'function');
+      },
+      fillTypedText: fillTypedText
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
     // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
@@ -6451,6 +6482,26 @@
     // window.__pw_bidiInsertText in the pages' main world any more.
     source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
     source = replaceCoreBundleAnchor(source, '        promises2.push(this.extendInjectedScript(source7));\n', '', 1);
+    // ElementHandle._fill: with real key events a line break is a key press, so on BiDi Firefox
+    // fill() refuses it for a single-line <input> before any input (it could submit the form),
+    // and tells a rich-text element apart from a <textarea> (see fillTypedText). The check runs
+    // in the utility world, inside Playwright's own fill evaluation.
+    source = replaceCoreBundleAnchor(source, 'async ([injected, node, { value: value3, force }]) => {',
+      'async ([injected, node, { value: value3, force, pw4jRejectLineBreaks }]) => {', 1);
+    source = replaceCoreBundleAnchor(source, '            return injected.fill(node, value3);',
+      '            const pw4jTarget = injected.retarget(node, "follow-label");\n'
+      + '            const pw4jTag = pw4jTarget ? pw4jTarget.nodeName.toLowerCase() : "";\n'
+      + '            if (pw4jRejectLineBreaks && pw4jTag === "input" && /[\\r\\n]/.test(value3))\n'
+      + '              throw injected.createStacklessError("Cannot fill text with a line break into a single-line <input>: '
+      + 'typing it would press Enter, which may submit the form");\n'
+      + '            const pw4jFilled = injected.fill(node, value3);\n'
+      + '            return pw4jFilled === "needsinput" && pw4jTag !== "input" && pw4jTag !== "textarea" ? "needsinput:richtext" : pw4jFilled;', 1);
+    source = replaceCoreBundleAnchor(source, '          }, { value: value2, force: options.force }));',
+      '          }, { value: value2, force: options.force, pw4jRejectLineBreaks: ' + hooks + '.rejectsFillLineBreaks(this._page.keyboard) }));', 1);
+    source = replaceCoreBundleAnchor(source, '          if (result2 === "needsinput") {',
+      '          if (result2 === "needsinput" || result2 === "needsinput:richtext") {', 1);
+    source = replaceCoreBundleAnchor(source, '              await this._page.keyboard.insertText(progress3, value2);',
+      '              await ' + hooks + '.fillTypedText(this._page.keyboard, progress3, value2, result2 === "needsinput:richtext");', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
