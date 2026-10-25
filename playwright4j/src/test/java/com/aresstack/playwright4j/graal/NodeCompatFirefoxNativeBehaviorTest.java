@@ -103,6 +103,40 @@ final class NodeCompatFirefoxNativeBehaviorTest {
     }
 
     @Test
+    void theDialogLimitExceptionYieldsToTheCallerAndTheProfile() throws Exception {
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
+        String callerLimit = "user_pref(\"dom.successive_dialog_time_limit\", 3);";
+        launch("{ 'dom.successive_dialog_time_limit': 3 }");
+        assertTrue(userJs().contains(callerLimit), userJs().toString());
+        assertFalse(userJs().contains(NO_DIALOG_LIMIT), userJs().toString());
+
+        // A value the user set in about:config (prefs.js) and user.js did not write stays in force.
+        launch("{}");
+        Files.write(profile.resolve("prefs.js"), Arrays.asList("user_pref(\"dom.successive_dialog_time_limit\", 5);"),
+                StandardCharsets.ISO_8859_1);
+        launch("{}");
+        assertFalse(userJs().stream().anyMatch(line -> line.contains("dom.successive_dialog_time_limit")), userJs().toString());
+
+        // Firefox saving the value user.js wrote is not the user's choice.
+        Files.delete(profile.resolve("prefs.js"));
+        launch("{}");
+        Files.write(profile.resolve("prefs.js"), Arrays.asList(NO_DIALOG_LIMIT), StandardCharsets.ISO_8859_1);
+        launch("{}");
+        assertTrue(userJs().contains(NO_DIALOG_LIMIT), userJs().toString());
+    }
+
+    @Test
+    void theDialogLimitExceptionYieldsToTheProfilesOwnUserJs() throws Exception {
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
+        String own = "user_pref(\"dom.successive_dialog_time_limit\", 7);";
+        Files.write(profile.resolve("user.js"), Arrays.asList(own), StandardCharsets.ISO_8859_1);
+        launch("{}");
+        List<String> lines = userJs();
+        assertTrue(lines.contains(own), lines.toString());
+        assertFalse(lines.contains(NO_DIALOG_LIMIT), lines.toString());
+    }
+
+    @Test
     void onlyPlaywrightsValuesFromTheLastLaunchAreRemovedFromPrefsJs() throws Exception {
         launch("{}");
         // Firefox saved Playwright's user.js values; the user changed two prefs in about:config.

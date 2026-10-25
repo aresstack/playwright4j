@@ -6411,6 +6411,36 @@
     'dom.successive_dialog_time_limit': 0
   };
 
+  // A value the profile sets itself (its own user.js lines, or a prefs.js value user.js did not
+  // write) wins over an added preference, as firefoxUserPrefs does.
+  function nativeBehaviorAddedPrefs(userDataDir, previousUserJs) {
+    if (!nativeBehavior()) {
+      return {};
+    }
+    const prefName = function (line) {
+      const match = /^\s*user_pref\(\s*"([^"]+)"/.exec(line);
+      return match ? match[1] : undefined;
+    };
+    const previousLines = new Set(previousUserJs.split(/\r?\n/));
+    const own = new Set(previousUserJs ? keptUserJsLines(previousUserJs, new Set()).map(prefName) : []);
+    const prefsJs = modules.path.join(String(userDataDir), 'prefs.js');
+    if (modules.fs.existsSync(prefsJs)) {
+      String(modules.fs.readFileSync(prefsJs, 'latin1')).split('\n').forEach(function (line) {
+        const text = line.replace(/\r$/, '');
+        if (!previousLines.has(text)) {
+          own.add(prefName(text));
+        }
+      });
+    }
+    const added = {};
+    Object.keys(NATIVE_BEHAVIOR_ADDED_PREFS).forEach(function (name) {
+      if (!own.has(name)) {
+        added[name] = NATIVE_BEHAVIOR_ADDED_PREFS[name];
+      }
+    });
+    return added;
+  }
+
   function nativeBehavior() {
     return host.nativeBehavior() === true;
   }
@@ -6512,7 +6542,7 @@
       const previous = readUserJsBytes(userJs);
       const prefs = Object.assign({}, FIREFOX_DEFAULT_PREFS,
           options && options[PERSISTENT_LAUNCH_OPTION] ? FIREFOX_PERSISTENT_DEFAULT_PREFS : {},
-          nativeBehavior() ? NATIVE_BEHAVIOR_ADDED_PREFS : {},
+          nativeBehaviorAddedPrefs(userDataDir, previous),
           (options && options.firefoxUserPrefs) || {});
       await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
       const callerPrefs = (options && options.firefoxUserPrefs) || {};
