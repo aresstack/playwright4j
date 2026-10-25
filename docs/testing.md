@@ -50,7 +50,9 @@ assertions run. It checks:
 - another running Firefox keeps its windows;
 - `browser.newContext()`: the first page gets a window, further pages of that context are tabs;
 - a `user.js` the profile already has keeps its own lines byte for byte across launches, before
-  Playwright's preferences, which win for the same preference.
+  Playwright's preferences, which win for the same preference; a comment the profile leaves open
+  at the end of its lines does not swallow Playwright's preferences (checked in the `prefs.js`
+  Firefox saves on exit).
 
 Every Firefox smoke test also checks that no Firefox process started during the test still runs
 15 s after the browser was closed. A survivor fails the test with its pid, parent pid and command
