@@ -85,6 +85,8 @@ tasks.register('firefoxSmoke', Test) {
         // Reading a page leaves no user activation, Playwright events or DOM changes (#37, #38, #40).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxReadSideEffectsTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNativeInputTest'
+        // Mouse paths and click timing under playwright4j.bidi.naturalPointer (#43).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNaturalPointerTest'
     }
 
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
