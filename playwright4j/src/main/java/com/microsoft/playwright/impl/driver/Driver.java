@@ -40,16 +40,53 @@ public final class Driver {
         return new Driver(environment);
     }
 
-    private static final String[] FORWARDED_SYSTEM_PROPERTIES = {
+    /** Extra driver JVM options, whitespace separated; double quotes group an option with spaces. */
+    static final String JVM_ARGS_PROPERTY = "playwright4j.driver.jvmArgs";
+
+    /** Read by GraalDriverMain: a file of system properties that must not appear on the command line. */
+    public static final String SECRET_PROPERTIES_FILE_PROPERTY = "playwright4j.driver.secretPropertiesFile";
+
+    /**
+     * Copied as {@code -D} from this JVM to the driver JVM, so the driver's TLS (APIRequestContext,
+     * WebSocket), proxy and video settings match the application's.
+     */
+    static final String[] FORWARDED_SYSTEM_PROPERTIES = {
             "playwright4j.debug",
-            "playwright4j.unhandledRejections"
+            "playwright4j.debug.file",
+            "playwright4j.unhandledRejections",
+            "playwright4j.video.vlc.path",
+            "javax.net.ssl.trustStore",
+            "javax.net.ssl.trustStoreType",
+            "javax.net.ssl.trustStoreProvider",
+            "javax.net.ssl.keyStore",
+            "javax.net.ssl.keyStoreType",
+            "javax.net.ssl.keyStoreProvider",
+            "jdk.tls.client.protocols",
+            "https.protocols",
+            "http.proxyHost",
+            "http.proxyPort",
+            "https.proxyHost",
+            "https.proxyPort",
+            "http.nonProxyHosts",
+            "socksProxyHost",
+            "socksProxyPort",
+            "socksProxyVersion",
+            "java.net.useSystemProxies",
+            "jdk.http.auth.tunneling.disabledSchemes",
+            "jdk.http.auth.proxying.disabledSchemes",
+    };
+
+    /** Forwarded like the above, but through an owner-only temp file instead of the command line. */
+    static final String[] SECRET_SYSTEM_PROPERTIES = {
+            "javax.net.ssl.trustStorePassword",
+            "javax.net.ssl.keyStorePassword",
     };
 
     public ProcessBuilder createProcessBuilder() {
         java.util.List<String> command = new java.util.ArrayList<>();
         command.add(javaExecutable());
         command.add("-cp");
-        command.add(System.getProperty("java.class.path"));
+        command.add(DriverClasspath.resolve(Driver.class.getClassLoader(), driverCacheRoot().resolve("classpath")));
         // Force IPv4 so a "localhost" ws endpoint (e.g. from launch-server) resolves to 127.0.0.1,
         // matching the host net server's IPv4 bind; otherwise java.net.http may try ::1 first and
         // fail without falling back (flaky connect on reconnection).
@@ -60,11 +97,86 @@ public final class Driver {
                 command.add("-D" + property + "=" + value);
             }
         }
-        command.add("com.aresstack.playwright4j.driver.GraalDriverMain");
+        Path secrets = writeSecretProperties();
+        if (secrets != null) {
+            command.add("-D" + SECRET_PROPERTIES_FILE_PROPERTY + "=" + secrets);
+        }
+        // Last, so an explicit option (e.g. -Xmx, -Dhttps.proxyHost=...) wins over a forwarded one.
+        command.addAll(parseJvmArgs(System.getProperty(JVM_ARGS_PROPERTY)));
+        command.add(DriverClasspath.DRIVER_MAIN_CLASS);
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
         processBuilder.environment().putAll(environment);
         return processBuilder;
+    }
+
+    /** Splits on whitespace outside double quotes; quotes are removed. */
+    static java.util.List<String> parseJvmArgs(String value) {
+        java.util.List<String> args = new java.util.ArrayList<>();
+        if (value == null) {
+            return args;
+        }
+        StringBuilder current = new StringBuilder();
+        boolean quoted = false;
+        boolean inArg = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '"') {
+                quoted = !quoted;
+                inArg = true;
+            } else if (Character.isWhitespace(c) && !quoted) {
+                if (inArg) {
+                    args.add(current.toString());
+                    current.setLength(0);
+                    inArg = false;
+                }
+            } else {
+                current.append(c);
+                inArg = true;
+            }
+        }
+        if (quoted) {
+            throw new IllegalArgumentException("Unbalanced quote in -D" + JVM_ARGS_PROPERTY + "=" + value);
+        }
+        if (inArg) {
+            args.add(current.toString());
+        }
+        return args;
+    }
+
+    /**
+     * Writes the set secret properties to an owner-only file that the driver JVM reads and deletes at
+     * startup; null when none is set. deleteOnExit covers a driver that never started.
+     */
+    static Path writeSecretProperties() {
+        java.util.Properties secrets = new java.util.Properties();
+        for (String property : SECRET_SYSTEM_PROPERTIES) {
+            String value = System.getProperty(property);
+            if (value != null) {
+                secrets.setProperty(property, value);
+            }
+        }
+        if (secrets.isEmpty()) {
+            return null;
+        }
+        try {
+            Path file;
+            try {
+                file = Files.createTempFile("playwright4j-driver-", ".properties",
+                        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                                java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
+            } catch (UnsupportedOperationException notPosix) {
+                // Windows: the user's temp directory is private to the user.
+                file = Files.createTempFile("playwright4j-driver-", ".properties");
+            }
+            file.toFile().deleteOnExit();
+            try (java.io.OutputStream output = Files.newOutputStream(file)) {
+                secrets.store(output, null);
+            }
+            return file;
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot pass TLS store passwords to the playwright4j driver JVM", exception);
+        }
     }
 
     private String javaExecutable() {
@@ -77,10 +189,13 @@ public final class Driver {
     }
 
     public Path driverDir() {
-        Path root = Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
-        Path dir = driverDirFor(root, packageId());
+        Path dir = driverDirFor(driverCacheRoot(), packageId());
         ensurePackageExtracted(dir);
         return dir;
+    }
+
+    static Path driverCacheRoot() {
+        return Paths.get(System.getProperty("java.io.tmpdir"), "playwright4j-driver");
     }
 
     /**

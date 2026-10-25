@@ -1,0 +1,27 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.6'
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
+
+def playwright4jVersion = findProperty('playwright4jVersion') ?: '0.1.0-SNAPSHOT'
+
+dependencies {
+    implementation "com.aresstack:playwright4j:${playwright4jVersion}"
+    implementation('com.microsoft.playwright:playwright:1.59.0') {
+        exclude group: 'com.microsoft.playwright', module: 'driver'
+        exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
+    }
+}
+
+springBoot {
+    mainClass = 'consumer.SpringBootCheck'
+}
+
+bootJar {
+    archiveFileName = 'playwright4j-spring-boot-check.jar'
+}
