@@ -81,4 +81,30 @@ public class FirefoxMainWorldTest {
             }
         }
     }
+
+    // locator.drop() builds a DataTransfer and dispatches drag events (#50.4).
+    @Test
+    void droppingFilesBuildsTheDataTransferOutsideTheMainWorld() throws Throwable {
+        runGuarded(executable -> {
+            try (Playwright playwright = Playwright.create();
+                 Browser browser = playwright.firefox().launch(new BrowserType.LaunchOptions()
+                         .setChannel("moz-firefox")
+                         .setExecutablePath(Paths.get(executable))
+                         .setHeadless(true))) {
+                Page page = browser.newPage();
+                page.setContent("<div id=zone style='width:200px;height:100px'>drop</div><script>"
+                        + "const Native = DataTransfer;"
+                        + "window.DataTransfer = function () { document.body.dataset.mainWorld = 'yes'; return new Native(); };"
+                        + "zone.addEventListener('dragover', e => e.preventDefault());"
+                        + "zone.addEventListener('drop', e => { e.preventDefault();"
+                        + "  zone.dataset.dropped = e.dataTransfer.files[0].name + ':' + e.isTrusted; });"
+                        + "</script>");
+                page.locator("#zone").drop(new com.microsoft.playwright.options.DropPayload().setFiles(
+                        new com.microsoft.playwright.options.FilePayload(
+                                "notes.txt", "text/plain", "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+                assertEquals("notes.txt:false", page.getAttribute("#zone", "data-dropped"));
+                assertEquals(null, page.getAttribute("body", "data-main-world"));
+            }
+        });
+    }
 }

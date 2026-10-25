@@ -111,6 +111,22 @@ public class FirefoxNativeBehaviorTest {
         });
     }
 
+    @Test
+    void withThePropertyMainWorldReadsLeaveNoUserActivation() throws Throwable {
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
+        runGuarded(executable -> {
+            try (Playwright playwright = Playwright.create();
+                 Browser browser = playwright.firefox().launch(launchOptions(executable))) {
+                Page page = browser.newContext().newPage();
+                page.navigate("data:text/html,<p>one</p><p>two</p>");
+                // allTextContents() and locator.boundingBox() evaluate in the main world (#37, #50).
+                assertEquals(List.of("one", "two"), page.locator("p").allTextContents());
+                assertTrue(page.locator("p").first().boundingBox().width > 0);
+                assertEquals(false, page.evaluate("navigator.userActivation.hasBeenActive"));
+            }
+        });
+    }
+
     private static BrowserType.LaunchOptions launchOptions(String executable) {
         return new BrowserType.LaunchOptions()
                 .setChannel("moz-firefox")
