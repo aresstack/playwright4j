@@ -4,15 +4,147 @@
 This page records whether playwright4j can drive it over WebDriver BiDi (Playwright's `moz-firefox`
 channel), what fails and why, and how to reproduce the measurement.
 
-**Status (25 October 2026, master after #29, Playwright Core 1.62).** A released Camoufox starts
-and a persistent context opens on the tab Camoufox started with, but every further `newPage()` and
-every `newContext()` fails because of two Camoufox behaviours described below. With two small fixes
-to Camoufox's Remote Agent code (applied to `omni.ja`, see [Fixes](#fixes)) launch, persistent
+**Status (25 October 2026, Playwright Core 1.62).** A released Camoufox starts and a persistent
+context opens on the tab Camoufox started with, but every further `newPage()` and every
+`newContext()` fails because of two Camoufox behaviours described below. Two small fixes to
+Camoufox's Remote Agent code remove both ([Fixes](#fixes)); they are proposed to Camoufox but in no
+Camoufox release yet. [Installing Camoufox with the fixes](#installing-camoufox-with-the-fixes) sets
+up a pinned Camoufox release with both fixes on Windows and Linux; with it launch, persistent
 contexts, new pages and new contexts work. The fingerprint configuration reaches Camoufox through
 `setEnv` (since #30). Compared by hand on Windows with Camoufox's own launcher (Juggler), the same
 fingerprint gives the same page values and the same network-side signals over BiDi, and a ChatGPT
 login by hand works over BiDi ([Comparison](#comparison-with-camoufoxs-own-launcher-manual)).
-Nothing in this page is part of a release.
+playwright4j does not ship Camoufox.
+
+## Installing Camoufox with the fixes
+
+[`camoufox/hotpatch_omni.py`](camoufox/hotpatch_omni.py) downloads a pinned Camoufox release from
+<https://github.com/daijro/camoufox/releases>, checks the archive's SHA-256, unpacks it and applies
+both [fixes](#fixes) to its `omni.ja`. It also checks the SHA-256 of both changed files before and
+after the change, so it patches only the builds listed here and produces exactly the files listed
+here. It needs Python 3 and nothing beyond its standard library, writes only into the folder it is
+given, and does not build Camoufox.
+
+Pinned releases, x86_64. The default is `156.0.1-beta.36`, the build measured on Linux and Windows
+and accepted by hand ([Comparison](#comparison-with-camoufoxs-own-launcher-manual)).
+
+| Release | Archive | SHA-256 of the archive |
+| --- | --- | --- |
+| `156.0.1-beta.36` | `camoufox-156.0.1-beta.36-win.x86_64.zip` | `096fd4832a7a32f2aa7f7bdd07fe6253dda296cbe783acd7bc2c86cf5ae62031` |
+| `156.0.1-beta.36` | `camoufox-156.0.1-beta.36-lin.x86_64.zip` | `72637885ee67c93466ad377831c647192f8f08fb5c6fd9279de1320b49dd2b53` |
+| `158.0-beta.40` | `camoufox-158.0-beta.40-win.x86_64.zip` | `2d3e33207c2d5853e817e8317f0e33124ffb7054bd5102c8b84546e3d15a6447` |
+| `158.0-beta.40` | `camoufox-158.0-beta.40-lin.x86_64.zip` | `2ead498d4765394addd3278d6a663962f3f99b189a99d3f966de56656cefc823` |
+
+The two changed files in `omni.ja`, the same in the Windows and the Linux archive of a release:
+
+| File in `omni.ja` | Release | SHA-256 as released | SHA-256 with the fix |
+| --- | --- | --- | --- |
+| `chrome/remote/content/shared/WindowManager.sys.mjs` | `156.0.1-beta.36` | `6a4a8106b53909e93fecb0ae5c4505aa99325fd35b273487f61ae8d8b6b44fb6` | `047cca48c67255dc76523faa054487a641d1103e188c62ed2b06cd7756b0d46b` |
+| `chrome/remote/content/shared/WindowManager.sys.mjs` | `158.0-beta.40` | `3fc4ff2e3585b173ca99c04895aa1616222eb785cd5aa3a14c07a3d7209719c1` | `42df8aeb4f98f33a9076f6178435700ecd9f05d5029161a4bdaa2f6ed3c019ec` |
+| `chrome/remote/content/webdriver-bidi/modules/windowglobal/browsingContext.sys.mjs` | both | `26b244cc760a7dd8197566c90f6fdc9a4dd264e651d7bfb7fc3c2febdbc3bdd2` | `4202f76e04e88059c1e6b9797228f4a04f9ed1d210984d5818f00ccc790df460` |
+
+The archive is about 1.3 GB and the unpacked browser about 2.5 GB. The script downloads next to
+the new folder and deletes the archive afterwards, so the drive of the new folder needs about 4 GB
+during the installation.
+
+### Windows (PowerShell)
+
+From the playwright4j checkout:
+
+```powershell
+python docs\camoufox\hotpatch_omni.py --install G:\camoufox-156
+python docs\camoufox\hotpatch_omni.py --check G:\camoufox-156
+```
+
+The last line of `--install` names the executable, here `G:\camoufox-156\camoufox.exe`. `--check`
+prints `window: in place` and `visibility: in place` and exits with 0, otherwise with 1. To use an
+archive downloaded before (for example with a browser), add
+`--archive $HOME\Downloads\camoufox-156.0.1-beta.36-win.x86_64.zip`; it is accepted only with a
+pinned SHA-256. `--release 158.0-beta.40` installs the other pinned release.
+
+### Linux
+
+```bash
+python3 docs/camoufox/hotpatch_omni.py --install ~/camoufox-156
+python3 docs/camoufox/hotpatch_omni.py --check ~/camoufox-156
+```
+
+The executable is `~/camoufox-156/camoufox-bin`. Keep the folder whole: it holds the `fonts` and
+`fontconfig` folders Camoufox needs on Linux (see the end of
+[Comparison](#comparison-with-camoufoxs-own-launcher-manual)). A headed browser needs an X server;
+without a display run under `xvfb-run -a`.
+
+### Using it
+
+Pass the executable to `setExecutablePath` with the `moz-firefox` channel, as in
+[What was measured](#what-was-measured); for the fingerprint see
+[Fingerprint configuration](#fingerprint-configuration). Start the patched browser with a new
+profile. A profile used with the released build before needs one start with `-purgecaches` (as an
+argument in `setArgs`), which clears the script cache Firefox keeps in the profile.
+
+### An already unpacked Camoufox
+
+`python docs/camoufox/hotpatch_omni.py <folder>` patches a Camoufox unpacked before (the folder that
+holds `omni.ja` and the executable), with the same checks. Close every Camoufox started from that
+folder first. The released file stays as `omni.ja.orig`; running the script again changes nothing.
+Patch a copy of its own rather than an installation another tool keeps up to date: an update of such an
+installation brings back the released `omni.ja`, and the script has to run again.
+
+### Undoing
+
+Delete the folder, or put the released file back (Windows, then Linux):
+
+```powershell
+Copy-Item G:\camoufox-156\omni.ja.orig G:\camoufox-156\omni.ja -Force
+```
+
+```bash
+cp ~/camoufox-156/omni.ja.orig ~/camoufox-156/omni.ja
+```
+
+### When the script refuses
+
+It exits with a code other than 0 and leaves `omni.ja` as it was:
+
+| Message | Meaning |
+| --- | --- |
+| `archive SHA-256 … is not a pinned Camoufox release` | the downloaded or given archive is not one of the archives above, for example because a release asset was replaced |
+| `unknown Camoufox build (…)` | `omni.ja` comes from a build that is not listed above |
+| `the text to replace is not in this Camoufox build` | the Remote Agent code changed and the fix has to be adapted |
+| `the fix is present but the file is not one this script produced` | the build already contains a fix, for example a Camoufox release with the fixes ([Camoufox upstream](#camoufox-upstream)) |
+
+### Other Camoufox builds
+
+For a build that is not listed, `--unverified` applies the same changes without the file checks
+(`python docs/camoufox/hotpatch_omni.py --unverified <folder>`, then
+`python docs/camoufox/hotpatch_omni.py --check --unverified <folder>`). Run the checks of [Reproducing](#reproducing) against it before
+relying on it. To pin it, add the archive and file hashes to `RELEASES` and `KNOWN_FILES` in the
+script, together with the test results.
+
+## Camoufox upstream
+
+The two behaviours are reported to Camoufox as
+[daijro/camoufox#951](https://github.com/daijro/camoufox/issues/951) and the fixes proposed in
+[daijro/camoufox#952](https://github.com/daijro/camoufox/pull/952) (open on 25 October 2026).
+playwright4j does not wait for that outcome:
+
+- The fixes are kept in this repository. [`camoufox/patches/`](camoufox/patches) holds both as
+  Camoufox patches (for Camoufox's `browser/patches/`, applied by its `make dir`), and
+  `hotpatch_omni.py` carries the same changes for released builds.
+- The fork [aresstack/camoufox](https://github.com/aresstack/camoufox/tree/claude/project-thread-ot6uky),
+  branch `claude/project-thread-ot6uky`, holds them as commits `ec5f72b` and `8640374` on Camoufox
+  `e2c542a` ([aresstack/camoufox#1](https://github.com/aresstack/camoufox/pull/1)), together with the
+  patch guard `browser/tests/playwright/patches/webdriver-bidi-tabs.py`: it fails on a released
+  build and passes with both patches. #952 is opened from that branch, which stays as the reference.
+- CI and the release check install the default pinned release through the script, so they test
+  exactly the files listed above, whatever happens upstream.
+
+| Upstream | Effect on playwright4j |
+| --- | --- |
+| merges #952, or fixes the behaviours another way | only new Camoufox releases change; the pinned releases stay as they are. A release with the fixes needs no patching. The script refuses its files until they are pinned, and the checks of [Reproducing](#reproducing) show whether it behaves the same. |
+| asks for changes, or closes #952 | none |
+| replaces a pinned release archive | `--install` stops at the archive's SHA-256 |
+| removes a pinned release | the download fails; an archive kept from before still installs with `--archive` |
 
 ## What was measured
 
@@ -49,7 +181,7 @@ Results with Camoufox 158.0-beta.40 (`firefoxSmoke` task, `FIREFOX_EXECUTABLE` p
 | `FirefoxPersistentWindowTest.newContextGetsOneWindowAndItsPagesOpenAsTabs` | fails | new windows |
 
 At the time of this run the window tests found Firefox processes and X11 windows only by the names
-`firefox` / `firefox-bin`, so the Camoufox names were added locally. Since this branch the tests
+`firefox` / `firefox-bin`, so the Camoufox names were added locally. Since #31 the tests
 count `camoufox`, `camoufox.exe` and `camoufox-bin` processes and X11 windows of class `camoufox` as
 Firefox; no local change is needed.
 
@@ -118,9 +250,8 @@ Fix options:
 
 ## Fixes
 
-Reported to Camoufox as [daijro/camoufox#951](https://github.com/daijro/camoufox/issues/951), with
-the fixes proposed in [daijro/camoufox#952](https://github.com/daijro/camoufox/pull/952).
-Both fixes change only Remote Agent JavaScript. Pages see no difference: a background tab still
+Proposed to Camoufox in [daijro/camoufox#952](https://github.com/daijro/camoufox/pull/952) (see
+[Camoufox upstream](#camoufox-upstream)). Both fixes change only Remote Agent JavaScript. Pages see no difference: a background tab still
 reports `visible` and `document.hasFocus()` stays `true`, as in released Camoufox. For Firefox nothing
 changes (its application name is `Firefox`, and `docShell.forceActiveState` does not exist there).
 
@@ -148,16 +279,13 @@ changes (its application name is `Firefox`, and `docShell.forceActiveState` does
           // Otherwise, wait for the next visibilitychange event.
    ```
 
-The fixes are meant for Camoufox upstream. To try them without building Camoufox,
-[`camoufox/hotpatch_omni.py`](camoufox/hotpatch_omni.py) applies them to a copy of an installed
-Camoufox (it keeps `omni.ja.orig`):
-
-```bash
-python docs/camoufox/hotpatch_omni.py <copy of the Camoufox folder> window visibility
-```
-
-Start the patched copy with a fresh profile (or once with `-purgecaches`). The texts it replaces are
-the same in Camoufox 156.0.1-beta.36 and 158.0-beta.40.
+In Camoufox's patch format they are
+[`camoufox/patches/webdriver-bidi-app-name.patch`](camoufox/patches/webdriver-bidi-app-name.patch)
+and
+[`camoufox/patches/webdriver-bidi-force-active.patch`](camoufox/patches/webdriver-bidi-force-active.patch).
+`hotpatch_omni.py` makes the same changes in a released Camoufox
+([Installing](#installing-camoufox-with-the-fixes)); the texts it replaces are the same in Camoufox
+156.0.1-beta.36 and 158.0-beta.40.
 
 ## Results with the fixes
 
@@ -170,7 +298,7 @@ Camoufox 156.0.1-beta.36 with both fixes, persistent context headed:
 | Windows (Angelo, master `4cb607f`, fixes reconstructed from the description, process name extended locally) | `FirefoxBiDiSmokeTest` 2 of 2; `firefoxSmoke` 6 of 8 |
 | Linux and Windows, `camoufoxSmoke` (fingerprint through `setEnv`, two pages) | Linux: passes; Windows (Angelo, the script's hotpatch, master after #30 and #33): 2 of 2 pass |
 
-The two failures of the earlier runs, both fixed in this branch:
+The two failures of the earlier runs, both fixed in #31:
 
 - `persistentContextUsesTheStartTabAndOpensPagesAsTabs` (Linux and Windows): `prefs.js` after close
   lacked `user_pref("browser.startup.page", 0);`. Camoufox already has 0 as its default
@@ -221,8 +349,9 @@ page leave exactly one Camoufox window (issue #34; without the start-tab takeove
 opens while `pages()` still reports one page). Measured on Linux with Camoufox 156.0.1-beta.36,
 released and with the fixes: passes.
 
-The Windows CI job `firefox-smoke` installs Camoufox 156.0.1-beta.36 (pinned, SHA-256 checked),
-applies both fixes with `docs/camoufox/hotpatch_omni.py`, and runs `FirefoxPersistentWindowTest` and
+The Windows CI job `firefox-smoke` installs the default pinned release with
+`hotpatch_omni.py --install` (the archive and both changed files checked, see
+[Installing](#installing-camoufox-with-the-fixes)) and runs `FirefoxPersistentWindowTest` and
 `camoufoxSmoke` against it.
 
 ## Comparison with Camoufox's own launcher (manual)
@@ -257,9 +386,10 @@ time zone, colour scheme, focus, visibility, WebGL renderer); no browser process
 
 ### Steps (Windows)
 
-1. Camoufox 156.0.1-beta.36 copy, e.g. `G:\camoufox-156`, patched with the script from this
-   repository: `python docs\camoufox\hotpatch_omni.py G:\camoufox-156 window visibility`. Both fixes
-   change only Remote Agent code, which a Juggler run does not use, so A and B use the same copy.
+1. Camoufox 156.0.1-beta.36 with the fixes, e.g. in `G:\camoufox-156`:
+   `python docs\camoufox\hotpatch_omni.py --install G:\camoufox-156`
+   ([Installing](#installing-camoufox-with-the-fixes)). Both fixes change only Remote Agent code,
+   which a Juggler run does not use, so A and B use the same copy.
 2. A folder with the reference launcher: `npm install camoufox@0.5.8 playwright-core@1.62.0`, and a
    copy of `docs/camoufox/juggler-reference.mjs` next to `node_modules`.
 3. Draw one fingerprint for both runs. Put the Camoufox options of the usual reference run (at least
@@ -351,7 +481,8 @@ It runs headed; on Linux without a display prefix it with `xvfb-run -a` or set
 
 Window and tab behaviour:
 
-1. Download a Camoufox build from <https://github.com/daijro/camoufox/releases> and unpack it.
+1. Install Camoufox with the fixes ([Installing](#installing-camoufox-with-the-fixes)). For the
+   released behaviour, unpack an archive from <https://github.com/daijro/camoufox/releases> instead.
 2. Run the Firefox smoke tests against it (Linux needs an X server, e.g. `xvfb-run`, and `xdotool`
    for the window counts):
 
