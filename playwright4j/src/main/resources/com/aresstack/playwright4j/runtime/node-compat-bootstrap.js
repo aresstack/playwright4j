@@ -980,11 +980,31 @@
     return result;
   }
 
+  // Node's spawn semantics: options.env, when given, is the child's complete environment (it
+  // replaces the inherited one); entries whose value is undefined are dropped. Playwright passes
+  // either the launch option `env` (setEnv in the Java API) or process.env, amended per browser
+  // (e.g. MOZ_CRASHREPORTER for Firefox). Returns null to inherit the host's environment.
+  // The values are handed to the host only and never logged (they may carry secrets).
+  function environmentFor(options) {
+    if (!options || !options.env) {
+      return null;
+    }
+    const entries = [];
+    Object.keys(options.env).forEach(function (name) {
+      const value = options.env[name];
+      if (value !== undefined && value !== null) {
+        entries.push(String(name) + '=' + String(value));
+      }
+    });
+    return entries.join(ARGUMENT_SEPARATOR);
+  }
+
   modules.child_process = {
     spawn: function (command, args, options) {
       const argList = (args || []).map(function (value) { return String(value); });
       const joinedArguments = argList.join(ARGUMENT_SEPARATOR);
       const workingDirectory = options && options.cwd ? String(options.cwd) : global.process.cwd();
+      const environment = environmentFor(options);
 
       // Firefox over WebDriver BiDi (Playwright's moz-firefox channel) also passes
       // --remote-debugging-port, but together with a -profile/--profile directory. It is run as a
@@ -995,7 +1015,7 @@
       }) && (argList.indexOf('-profile') >= 0 || argList.indexOf('--profile') >= 0);
       if (isFirefoxBiDi) {
         const firefoxArguments = withFirefoxInstanceFlags(argList).join(ARGUMENT_SEPARATOR);
-        const firefoxId = String(host.processLauncher().spawnProcess(String(command), firefoxArguments, workingDirectory));
+        const firefoxId = String(host.processLauncher().spawnProcessWithEnvironment(String(command), firefoxArguments, workingDirectory, environment));
         return createGeneralProcess(firefoxId);
       }
 
@@ -1016,13 +1036,13 @@
             + '. playwright4j runs a Chromium-only runtime; only the chromium browser'
             + ' (chrome / msedge channels) is available.');
         }
-        const generalId = String(host.processLauncher().spawnProcess(String(command), joinedArguments, workingDirectory));
+        const generalId = String(host.processLauncher().spawnProcessWithEnvironment(String(command), joinedArguments, workingDirectory, environment));
         return createGeneralProcess(generalId);
       }
 
       // launchChromium throws on failure; let it propagate so Playwright's launch promise
       // rejects with a real error instead of hanging.
-      const result = String(host.processLauncher().launchChromium(String(command), joinedArguments, workingDirectory));
+      const result = String(host.processLauncher().launchChromiumWithEnvironment(String(command), joinedArguments, workingDirectory, environment));
       const separatorIndex = result.indexOf(ARGUMENT_SEPARATOR);
       const processId = separatorIndex < 0 ? result : result.substring(0, separatorIndex);
       const endpoint = separatorIndex < 0 ? '' : result.substring(separatorIndex + 1);
@@ -4298,13 +4318,89 @@
     URLSearchParams: global.URLSearchParams
   };
 
+  // process.env backed by the host environment, enumerable ({...process.env}, Object.keys) so a
+  // spawn that passes it on keeps the inherited variables, and writable like Node's (assignments
+  // and deletes stay local to this runtime). Names are case-insensitive on Windows, as in Node.
+  function createProcessEnv() {
+    const caseInsensitive = host.environment().platform() === 'win32';
+    const overrides = {};
+    const deleted = {};
+    function key(name) {
+      return caseInsensitive ? String(name).toUpperCase() : String(name);
+    }
+    function hostNames() {
+      const names = String(host.environment().environmentNames());
+      return names ? names.split(ARGUMENT_SEPARATOR) : [];
+    }
+    function names() {
+      const seen = {};
+      const result = [];
+      hostNames().concat(Object.keys(overrides).map(function (k) { return overrides[k].name; })).forEach(function (name) {
+        const k = key(name);
+        if (!seen[k] && !deleted[k]) {
+          seen[k] = true;
+          result.push(Object.prototype.hasOwnProperty.call(overrides, k) ? overrides[k].name : name);
+        }
+      });
+      return result;
+    }
+    function has(name) {
+      const k = key(name);
+      if (Object.prototype.hasOwnProperty.call(overrides, k)) {
+        return true;
+      }
+      if (deleted[k]) {
+        return false;
+      }
+      return hostNames().some(function (hostName) { return key(hostName) === k; });
+    }
+    function value(name) {
+      const k = key(name);
+      if (Object.prototype.hasOwnProperty.call(overrides, k)) {
+        return overrides[k].value;
+      }
+      if (deleted[k]) {
+        return undefined;
+      }
+      return host.environment().getEnvironmentValue(String(name));
+    }
+    return new Proxy({}, {
+      get: function (target, name) {
+        if (typeof name === 'symbol') {
+          return undefined;
+        }
+        return value(name);
+      },
+      set: function (target, name, newValue) {
+        const k = key(name);
+        delete deleted[k];
+        overrides[k] = { name: String(name), value: String(newValue) };
+        return true;
+      },
+      deleteProperty: function (target, name) {
+        const k = key(name);
+        delete overrides[k];
+        deleted[k] = true;
+        return true;
+      },
+      has: function (target, name) {
+        return typeof name !== 'symbol' && has(name);
+      },
+      ownKeys: function () {
+        return names();
+      },
+      getOwnPropertyDescriptor: function (target, name) {
+        if (typeof name === 'symbol' || !has(name)) {
+          return undefined;
+        }
+        return { value: value(name), writable: true, enumerable: true, configurable: true };
+      }
+    });
+  }
+
   global.process = new EventEmitter();
   Object.assign(global.process, {
-    env: new Proxy({}, {
-      get: function (target, name) {
-        return host.environment().getEnvironmentValue(String(name));
-      }
-    }),
+    env: createProcessEnv(),
     argv: [],
     platform: host.environment().platform(),
     arch: host.environment().architecture(),

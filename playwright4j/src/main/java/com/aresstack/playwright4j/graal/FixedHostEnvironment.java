@@ -62,4 +62,10 @@ public final class FixedHostEnvironment implements HostEnvironment {
         }
         return value == null ? "" : value;
     }
+
+    @Override
+    @HostAccess.Export
+    public String environmentNames() {
+        return String.join("\u001F", environmentValues.keySet());
+    }
 }
