@@ -57,6 +57,7 @@ public final class Driver {
             "playwright4j.debug.file",
             "playwright4j.unhandledRejections",
             Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY,
+            Playwright4JHost.NATURAL_POINTER_PROPERTY,
             "playwright4j.video.vlc.path",
             "javax.net.ssl.trustStore",
             "javax.net.ssl.trustStoreType",
