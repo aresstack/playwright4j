@@ -91,6 +91,33 @@ jobs:
           PLAYWRIGHT4J_REQUIRE_FIREFOX: "true"
         run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks --no-daemon --stacktrace
 
+      # Camoufox (Firefox under another name, see docs/camoufox.md) with the two WebDriver BiDi fixes
+      # applied by docs/camoufox/hotpatch_omni.py: the same window checks as for Firefox.
+      - name: Install Camoufox (pinned, with the WebDriver BiDi fixes)
+        shell: pwsh
+        run: |
+          $version = "156.0.1-beta.36"
+          $zip = "$env:RUNNER_TEMP\camoufox.zip"
+          Invoke-WebRequest "https://github.com/daijro/camoufox/releases/download/v$version/camoufox-$version-win.x86_64.zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne "096fd4832a7a32f2aa7f7bdd07fe6253dda296cbe783acd7bc2c86cf5ae62031") { Write-Error "Camoufox archive SHA-256 $hash"; exit 1 }
+          $dir = "$env:RUNNER_TEMP\camoufox"
+          Expand-Archive $zip -DestinationPath $dir
+          python docs/camoufox/hotpatch_omni.py $dir window visibility
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "CAMOUFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
+
+      - name: Release gate — Camoufox window smoke (moz-firefox, WebDriver BiDi)
+        shell: pwsh
+        run: |
+          $env:FIREFOX_EXECUTABLE = $env:CAMOUFOX_EXECUTABLE
+          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun-tasks --no-daemon --stacktrace --tests '*FirefoxPersistentWindowTest*'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # CAMOU_CONFIG from setEnv, and one native window on the persistent start (#34).
+          $env:CAMOUFOX_BIDI_FIXES = "true"
+          $env:PLAYWRIGHT4J_REQUIRE_CAMOUFOX = "true"
+          ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke --rerun-tasks --no-daemon --stacktrace
+
       - name: Report leftover Firefox processes
         if: always()
         shell: pwsh
