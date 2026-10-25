@@ -5804,6 +5804,196 @@
     };
   }
 
+  // playwright4j.bidi.nativeBehavior: text from fill() and keyboard.insertText() goes through
+  // Firefox's editor (execCommand "insertText" on the focused field), which fires trusted
+  // beforeinput and input events, as typing or pasting does (#41). Playwright assigns the value
+  // and dispatches an untrusted input event instead; that stays the way for a field the editor
+  // refuses, so the result is the same either way.
+  function nativeInsertText(window, text, playwrightInsertText) {
+    let element = window.document.activeElement;
+    while (element && element.shadowRoot)
+      element = element.shadowRoot.activeElement;
+    if (!element)
+      return;
+    const type = element.nodeName.toLowerCase();
+    if (type === 'iframe' || type === 'frame')
+      return element;
+    if ((type === 'input' || type === 'textarea' || element.isContentEditable)
+        && window.document.execCommand('insertText', false, text))
+      return;
+    return playwrightInsertText(window, text);
+  }
+
+  function insertTextExpression(bidiPage, bidiInsertTextSource) {
+    const insert = nativeBehavior() && isBidiFirefox(bidiPage._browserContext._browser)
+      ? '(' + nativeInsertText.toString() + ')(window, text, bidiInsertText)'
+      : 'bidiInsertText(window, text)';
+    return '(text) => {\nconst module = { exports: {} };\n' + bidiInsertTextSource + '\nreturn ' + insert + ';\n}';
+  }
+
+  // playwright4j.bidi.nativeBehavior: an action scrolls its target into view with the mouse wheel
+  // (input.performActions), as a user does, instead of calling scrollIntoView from a script (#42).
+  // Each round wheels the innermost scroll container that still hides the target, over the visible
+  // part of that container, towards centring the target, as Playwright's scrollIntoView does.
+  // A target the wheel cannot reach (a container that ignores the wheel, a transformed frame)
+  // falls back to Playwright's scrollIntoView, so the action still runs.
+  const NATIVE_SCROLL_ROUNDS = 8;
+  const NATIVE_SCROLL_TICK_PIXELS = 120;
+
+  function nativeScrollStep([, node], rect) {
+    if (!node.isConnected)
+      return 'error:notconnected';
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    if (!element || element.getClientRects().length === 0)
+      return 'error:notvisible';
+    const window = element.ownerDocument.defaultView;
+    const box = element.getBoundingClientRect();
+    const target = rect
+      ? { left: box.left + rect.x, top: box.top + rect.y, right: box.left + rect.x + rect.width, bottom: box.top + rect.y + rect.height }
+      : { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    const root = element.ownerDocument.scrollingElement || element.ownerDocument.documentElement;
+    const viewport = { left: 0, top: 0, right: root.clientWidth, bottom: root.clientHeight };
+    const containers = [];
+    for (let parent = element.parentElement; parent && parent !== root; parent = parent.parentElement) {
+      const style = window.getComputedStyle(parent);
+      const scrolls = /(auto|scroll)/.test(style.overflowX + ' ' + style.overflowY);
+      if (scrolls && (parent.scrollHeight > parent.clientHeight || parent.scrollWidth > parent.clientWidth)) {
+        const outer = parent.getBoundingClientRect();
+        const left = outer.left + parent.clientLeft;
+        const top = outer.top + parent.clientTop;
+        containers.push({ scroller: parent, box: { left: left, top: top, right: left + parent.clientWidth, bottom: top + parent.clientHeight } });
+      }
+    }
+    containers.push({ scroller: root, box: viewport });
+    // How far the container has to scroll along one axis: none while the target fits inside,
+    // otherwise towards centring it, within what the container can still scroll.
+    function delta(start, end, boxStart, boxEnd, scrolled, scrollSize, clientSize) {
+      const fits = end - start <= boxEnd - boxStart;
+      if (fits ? start >= boxStart && end <= boxEnd : start <= boxStart && end >= boxEnd)
+        return 0;
+      const wanted = Math.round((start + end) / 2 - (boxStart + boxEnd) / 2);
+      return Math.max(-scrolled, Math.min(scrollSize - clientSize - scrolled, wanted));
+    }
+    for (let i = 0; i < containers.length; i++) {
+      const { scroller, box: area } = containers[i];
+      const dx = delta(target.left, target.right, area.left, area.right, scroller.scrollLeft, scroller.scrollWidth, scroller.clientWidth);
+      const dy = delta(target.top, target.bottom, area.top, area.bottom, scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight);
+      if (dx === 0 && dy === 0)
+        continue;
+      // The wheel goes to the visible part of this container; while that is empty, an outer
+      // container has to scroll first.
+      const visible = { left: area.left, top: area.top, right: area.right, bottom: area.bottom };
+      containers.slice(i + 1).forEach(function (outer) {
+        visible.left = Math.max(visible.left, outer.box.left);
+        visible.top = Math.max(visible.top, outer.box.top);
+        visible.right = Math.min(visible.right, outer.box.right);
+        visible.bottom = Math.min(visible.bottom, outer.box.bottom);
+      });
+      if (visible.right - visible.left < 1 || visible.bottom - visible.top < 1)
+        continue;
+      return { x: (visible.left + visible.right) / 2, y: (visible.top + visible.bottom) / 2, deltaX: dx, deltaY: dy };
+    }
+    return 'done';
+  }
+
+  // Resolves once no scroll position under the document changed for two animation frames, so the
+  // next round measures after Firefox's smooth scrolling ended.
+  function nativeScrollSettled([, node]) {
+    const window = node.ownerDocument.defaultView;
+    const positions = () => {
+      const values = [];
+      for (let element = node.parentElement; element; element = element.parentElement)
+        values.push(element.scrollLeft, element.scrollTop);
+      return values.join();
+    };
+    return new Promise(resolve => {
+      const deadline = Date.now() + 2000;
+      let last = positions();
+      let stable = 0;
+      const check = () => {
+        const now = positions();
+        stable = now === last ? stable + 1 : 0;
+        last = now;
+        if (stable >= 2 || Date.now() > deadline)
+          resolve();
+        else
+          window.requestAnimationFrame(check);
+      };
+      window.requestAnimationFrame(check);
+    });
+  }
+
+  function wheelTicks(x, y, deltaX, deltaY) {
+    const count = Math.max(1, Math.ceil(Math.max(Math.abs(deltaX), Math.abs(deltaY)) / NATIVE_SCROLL_TICK_PIXELS));
+    const ticks = [];
+    let sentX = 0;
+    let sentY = 0;
+    for (let i = 1; i <= count; i++) {
+      const nextX = Math.round(deltaX * i / count);
+      const nextY = Math.round(deltaY * i / count);
+      ticks.push({ type: 'scroll', x: x, y: y, deltaX: nextX - sentX, deltaY: nextY - sentY });
+      sentX = nextX;
+      sentY = nextY;
+    }
+    return ticks;
+  }
+
+  // Returns Playwright's result ("done", "error:notconnected", "error:notvisible"), or null when the
+  // wheel did not bring the target into view.
+  async function wheelIntoView(bidiPage, handle, rect) {
+    let offset = { x: 0, y: 0 };
+    if (handle._frame !== bidiPage._page.mainFrame()) {
+      const frameElement = await handle._frame.frameElement(nullProgress);
+      try {
+        const result = await wheelIntoView(bidiPage, frameElement);
+        if (result !== 'done')
+          return result === 'error:notconnected' ? result : null;
+      } finally {
+        frameElement.dispose();
+      }
+      offset = await bidiPage._framePosition(handle._frame);
+      if (!offset)
+        return null;
+    }
+    for (let round = 0; round < NATIVE_SCROLL_ROUNDS; round++) {
+      const step = await handle.evaluateInUtility(nativeScrollStep, rect || null);
+      if (typeof step === 'string')
+        return step;
+      await bidiPage._session.send('input.performActions', {
+        context: bidiPage._session.sessionId,
+        actions: [{
+          type: 'wheel',
+          id: 'pw_mouse_wheel',
+          actions: wheelTicks(Math.floor(offset.x + step.x), Math.floor(offset.y + step.y), step.deltaX, step.deltaY)
+        }]
+      });
+      await handle.evaluateInUtility(nativeScrollSettled, null);
+    }
+    return null;
+  }
+
+  // The bundle's nullProgress, for frame.frameElement() outside of an action's progress.
+  let nullProgress;
+  function patchBidiPageNativeScroll(BidiPage, bundleNullProgress) {
+    nullProgress = bundleNullProgress;
+    const originalScroll = BidiPage.prototype.scrollRectIntoViewIfNeeded;
+    BidiPage.prototype.scrollRectIntoViewIfNeeded = async function (handle, rect) {
+      if (!nativeBehavior() || !isBidiFirefox(this._browserContext._browser)) {
+        return originalScroll.apply(this, arguments);
+      }
+      const result = await wheelIntoView(this, handle, rect).catch(function (error) {
+        if (error && /Node is detached|not connected/.test(String(error.message)))
+          return 'error:notconnected';
+        throw error;
+      });
+      if (result !== null) {
+        return result;
+      }
+      pw4jDebug('nativeBehavior: the mouse wheel did not bring the element into view; using scrollIntoView');
+      return originalScroll.apply(this, arguments);
+    };
+  }
+
   // Firefox tabs and windows over WebDriver BiDi. Firefox already shows a window with one tab when
   // its BiDi endpoint starts listening, and reports that tab (browsingContext.contextCreated) while
   // Playwright subscribes to events. BidiBrowser.connect subscribes before it creates the default
@@ -6611,8 +6801,9 @@
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
-      bidiPage: function (BidiPage) {
+      bidiPage: function (BidiPage, nullProgress) {
         return patchOnce(BidiPage, function () {
+          patchBidiPageNativeScroll(BidiPage, nullProgress);
           bidiPageClasses.push(BidiPage);
           patchBidiPageInitialBlankLoad(BidiPage);
           patchBidiPageRequestGC(BidiPage);
@@ -6622,7 +6813,8 @@
           patchBidiPageNativePreloadWarning(BidiPage);
           patchBidiPageCacheBehavior(BidiPage);
         });
-      }
+      },
+      insertTextExpression: insertTextExpression
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
     // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
@@ -6634,7 +6826,7 @@
     source = replaceCoreBundleAnchor(source, 'new BidiFirefox(this)', 'new (' + hooks + '.bidiFirefox(BidiFirefox))(this)', 1);
     source = replaceCoreBundleAnchor(source, 'BidiBrowser.connect(',
       hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2).connect(', 2);
-    source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
+    source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
     // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
     // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's
     // evaluations and main-world handles stay there, as the API defines.
@@ -6645,7 +6837,7 @@
       + '          const handle = await progress2.race(context2.evaluateHandle((text3) => window.__pw_bidiInsertText(text3), text2));',
       '          const context2 = await progress2.race(frame.utilityContext());\n'
       + '          const handle = await progress2.race(context2.evaluateExpressionHandle('
-      + '"(text) => {\\nconst module = { exports: {} };\\n" + source7 + "\\nreturn bidiInsertText(window, text);\\n}", { isFunction: true }, text2));', 1);
+      + hooks + '.insertTextExpression(this._page, source7), { isFunction: true }, text2));', 1);
     source = replaceCoreBundleAnchor(source,
       '        const box = await handle.evaluate((element3) => {\n'
       + '          if (!(element3 instanceof Element) || element3.getClientRects().length === 0)\n'

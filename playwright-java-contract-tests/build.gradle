@@ -82,6 +82,7 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNativeBehaviorTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxCacheBehaviorTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxMainWorldTest'
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNativeInputTest'
     }
 
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
