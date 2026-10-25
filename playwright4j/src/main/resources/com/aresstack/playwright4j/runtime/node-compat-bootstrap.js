@@ -5712,6 +5712,98 @@
     };
   }
 
+  // playwright4j.bidi.nativeBehavior: no default viewport. Playwright emulates 1280x720 at device
+  // scale factor 1 and sets screen to the same size, which replaces the window and screen the
+  // browser (or Camoufox's fingerprint) reports. A caller's viewport, deviceScaleFactor or
+  // isMobile is kept, and so is Playwright's validation of them.
+  function nativeBehaviorContextOptions(options) {
+    if (!nativeBehavior() || !options || options.viewport || options.noDefaultViewport
+        || options.deviceScaleFactor !== undefined || options.isMobile !== undefined) {
+      return options;
+    }
+    return Object.assign({}, options, { noDefaultViewport: true });
+  }
+
+  function patchBidiBrowserNativeViewport(BidiBrowser) {
+    const originalNewContext = BidiBrowser.prototype.newContext;
+    BidiBrowser.prototype.newContext = function (progress, options) {
+      return originalNewContext.call(this, progress, isBidiFirefox(this) ? nativeBehaviorContextOptions(options) : options);
+    };
+  }
+
+  function patchBidiFirefoxNativeViewport(BidiFirefox) {
+    const originalInnerLaunch = BidiFirefox.prototype._innerLaunch;
+    BidiFirefox.prototype._innerLaunch = function (progress, options, persistent) {
+      const args = Array.prototype.slice.call(arguments);
+      args[2] = nativeBehaviorContextOptions(persistent);
+      return originalInnerLaunch.apply(this, args);
+    };
+  }
+
+  // playwright4j.bidi.nativeBehavior: screenshots leave the text caret alone unless the caller asks
+  // for caret: "hide". Hiding it writes caret-color into the style of the focused element, which
+  // the page can observe.
+  // The Screenshotter class is not reachable from the bundle's BiDi classes; its prototype is
+  // patched once, from the first BiDi page.
+  const patchedScreenshotters = new WeakSet();
+  function patchBidiPageNativeCaret(BidiPage) {
+    const originalInitialize = BidiPage.prototype._initialize;
+    BidiPage.prototype._initialize = function () {
+      const prototype = Object.getPrototypeOf(this._page.screenshotter);
+      if (!patchedScreenshotters.has(prototype)) {
+        patchedScreenshotters.add(prototype);
+        patchScreenshotterNativeCaret(prototype);
+      }
+      return originalInitialize.apply(this, arguments);
+    };
+  }
+
+  function patchScreenshotterNativeCaret(prototype) {
+    ['screenshotPage', 'screenshotElement'].forEach(function (method) {
+      const original = prototype[method];
+      prototype[method] = function () {
+        const args = Array.prototype.slice.call(arguments);
+        const index = args.length - 1;
+        const options = args[index];
+        if (nativeBehavior() && options && options.caret === undefined && isBidiFirefox(this._page.browserContext._browser)) {
+          args[index] = Object.assign({}, options, { caret: 'initial' });
+        }
+        return original.apply(this, args);
+      };
+    });
+  }
+
+  // playwright4j.bidi.nativeBehavior: the first preload script of a context is reported once.
+  // exposeBinding/exposeFunction, addInitScript, clock, routeWebSocket and tracing snapshots install
+  // scripts or globals in the page's main world that a page can see; nativeBehavior cannot keep
+  // those, so it says so instead of failing or dropping the caller's script.
+  const NATIVE_BEHAVIOR_PROPERTY = 'playwright4j.bidi.nativeBehavior';
+  const warnedPreloadContexts = new WeakSet();
+  function warnNativeBehaviorPreload(context) {
+    if (!nativeBehavior() || !context || warnedPreloadContexts.has(context)) {
+      return;
+    }
+    warnedPreloadContexts.add(context);
+    console.warn('playwright4j: ' + NATIVE_BEHAVIOR_PROPERTY + ' is set, but this context now installs a '
+      + 'preload script in the page\'s main world (exposeBinding/exposeFunction, addInitScript, clock, '
+      + 'routeWebSocket or tracing snapshots). Pages can observe it; see docs/browser-signals.md.');
+  }
+  function patchBidiContextNativePreloadWarning(BidiBrowserContext) {
+    const originalContextAdd = BidiBrowserContext.prototype.doAddInitScript;
+    BidiBrowserContext.prototype.doAddInitScript = function () {
+      warnNativeBehaviorPreload(this);
+      return originalContextAdd.apply(this, arguments);
+    };
+  }
+
+  function patchBidiPageNativePreloadWarning(BidiPage) {
+    const originalPageAdd = BidiPage.prototype.addInitScript;
+    BidiPage.prototype.addInitScript = function () {
+      warnNativeBehaviorPreload(this._browserContext);
+      return originalPageAdd.apply(this, arguments);
+    };
+  }
+
   // Firefox tabs and windows over WebDriver BiDi. Firefox already shows a window with one tab when
   // its BiDi endpoint starts listening, and reports that tab (browsingContext.contextCreated) while
   // Playwright subscribes to events. BidiBrowser.connect subscribes before it creates the default
@@ -6186,6 +6278,77 @@
     };
   }
 
+  // playwright4j.bidi.nativeBehavior: Playwright's test preferences that change what a page or
+  // server can observe (popup blocker, background timers and rendering, focus, tracking and cookie
+  // protection, HTTPS-First, speculative connections, offline detection, test geolocation). Their
+  // lines are left out of user.js, so the browser's own default applies: Firefox's, or for
+  // Camoufox the value camoufox.cfg sets with defaultPref. firefoxUserPrefs still sets any of them.
+  const NATIVE_BEHAVIOR_PREFS = [
+    'browser.contentblocking.features.standard',
+    'dom.disable_open_during_load',
+    'dom.min_background_timeout_value',
+    'dom.min_background_timeout_value_without_budget_throttling',
+    'dom.security.https_first',
+    'dom.timeout.enable_budget_timer_throttling',
+    'focusmanager.testmode',
+    'geo.provider.testing',
+    'layout.testing.top-level-always-active',
+    'network.http.speculative-parallel-limit',
+    'network.manage-offline-status'
+  ];
+
+  // Firefox's Remote Agent sets its own recommended test preferences at startup, the ones above
+  // among them, for every preference without a user value (remote/shared/RecommendedPreferences).
+  // Leaving Playwright's lines out would hand them to the Remote Agent, so it is told not to.
+  const NATIVE_BEHAVIOR_ADDED_PREFS = {
+    'remote.prefs.recommended': false
+  };
+
+  function nativeBehavior() {
+    return host.nativeBehavior() === true;
+  }
+
+  function nativeBehaviorDroppedPref(name, callerPrefs) {
+    return NATIVE_BEHAVIOR_PREFS.indexOf(name) >= 0 && !Object.prototype.hasOwnProperty.call(callerPrefs, name);
+  }
+
+  function nativeBehaviorUserJs(written, callerPrefs) {
+    if (!nativeBehavior()) {
+      return written;
+    }
+    return written.split(/\r?\n/).filter(function (line) {
+      return !nativeBehaviorDroppedPref(playwrightUserJsPrefName(line), callerPrefs);
+    }).join('\n');
+  }
+
+  // Firefox stores user.js values in prefs.js, so a persistent profile once launched without the
+  // flag keeps Playwright's values there. A prefs.js line is removed only when it is exactly a line
+  // Playwright wrote after the END marker of the previous user.js: user.js applied that value on
+  // every launch, so it is Playwright's. Any other value, a profile without the marker (playwright4j
+  // up to 0.2.1) included, may be the user's and stays. Before the first removal the file is copied
+  // to prefs.js.playwright4j-backup, so a value removed by mistake can be restored.
+  const NATIVE_BEHAVIOR_PREFS_JS_BACKUP_SUFFIX = '.playwright4j-backup';
+  function nativeBehaviorPrefsJs(prefsJs, previousUserJs, callerPrefs) {
+    const end = previousUserJs.indexOf(KEPT_USER_JS_END);
+    if (!nativeBehavior() || end < 0 || !modules.fs.existsSync(prefsJs)) {
+      return;
+    }
+    const written = new Set(previousUserJs.slice(end).split(/\r?\n/));
+    const lines = String(modules.fs.readFileSync(prefsJs, 'latin1')).split('\n');
+    const kept = lines.filter(function (line) {
+      const text = line.replace(/\r$/, '');
+      return !(written.has(text) && nativeBehaviorDroppedPref(playwrightUserJsPrefName(text), callerPrefs));
+    });
+    if (kept.length !== lines.length) {
+      // The first cleanup keeps the original file; later ones would only copy cleaned files.
+      const backup = prefsJs + NATIVE_BEHAVIOR_PREFS_JS_BACKUP_SUFFIX;
+      if (!modules.fs.existsSync(backup)) {
+        modules.fs.copyFileSync(prefsJs, backup);
+      }
+      modules.fs.writeFileSync(prefsJs, global.Buffer.from(kept.join('\n'), 'latin1'));
+    }
+  }
+
   // Playwright's BiDi browser answers a context.route() with network.setCacheBehavior "bypass"
   // for the whole browser (BidiBrowser.updateCacheBehavior, no contexts filter), so every other
   // context and tab skips the HTTP cache too (#49). Send it per top-level browsing context
@@ -6242,9 +6405,12 @@
       const previous = readUserJsBytes(userJs);
       const prefs = Object.assign({}, FIREFOX_DEFAULT_PREFS,
           options && options[PERSISTENT_LAUNCH_OPTION] ? FIREFOX_PERSISTENT_DEFAULT_PREFS : {},
+          nativeBehavior() ? NATIVE_BEHAVIOR_ADDED_PREFS : {},
           (options && options.firefoxUserPrefs) || {});
       await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
-      const written = readUserJsBytes(userJs);
+      const callerPrefs = (options && options.firefoxUserPrefs) || {};
+      const written = nativeBehaviorUserJs(readUserJsBytes(userJs), callerPrefs);
+      nativeBehaviorPrefsJs(modules.path.join(String(userDataDir), 'prefs.js'), previous, callerPrefs);
       const playwrightDefaults = new Set(written.split(/\r?\n/).map(playwrightUserJsPrefName).filter(function (name) {
         return name !== undefined && !Object.prototype.hasOwnProperty.call(prefs, name);
       }));
@@ -6444,11 +6610,14 @@
         return patchOnce(BidiFirefox, function () {
           patchBidiFirefoxProfilePrefs(BidiFirefox);
           patchBidiFirefoxUserJs(BidiFirefox);
+          patchBidiFirefoxNativeViewport(BidiFirefox);
         });
       },
       bidiBrowser: function (BidiBrowser, BidiBrowserContext) {
         return patchOnce(BidiBrowser, function () {
           patchBidiBrowserFirefoxTabs(BidiBrowser, BidiBrowserContext);
+          patchBidiBrowserNativeViewport(BidiBrowser);
+          patchBidiContextNativePreloadWarning(BidiBrowserContext);
           patchBidiBrowserCacheBehavior(BidiBrowser);
         });
       },
@@ -6496,6 +6665,8 @@
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
           patchBidiPageNoScreenshotStyleToggle(BidiPage);
           patchBidiPageFirefoxLastTab(BidiPage);
+          patchBidiPageNativeCaret(BidiPage);
+          patchBidiPageNativePreloadWarning(BidiPage);
           patchBidiPageCacheBehavior(BidiPage);
         });
       }

@@ -1,5 +1,6 @@
 package com.microsoft.playwright.impl.driver;
 
+import com.aresstack.playwright4j.graal.Playwright4JHost;
 import com.aresstack.playwright4j.graal.UnhandledPromptDelay;
 
 import java.io.File;
@@ -57,6 +58,7 @@ public final class Driver {
             "playwright4j.debug.file",
             "playwright4j.unhandledRejections",
             UnhandledPromptDelay.PROPERTY,
+            Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY,
             "playwright4j.video.vlc.path",
             "javax.net.ssl.trustStore",
             "javax.net.ssl.trustStoreType",

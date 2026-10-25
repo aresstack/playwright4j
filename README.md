@@ -180,14 +180,15 @@ application servers and custom class loaders work. Jars nested in another jar (S
 | --- | --- |
 | `playwright4j.driver.jvmArgs` | Extra driver JVM options, whitespace separated, `"..."` keeps spaces, e.g. `-Dplaywright4j.driver.jvmArgs="-Xmx1g -Dhttps.proxyHost=proxy"`. Applied last, so they win over forwarded properties. |
 | `playwright4j.driver.classpath` | Replaces the detection with an explicit path list, for containers (e.g. OSGi) whose class loaders expose no file locations. |
+| `playwright4j.bidi.nativeBehavior` | `true` keeps Firefox's own behaviour where Playwright changes it for testing (Firefox and Camoufox over WebDriver BiDi only; default `false`). See [docs/browser-signals.md](docs/browser-signals.md#native-behavior-opt-in). |
+| `playwright4j.bidi.unhandledPromptDelay` | `MIN-MAX` in milliseconds (at most 10000): dialogs no handler takes and HTTP auth challenges without matching credentials get Playwright's usual answer after a random delay in that range (Firefox and Camoufox over WebDriver BiDi only; default off). See [docs/browser-signals.md](docs/browser-signals.md#dialogs-and-http-authentication-without-a-handler-firefox). |
 
 These properties of the application JVM are forwarded to the driver JVM when set: the
 `javax.net.ssl.trustStore*`/`keyStore*` settings, `jdk.tls.client.protocols`, `https.protocols`,
 `http(s).proxyHost`/`Port`, `http.nonProxyHosts`, `socksProxy*`, `java.net.useSystemProxies`,
-`jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path`,
-`playwright4j.bidi.unhandledPromptDelay` (see [docs/browser-signals.md](docs/browser-signals.md)) and the
-`playwright4j.debug*` settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver allows Basic proxy
-credentials on `CONNECT`, which `APIRequestContext` needs with an authenticating proxy. Store passwords are passed in an owner-only temporary file that the driver deletes at
+`jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path`, `playwright4j.bidi.nativeBehavior`,
+`playwright4j.bidi.unhandledPromptDelay` and the `playwright4j.debug*` settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver
+allows Basic proxy credentials on `CONNECT`, which `APIRequestContext` needs with an authenticating proxy. Store passwords are passed in an owner-only temporary file that the driver deletes at
 startup, never on the command line.
 
 ## Tests and known limitations

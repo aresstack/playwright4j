@@ -3,6 +3,11 @@ package com.aresstack.playwright4j.graal;
 import org.graalvm.polyglot.HostAccess;
 
 public final class Playwright4JHost {
+    /**
+     * {@code -Dplaywright4j.bidi.nativeBehavior=true} keeps Firefox's own behaviour where Playwright
+     * changes it for testing (Firefox over WebDriver BiDi only; see docs/browser-signals.md).
+     */
+    public static final String NATIVE_BEHAVIOR_PROPERTY = "playwright4j.bidi.nativeBehavior";
 
     private final HostEnvironment environment;
     private final HostFileSystem fileSystem;
@@ -101,6 +106,12 @@ public final class Playwright4JHost {
     public int unhandledPromptDelayMillis() {
         UnhandledPromptDelay delay = UnhandledPromptDelay.fromSystemProperty();
         return delay == null ? -1 : delay.nextMillis();
+    }
+
+    /** Read on every use, so the driver follows the property as the JVM sees it. */
+    @HostAccess.Export
+    public boolean nativeBehavior() {
+        return Boolean.parseBoolean(System.getProperty(NATIVE_BEHAVIOR_PROPERTY, "").trim());
     }
 
     @HostAccess.Export

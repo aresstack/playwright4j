@@ -79,6 +79,7 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest'
         // Counts the real Firefox windows (EnumWindows on Windows, xdotool on Linux/X11).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxPersistentWindowTest'
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNativeBehaviorTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxCacheBehaviorTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxMainWorldTest'
         // Reading a page leaves no user activation, Playwright events or DOM changes (#37, #38, #40).
@@ -97,6 +98,10 @@ tasks.register('firefoxSmoke', Test) {
     // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
     // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
+    // -Pplaywright4j.bidi.nativeBehavior=true runs the smoke with Firefox's own behaviour (docs/browser-signals.md).
+    if (findProperty('playwright4j.bidi.nativeBehavior')) {
+        systemProperty 'playwright4j.bidi.nativeBehavior', findProperty('playwright4j.bidi.nativeBehavior')
+    }
     // Full exception text in the console: the CI log is often the only place a failure is seen.
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
@@ -120,6 +125,10 @@ tasks.register('camoufoxSmoke', Test) {
     systemProperty 'junit.jupiter.execution.timeout.default', '120 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
+    // -Pplaywright4j.bidi.nativeBehavior=true runs the smoke with Firefox's own behaviour (docs/browser-signals.md).
+    if (findProperty('playwright4j.bidi.nativeBehavior')) {
+        systemProperty 'playwright4j.bidi.nativeBehavior', findProperty('playwright4j.bidi.nativeBehavior')
+    }
     testLogging { events "passed", "failed", "skipped"; showStandardStreams = true; exceptionFormat "full" }
 }
 
