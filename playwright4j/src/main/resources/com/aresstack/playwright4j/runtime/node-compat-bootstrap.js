@@ -1,8 +1,86 @@
 (function installPlaywright4JCompatibilityLayer(global) {
   const modules = {};
   const host = global.__playwright4jHost;
+  // Node's optional V8 inspector is not available inside GraalJS.
+  modules.inspector = { Session: class Session {
+    constructor() { throw new Error('Node inspector profiling is unsupported in Playwright4J'); }
+  } };
+  modules.vm = {
+    Script: class Script {
+      constructor() { throw new Error('Node vm.Script is unsupported in Playwright4J'); }
+    },
+    createContext: function () { throw new Error('Node vm contexts are unsupported in Playwright4J'); },
+    runInContext: function () { throw new Error('Node vm contexts are unsupported in Playwright4J'); }
+  };
 
   global.global = global;
+
+  // Node 20+ exposes Event and EventTarget as globals. GraalJS does not.
+  // Playwright 1.62's bundled eventsource dependency defines classes extending both.
+  if (typeof global.Event !== 'function') {
+    global.Event = class Event {
+      constructor(type, options) {
+        this.type = String(type);
+        this.bubbles = Boolean(options && options.bubbles);
+        this.cancelable = Boolean(options && options.cancelable);
+        this.defaultPrevented = false;
+      }
+      preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
+      stopPropagation() {}
+      stopImmediatePropagation() {}
+    };
+  }
+  if (typeof global.EventTarget !== 'function') {
+    global.EventTarget = class EventTarget {
+      constructor() { this._eventListeners = new Map(); }
+      addEventListener(type, listener, options) {
+        if (!listener) return;
+        const key = String(type);
+        const listeners = this._eventListeners.get(key) || [];
+        if (!listeners.some(entry => entry.listener === listener)) {
+          listeners.push({ listener: listener, once: Boolean(options && options.once) });
+        }
+        this._eventListeners.set(key, listeners);
+      }
+      removeEventListener(type, listener) {
+        const key = String(type);
+        const listeners = this._eventListeners.get(key);
+        if (listeners) this._eventListeners.set(key, listeners.filter(entry => entry.listener !== listener));
+      }
+      dispatchEvent(event) {
+        for (const entry of (this._eventListeners.get(String(event.type)) || []).slice()) {
+          if (entry.once) this.removeEventListener(event.type, entry.listener);
+          if (typeof entry.listener === 'function') entry.listener.call(this, event);
+          else if (entry.listener && typeof entry.listener.handleEvent === 'function') {
+            entry.listener.handleEvent(event);
+          }
+        }
+        return !event.defaultPrevented;
+      }
+    };
+  }
+
+  // Playwright 1.62 bundles its optional Hono HTTP server. Its Request subclass is
+  // defined at module load even when the server is not used. GraalJS has no Node
+  // global Request; fail explicitly if the optional HTTP server tries to use it.
+  if (typeof global.Request !== 'function') {
+    global.Request = class Request {
+      constructor() { throw new Error('Node fetch Request is unsupported in Playwright4J'); }
+    };
+  }
+  if (typeof global.Response !== 'function') {
+    global.Response = class Response {
+      constructor() { throw new Error('Node fetch Response is unsupported in Playwright4J'); }
+    };
+  }
+
+  // The optional MCP eventsource parser subclasses the Web Streams TransformStream.
+  // The class must exist during module initialization, even if MCP is not used.
+  if (typeof global.TransformStream !== 'function') {
+    global.TransformStream = class TransformStream {
+      constructor() { throw new Error('Web TransformStream is unsupported in Playwright4J'); }
+    };
+  }
 
   // In the normal driver mode System.out is reserved for the length-prefixed protocol, so all
   // console output is routed to the host stderr pipe. In --node-compat mode (cli.js launch-server)
@@ -718,6 +796,10 @@
     }
   };
 
+  // Playwright 1.62 bundles code that imports the standalone Node fs/promises module.
+  // Expose the existing filesystem promises implementation through that canonical module ID.
+  modules['fs/promises'] = modules.fs.promises;
+
   modules.path = {
     join: function () {
       return Array.prototype.join.call(arguments, '/');
@@ -747,8 +829,15 @@
     },
     sep: '/'
   };
+  // Chokidar's glob-parent requires path.posix.dirname in Playwright 1.62.
+  modules.path.posix = modules.path;
+  modules.path.win32 = modules.path;
 
   modules.os = {
+    type: function () {
+      const platform = host.environment().platform();
+      return platform === 'win32' ? 'Windows_NT' : platform === 'darwin' ? 'Darwin' : 'Linux';
+    },
     platform: function () {
       return host.environment().platform();
     },
@@ -1046,15 +1135,17 @@
     }
   }
 
-  EventEmitter.prototype.__listeners = function () {
-    if (!this.listenersByName) {
-      this.listenersByName = {};
+  // Use a lexical helper rather than a prototype method. Playwright 1.62 assigns
+  // an unrelated __listeners field on some emitters, shadowing the old helper.
+  function eventEmitterRegistry(emitter) {
+    if (!emitter.listenersByName) {
+      emitter.listenersByName = {};
     }
-    return this.listenersByName;
-  };
+    return emitter.listenersByName;
+  }
 
   EventEmitter.prototype.on = function (name, listener) {
-    const registry = this.__listeners();
+    const registry = eventEmitterRegistry(this);
     registry[name] = registry[name] || [];
     registry[name].push(listener);
     return this;
@@ -1067,7 +1158,7 @@
   EventEmitter.prototype.addListener = EventEmitter.prototype.on;
 
   EventEmitter.prototype.prependListener = function (name, listener) {
-    const registry = this.__listeners();
+    const registry = eventEmitterRegistry(this);
     registry[name] = registry[name] || [];
     registry[name].unshift(listener);
     return this;
@@ -1094,7 +1185,7 @@
   };
 
   EventEmitter.prototype.off = function (name, listener) {
-    const registry = this.__listeners();
+    const registry = eventEmitterRegistry(this);
     const listeners = registry[name] || [];
     registry[name] = listeners.filter(function (candidate) {
       return candidate !== listener && candidate.__originalListener !== listener;
@@ -1105,7 +1196,7 @@
   EventEmitter.prototype.removeListener = EventEmitter.prototype.off;
 
   EventEmitter.prototype.removeAllListeners = function (name) {
-    const registry = this.__listeners();
+    const registry = eventEmitterRegistry(this);
     if (name === undefined) {
       this.listenersByName = {};
     } else {
@@ -1124,25 +1215,25 @@
   };
 
   EventEmitter.prototype.eventNames = function () {
-    return Object.keys(this.__listeners());
+    return Object.keys(eventEmitterRegistry(this));
   };
 
   EventEmitter.prototype.listeners = function (name) {
-    return (this.__listeners()[name] || []).slice();
+    return (eventEmitterRegistry(this)[name] || []).slice();
   };
 
   EventEmitter.prototype.rawListeners = function (name) {
-    return (this.__listeners()[name] || []).slice();
+    return (eventEmitterRegistry(this)[name] || []).slice();
   };
 
   EventEmitter.prototype.listenerCount = function (name) {
-    return (this.__listeners()[name] || []).length;
+    return (eventEmitterRegistry(this)[name] || []).length;
   };
 
   EventEmitter.prototype.emit = function (name) {
     const self = this;
     const args = Array.prototype.slice.call(arguments, 1);
-    const listeners = (this.__listeners()[name] || []).slice();
+    const listeners = (eventEmitterRegistry(this)[name] || []).slice();
     // Node throws if an 'error' event has no listeners; surface that instead of swallowing.
     if (listeners.length === 0 && name === 'error') {
       const err = args[0];
@@ -1244,6 +1335,11 @@
         }
       });
     }
+  };
+
+  // ws inside Playwright 1.62's bundled utilities expects Node's util.types API.
+  modules.util.types = {
+    isUint8Array: function (value) { return value instanceof Uint8Array; }
   };
 
   modules.async_hooks = {
@@ -2633,6 +2729,9 @@
     });
     return stream;
   };
+
+  // Playwright 1.62's get-stream bundle imports node:stream/promises directly.
+  modules['stream/promises'] = modules.stream.promises;
 
   // Streaming zlib transforms (buffer all input, (de)compress on flush). Playwright's zip code
   // may pipe through createDeflateRaw/createInflateRaw rather than the one-shot helpers.
@@ -5077,6 +5176,7 @@
         } else {
           // Driver protocol pipe: talk to the Java client over the length-prefixed pipe.
           global.__playwright4jProtocolTransport = this;
+          pw4jDebug('Driver PipeTransport attached');
         }
       }
 
@@ -5094,6 +5194,7 @@
           return undefined;
         }
 
+        pw4jDebug('Driver protocol OUT ' + String(message).substring(0, 160));
         return host.driverPipe().writeMessage(String(message));
       }
 
@@ -5163,6 +5264,7 @@
       }
 
       _deliver(message) {
+        pw4jDebug('Driver protocol IN ' + String(message).substring(0, 160));
         if (this.onmessage) {
           this.onmessage(String(message));
         }
@@ -5885,6 +5987,24 @@
       return module.exports;
     }
 
+    // Playwright 1.62 bundles PipeTransport into coreBundle.js rather than exposing
+    // a separate pipeTransport.js module. Replace only the class binding with the
+    // established host-backed implementation for both the Java protocol and CDP pipes.
+    if (normalizedResourceName.endsWith('/lib/coreBundle.js')) {
+      const transportBinding = 'PipeTransport = class {';
+      const webSocketBinding = 'WebSocketTransport = class _WebSocketTransport {';
+      if (source.indexOf(transportBinding) < 0 || source.indexOf(webSocketBinding) < 0) {
+        throw new Error('Unsupported Playwright Core bundle: expected transport bindings not found');
+      }
+      global.__playwright4jHostBackedPipeTransport = createHostBackedPipeTransport();
+      global.__playwright4jHostBackedWebSocketTransport = createHostBackedWebSocketTransport();
+      pw4jDebug('Patching bundled Playwright 1.62 PipeTransport and WebSocketTransport');
+      source = source.replace(transportBinding,
+        'PipeTransport = global.__playwright4jHostBackedPipeTransport || class {');
+      source = source.replace(webSocketBinding,
+        'WebSocketTransport = global.__playwright4jHostBackedWebSocketTransport || class _WebSocketTransport {');
+    }
+
     // Route dynamic import() through our CommonJS loader. GraalJS's native dynamic import needs a
     // module loader / IO (disabled here), so `await import("playwright-core/lib/zipBundle")` (used by
     // the trace-zip path) would otherwise throw "Operation is not allowed". Only a bare import(
@@ -5929,6 +6049,14 @@
         return loadCommonJsModule(packageResource);
       }
 
+      // The 1.62 bundle references its package.json using a normalized
+      // driver/package/lib/../package.json resource path.
+      if (name.indexOf('driver/package/') === 0) {
+        const candidate = normalizeResourceName(name);
+        if (global.__playwright4jDriverBundleSource.hasResource(candidate)) {
+          return loadCommonJsModule(candidate);
+        }
+      }
       reportMissing('require(' + name + ')');
       throw new Error('Unsupported Playwright4J module: ' + name);
     };
