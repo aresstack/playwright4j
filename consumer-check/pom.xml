@@ -30,7 +30,7 @@
     <dependency>
       <groupId>com.microsoft.playwright</groupId>
       <artifactId>playwright</artifactId>
-      <version>1.59.0</version>
+      <version>1.62.0</version>
       <exclusions>
         <exclusion><groupId>com.microsoft.playwright</groupId><artifactId>driver</artifactId></exclusion>
         <exclusion><groupId>com.microsoft.playwright</groupId><artifactId>driver-bundle</artifactId></exclusion>
