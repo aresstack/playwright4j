@@ -62,7 +62,13 @@ jobs:
         shell: pwsh
         env:
           BROWSER_CHANNEL: chrome
+          PLAYWRIGHT4J_DEBUG: "true"  # TEMPORARY (PR #29 diagnosis)
         run: ./gradlew.bat :playwright-java-contract-tests:channelSmoke --no-daemon --stacktrace
+
+      - name: TEMPORARY (PR #29) - driver debug log
+        if: failure()
+        shell: pwsh
+        run: Get-Content "$env:TEMP\playwright4j-driver.log" -Tail 300 -ErrorAction SilentlyContinue
 
       - name: Release gate — Edge smoke
         shell: pwsh
