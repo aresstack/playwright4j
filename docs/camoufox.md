@@ -9,7 +9,9 @@ and a persistent context opens on the tab Camoufox started with, but every furth
 every `newContext()` fails because of two Camoufox behaviours described below. With two small fixes
 to Camoufox's Remote Agent code (applied to `omni.ja`, see [Fixes](#fixes)) launch, persistent
 contexts, new pages and new contexts work. The fingerprint configuration reaches Camoufox through
-`setEnv` (since #30). Nothing in this page is part of a release.
+`setEnv` (since #30). A manual comparison with Camoufox's own launcher is prepared
+([Comparison](#comparison-with-camoufoxs-own-launcher-manual)). Nothing in this page is part of a
+release.
 
 ## What was measured
 
@@ -202,6 +204,84 @@ elsewhere. `CamoufoxFingerprintTest` (task `camoufoxSmoke`) checks that a config
 `navigator.platform` and `navigator.hardwareConcurrency` reach the first page (and, with
 `CAMOUFOX_BIDI_FIXES=true`, a second page), and that they are absent without `setEnv`. Measured on
 Linux with Camoufox 156.0.1-beta.36, released and with the fixes: passes.
+
+## Comparison with Camoufox's own launcher (manual)
+
+The acceptance check compares two runs of the same Camoufox copy with the same fingerprint:
+
+- **A**: Camoufox's own launcher (npm package `camoufox` 0.5.8 with `playwright-core` 1.62.0), which
+  drives Camoufox over Juggler. This is the reference (100 points at amiabot.app).
+- **B**: playwright4j over WebDriver BiDi.
+
+Two tools start both runs with identical launch options: `docs/camoufox/juggler-reference.mjs` for
+A (Node only as a tool for the reference run, not part of playwright4j) and the Gradle task
+`camoufoxManual` (`CamoufoxManualSessionTest`) for B. Both take the options from one JSON file,
+start a persistent context headed without viewport and media emulation (as Camoufox's launcher does
+when the fingerprint sets the window size), print what the page sees (user agent, platform, cores,
+screen, window, time zone, colour scheme, focus, visibility, WebGL renderer) and keep the browser
+open until its window is closed. Neither prints values from the environment.
+
+Measured on Linux with Camoufox 156.0.1-beta.36 and both fixes, one fingerprint drawn by the
+launcher (`{"os":"linux"}`): A and B print identical values (user agent `Firefox/156.0`, platform
+`Linux x86_64`, 4 cores, screen 1366x768, window 1366x741, `navigator.webdriver` false, `hasFocus()`
+true, WebGL renderer from the fingerprint). amiabot.app and ChatGPT are not reachable from that
+environment; the scores have to come from the Windows run below.
+
+### Steps (Windows)
+
+1. Camoufox 156.0.1-beta.36 copy, e.g. `G:\camoufox-156`, patched with the script from this
+   repository: `python docs\camoufox\hotpatch_omni.py G:\camoufox-156 window visibility`. Both fixes
+   change only Remote Agent code, which a Juggler run does not use, so A and B use the same copy.
+2. A folder with the reference launcher: `npm install camoufox@0.5.8 playwright-core@1.62.0`, and a
+   copy of `docs/camoufox/juggler-reference.mjs` next to `node_modules`.
+3. Draw one fingerprint for both runs. Put the Camoufox options of the usual reference run (at least
+   `os`; without it the launcher may pick another operating system) into a file, e.g.
+   `G:\cmp\camoufox-options.json` with `{"os":"windows"}`, then:
+
+   ```powershell
+   node juggler-reference.mjs save G:\cmp\launch.json G:\camoufox-156\camoufox.exe G:\cmp\camoufox-options.json
+   ```
+
+   `launch.json` holds the fingerprint (`CAMOU_CONFIG_n`), startup preferences (`CAMOU_PREFS_n`),
+   Firefox preferences and arguments, nothing else from the environment. Keep it out of the
+   repository.
+4. Run A with a new profile folder:
+
+   ```powershell
+   node juggler-reference.mjs run G:\cmp\launch.json G:\camoufox-156\camoufox.exe G:\cmp\profile-a https://amiabot.app/
+   ```
+
+5. Run B with another new profile folder, from the playwright4j checkout:
+
+   ```powershell
+   $env:CAMOUFOX_MANUAL = 'true'
+   $env:CAMOUFOX_EXECUTABLE = 'G:\camoufox-156\camoufox.exe'
+   $env:CAMOUFOX_LAUNCH_OPTIONS = 'G:\cmp\launch.json'
+   $env:CAMOUFOX_PROFILE = 'G:\cmp\profile-b'
+   $env:CAMOUFOX_START_URL = 'https://amiabot.app/'
+   .\gradlew.bat :playwright-java-contract-tests:camoufoxManual
+   ```
+
+   The task inherits the environment and adds the variables from `launch.json` (`setEnv` replaces the
+   environment, see above). It waits at most 30 minutes (`CAMOUFOX_MANUAL_MINUTES`).
+6. In each run record: the printed values, the amiabot.app score and its individual findings
+   (screenshot), then open chatgpt.com in a new tab and log in **by hand** (no credentials in code,
+   no autofill) and note ok, challenge or blocked. Close the browser window to end the run.
+
+| | A (launcher, Juggler) | B (playwright4j, BiDi) |
+| --- | --- | --- |
+| printed values identical | | |
+| amiabot.app score and findings | | |
+| ChatGPT login | | |
+
+If A and B differ, the remaining differences are on the automation side, not in the fingerprint:
+Camoufox's Juggler-only features (see below), the Remote Agent being active under BiDi, and the
+Firefox preferences each Playwright backend writes into the profile. Compare `prefs.js` and
+`user.js` of `profile-a` and `profile-b` first.
+
+On Linux the launcher also sets `FONTCONFIG_FILE` to a configuration that points to the `fonts`
+folder next to the Camoufox executable. A copy without that folder crashes at startup (SIGSEGV
+after "Failed to initialize shared font list") in both runs.
 
 ## Juggler instead of BiDi (comparison)
 
