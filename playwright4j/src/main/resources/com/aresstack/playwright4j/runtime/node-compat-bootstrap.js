@@ -5796,6 +5796,59 @@
   // BidiPage.requestGC evaluates TestUtils.gc() and reports any failure as "Method not implemented.".
   // With dom.testing.testutils.enabled off by default (see patchBidiFirefoxProfilePrefs) say how to
   // turn it back on instead.
+  // Prototype: read-only WebDriver BiDi access for Firefox through BrowserContext.newCDPSession(page).
+  // Firefox accepts one BiDi session only, Playwright's, so a caller cannot open a second one. The
+  // returned session sends the listed commands on the page's BiDi session and forwards that
+  // session's events. "playwright4j.context" answers the page's browsing context id. Commands that
+  // run script in the page or change Playwright's state are refused.
+  const BIDI_PASSTHROUGH_COMMANDS = new Set([
+    'browsingContext.getTree',
+    'browsingContext.locateNodes',
+    'network.getData',
+    'network.addDataCollector',
+    'network.removeDataCollector',
+    'network.disownData',
+    'storage.getCookies'
+  ]);
+
+  function createBidiPassthroughSession(SdkObject, context, target) {
+    const frame = typeof target.mainFrame === 'function' ? target.mainFrame() : target;
+    const session = frame._page.delegate._session;
+    class BidiPassthroughSession extends SdkObject {
+      constructor() {
+        super(context, 'cdp-session');
+        const self = this;
+        const originalEmit = session.emit;
+        session.emit = function (name, params) {
+          if (typeof name === 'string' && name.indexOf('.') > 0) {
+            self.emit('event', { method: name, params: params });
+          }
+          return originalEmit.apply(this, arguments);
+        };
+        this._restore = function () {
+          session.emit = originalEmit;
+        };
+      }
+
+      async send(progress, method, params) {
+        if (method === 'playwright4j.context') {
+          return { context: frame._id };
+        }
+        if (!BIDI_PASSTHROUGH_COMMANDS.has(method)) {
+          throw new Error('BiDi command ' + method + ' is not available through newCDPSession on Firefox; allowed: '
+            + Array.from(BIDI_PASSTHROUGH_COMMANDS).join(', '));
+        }
+        return await progress.race(session.send(method, params || {}));
+      }
+
+      async detach() {
+        this._restore();
+        this.emit('close');
+      }
+    }
+    return new BidiPassthroughSession();
+  }
+
   function patchBidiPageRequestGC(BidiPage) {
     const originalRequestGC = BidiPage.prototype.requestGC;
     if (typeof originalRequestGC !== 'function') {
@@ -6727,6 +6780,7 @@
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
+      bidiPassthrough: createBidiPassthroughSession,
       bidiPage: function (BidiPage) {
         return patchOnce(BidiPage, function () {
           bidiPageClasses.push(BidiPage);
@@ -6798,6 +6852,11 @@
       + '        }\n'
       + '        const utility = await this._context.injectedScript();\n'
       + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));', 1);
+    source = replaceCoreBundleAnchor(source, '      async newCDPSession(params2, progress2) {\n',
+      '      async newCDPSession(params2, progress2) {\n'
+      + '        if (this._object._browser._browserSession && (params2.page || params2.frame))\n'
+      + '          return { session: new CDPSessionDispatcher(this, ' + hooks
+      + '.bidiPassthrough(SdkObject, this._object, (params2.page || params2.frame)._object)) };\n', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks

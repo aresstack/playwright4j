@@ -18,6 +18,7 @@ summarizes it.
 | Full upstream Playwright Java contract suite (`upstreamTest`) | `playwright-java-contract-tests` | no, audit |
 | `knownLimitationsCheck`: green iff exactly the known reds fail | `playwright-java-contract-tests` | no, audit |
 | `browserSignals`: page-observable automation signals (`navigator.webdriver`, headers, injected globals), see [browser-signals.md](browser-signals.md) | `playwright-java-contract-tests` | no, diagnostic |
+| `passiveAcquisition`: response bodies and BiDi DOM reads against page-visible side effects, see [passive-acquisition.md](passive-acquisition.md) | `playwright-java-contract-tests` | no, prototype |
 
 A raw `upstreamTest` run reports `BUILD FAILED` because of the known reds. That is
 intentional: no silent excludes are added to the normal test path.
