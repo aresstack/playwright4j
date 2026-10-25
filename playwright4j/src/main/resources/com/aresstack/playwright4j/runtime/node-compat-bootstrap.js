@@ -5965,6 +5965,25 @@
   // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
   // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
+  // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
+  // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend. Since 1.62 a
+  // BiDi context extends the injected script of every new document right away
+  // (BidiBrowserContext.initialize), so all of them run before any input.
+  const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
+  function isPlaywrightSetupEvaluation(method, params, utilityWorldName) {
+    if (method === 'script.evaluate') {
+      const expression = String(params.expression || '');
+      return (expression === '1 + 1' && params.target && params.target.sandbox === utilityWorldName)
+        || PLAYWRIGHT_SETUP_SCRIPT.test(expression);
+    }
+    if (method === 'script.callFunction' && Array.isArray(params.arguments)) {
+      return params.arguments.some(function (argument) {
+        return argument && argument.type === 'string' && /^\(injectedScript, \{ source: \w+, arg: \w+ \}\) => \{\s*injectedScript\.extend\(\w+, \w+\);\s*\}$/.test(String(argument.value));
+      });
+    }
+    return false;
+  }
+
   // Since Playwright 1.62 the evaluation sits in _createUtilityWorld, which also uses its result:
   // that one keeps its code, and its session sends the touch without activation.
   const utilityWorldTouchSessions = new WeakSet();
@@ -5977,8 +5996,7 @@
           utilityWorldTouchSessions.add(session);
           const originalSend = session.send;
           session.send = function (method, params) {
-            if (method === 'script.evaluate' && params && params.expression === '1 + 1' && params.userActivation === true
-                && params.target && params.target.sandbox === utilityWorldName) {
+            if (params && params.userActivation === true && isPlaywrightSetupEvaluation(method, params, utilityWorldName)) {
               arguments[1] = Object.assign({}, params, { userActivation: false });
             }
             return originalSend.apply(this, arguments);
