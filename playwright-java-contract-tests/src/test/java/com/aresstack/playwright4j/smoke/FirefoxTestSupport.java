@@ -194,7 +194,9 @@ final class FirefoxTestSupport {
                 .filter(ProcessHandle::isAlive)
                 .filter(p -> p.info().command()
                         .map(c -> Paths.get(c).getFileName().toString().toLowerCase(Locale.ROOT))
-                        .map(n -> n.equals("firefox") || n.equals("firefox.exe") || n.equals("firefox-bin"))
+                        // Camoufox is a Firefox build under its own name.
+                        .map(n -> n.equals("firefox") || n.equals("firefox.exe") || n.equals("firefox-bin")
+                                || n.equals("camoufox") || n.equals("camoufox.exe") || n.equals("camoufox-bin"))
                         .orElse(false));
     }
 

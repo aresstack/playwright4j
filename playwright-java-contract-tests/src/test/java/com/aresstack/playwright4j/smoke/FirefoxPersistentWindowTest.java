@@ -84,8 +84,8 @@ public class FirefoxPersistentWindowTest {
 
     // The user closes the last tab in Firefox's UI (Ctrl+W): Firefox keeps the window with a blank
     // tab (browser.tabs.closeWindowWithLastTab=false), the context stays open without pages, and
-    // newPage() uses the blank tab. Needs a desktop that takes the keystroke (xdotool on Linux);
-    // see skipOrFail for when it cannot be delivered.
+    // newPage() opens a page in that window in place of the blank tab. Needs a desktop that takes
+    // the keystroke (xdotool on Linux); see skipOrFail for when it cannot be delivered.
     @Test
     @Timeout(value = 300, unit = TimeUnit.SECONDS)
     void lastTabClosedInFirefoxLeavesTheContextOpenWithoutPages() throws Throwable {
@@ -457,7 +457,9 @@ public class FirefoxPersistentWindowTest {
         // Playwright's start page (0) wins over the profile's own (3). Firefox saves only values that
         // differ from the build's default, so 0 is listed for Firefox but not for Camoufox, whose
         // default it already is.
-        assertFalse(prefs.contains("user_pref(\"browser.startup.page\", 3);"), "Playwright's start page applies: " + prefs);
+        String startPage = "user_pref(\"browser.startup.page\", ";
+        assertTrue(!prefs.contains(startPage) || prefs.contains(startPage + "0);") && !prefs.contains(startPage + "3);"),
+                "Playwright's start page applies: " + prefs);
         assertTrue(prefs.contains("user_pref(\"browser.tabs.closeWindowWithLastTab\", false);"),
                 "Playwright's preferences after the profile's open comment apply: " + prefs);
         assertFalse(prefs.contains("playwright4j.test.off"), "a line inside the profile's open comment applies: " + prefs);
