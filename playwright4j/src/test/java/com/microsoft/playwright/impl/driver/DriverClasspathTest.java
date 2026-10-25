@@ -57,7 +57,7 @@ class DriverClasspathTest {
         Path fat = fatJar(dir.resolve("app.jar"), "BOOT-INF/lib/polyglot-25.0.0.jar", inner);
 
         String url = "jar:nested:" + fat.toUri().getRawPath() + "/!BOOT-INF/lib/polyglot-25.0.0.jar!/";
-        String entry = DriverClasspath.toClasspathEntry(new URL(url), dir.resolve("cache"));
+        String entry = DriverClasspath.toClasspathEntry(url, dir.resolve("cache"));
 
         assertTrue(entry.endsWith("polyglot-25.0.0.jar"), entry);
         assertArrayEquals(inner, Files.readAllBytes(Path.of(entry)));
@@ -68,7 +68,7 @@ class DriverClasspathTest {
         Path fat = fatJar(dir.resolve("app.jar"), "BOOT-INF/lib/x.jar", jarBytes("X.class"));
         assertNull(DriverClasspath.toClasspathEntry(new URL("jar:" + fat.toUri() + "!/BOOT-INF/classes!/"), dir));
         assertNull(DriverClasspath.toClasspathEntry(
-                new URL("jar:nested:" + fat.toUri().getRawPath() + "/!BOOT-INF/classes/!/"), dir));
+                "jar:nested:" + fat.toUri().getRawPath() + "/!BOOT-INF/classes/!/", dir));
     }
 
     @Test

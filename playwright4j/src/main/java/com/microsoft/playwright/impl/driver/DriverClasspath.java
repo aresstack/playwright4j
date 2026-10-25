@@ -105,18 +105,24 @@ final class DriverClasspath {
      * the location is not usable by another JVM (e.g. a directory inside a jar, OSGi bundle URLs).
      */
     static String toClasspathEntry(URL url, Path nestedJarCache) throws IOException {
-        String protocol = url.getProtocol();
-        if ("file".equals(protocol)) {
-            Path path = fileUrlToPath(url.toString());
-            String asString = url.toString();
+        return toClasspathEntry(url.toString(), nestedJarCache);
+    }
+
+    /**
+     * String form, because Spring Boot's {@code jar:nested:} URLs only parse as {@link URL} once its
+     * handler is registered.
+     */
+    static String toClasspathEntry(String url, Path nestedJarCache) throws IOException {
+        if (url.startsWith("file:")) {
+            Path path = fileUrlToPath(url);
             // A class file resource from an exploded directory: climb to the classpath root.
-            if (asString.endsWith(".class")) {
+            if (url.endsWith(".class")) {
                 return classRoot(path, url).toString();
             }
             return path.toString();
         }
-        if ("jar".equals(protocol)) {
-            return jarUrlToEntry(url.toString().substring("jar:".length()), nestedJarCache);
+        if (url.startsWith("jar:")) {
+            return jarUrlToEntry(url.substring("jar:".length()), nestedJarCache);
         }
         return null;
     }
@@ -193,9 +199,8 @@ final class DriverClasspath {
         }
     }
 
-    private static Path classRoot(Path classFile, URL url) {
+    private static Path classRoot(Path classFile, String asString) {
         String resource = null;
-        String asString = url.toString();
         for (String anchor : ANCHOR_RESOURCES) {
             if (asString.endsWith("/" + anchor)) {
                 resource = anchor;
