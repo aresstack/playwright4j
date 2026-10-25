@@ -122,6 +122,14 @@ final class NodeCompatFirefoxNativeBehaviorTest {
                 "user_pref(\"dom.security.https_first\", true);",
                 "user_pref(\"geo.provider.testing\", false);",
                 "user_pref(\"playwright4j.test.own\", 1);"), prefsJs());
+        assertEquals(saved, Files.readAllLines(profile.resolve("prefs.js.playwright4j-backup"), StandardCharsets.ISO_8859_1),
+                "the original prefs.js is kept for a restore");
+
+        // A later cleanup leaves the first backup as it is.
+        Files.write(profile.resolve("prefs.js"), Arrays.asList(TEST_FOCUS), StandardCharsets.ISO_8859_1);
+        launch("{}");
+        assertEquals(List.of(), prefsJs());
+        assertEquals(saved, Files.readAllLines(profile.resolve("prefs.js.playwright4j-backup"), StandardCharsets.ISO_8859_1));
     }
 
     @Test
@@ -134,6 +142,7 @@ final class NodeCompatFirefoxNativeBehaviorTest {
         System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
         launch("{}");
         assertEquals(saved, prefsJs());
+        assertFalse(Files.exists(profile.resolve("prefs.js.playwright4j-backup")), "nothing removed, no backup");
     }
 
     private void launch(String firefoxUserPrefs) {

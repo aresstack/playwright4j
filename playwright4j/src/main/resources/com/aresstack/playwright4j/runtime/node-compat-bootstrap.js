@@ -6283,7 +6283,9 @@
   // flag keeps Playwright's values there. A prefs.js line is removed only when it is exactly a line
   // Playwright wrote after the END marker of the previous user.js: user.js applied that value on
   // every launch, so it is Playwright's. Any other value, a profile without the marker (playwright4j
-  // up to 0.2.1) included, may be the user's and stays.
+  // up to 0.2.1) included, may be the user's and stays. Before the first removal the file is copied
+  // to prefs.js.playwright4j-backup, so a value removed by mistake can be restored.
+  const NATIVE_BEHAVIOR_PREFS_JS_BACKUP_SUFFIX = '.playwright4j-backup';
   function nativeBehaviorPrefsJs(prefsJs, previousUserJs, callerPrefs) {
     const end = previousUserJs.indexOf(KEPT_USER_JS_END);
     if (!nativeBehavior() || end < 0 || !modules.fs.existsSync(prefsJs)) {
@@ -6296,6 +6298,11 @@
       return !(written.has(text) && nativeBehaviorDroppedPref(playwrightUserJsPrefName(text), callerPrefs));
     });
     if (kept.length !== lines.length) {
+      // The first cleanup keeps the original file; later ones would only copy cleaned files.
+      const backup = prefsJs + NATIVE_BEHAVIOR_PREFS_JS_BACKUP_SUFFIX;
+      if (!modules.fs.existsSync(backup)) {
+        modules.fs.copyFileSync(prefsJs, backup);
+      }
       modules.fs.writeFileSync(prefsJs, global.Buffer.from(kept.join('\n'), 'latin1'));
     }
   }

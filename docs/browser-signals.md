@@ -234,7 +234,10 @@ launched without the property keeps Playwright's values. A `prefs.js` line is re
 is exactly a line Playwright wrote in the previous `user.js` (after playwright4j's end marker):
 that value was applied by `user.js` on every launch. A value the user changed afterwards, or any
 value in a profile without the marker (written by playwright4j 0.2.1 or earlier or by plain
-Playwright), stays; set it in `about:config` or through `firefoxUserPrefs`.
+Playwright), stays; set it in `about:config` or through `firefoxUserPrefs`. A value that the user
+set to exactly Playwright's value cannot be told apart and is removed as well, so before the first
+removal playwright4j copies the file to `prefs.js.playwright4j-backup` in the profile. Later cleanups
+keep that copy; to restore, close the browser and copy it back over `prefs.js`.
 
 Why `remote.prefs.recommended` matters: Firefox's Remote Agent, which serves WebDriver BiDi,
 applies its recommended preferences at startup to every preference that has no user value and
