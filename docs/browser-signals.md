@@ -290,6 +290,8 @@ What it changes, each part independent of the others:
 | Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. Only `dom.successive_dialog_time_limit=0` is kept from that list: with Firefox's 3 s limit the next dialog gets a "prevent more dialogs" checkbox, and Camoufox (tab-modal prompts) never reports that dialog over BiDi, so the page and the call that opened it hang. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`, or `dom.successive_dialog_time_limit`. |
 | Default viewport (#47) | 1280x720 at device scale factor 1, `screen` set to the same size, which replaces the window and screen the browser or Camoufox's fingerprint reports | No viewport emulation, as with `setViewportSize(null)`; `page.viewportSize()` is `null`. Applies to `newContext()` and `launchPersistentContext()`. | A caller's `viewport`, `deviceScaleFactor` or `isMobile` is kept, with Playwright's checks. |
 | Screenshot caret (#40) | `caret: "hide"` by default, which writes `caret-color` into the focused element's style | `caret: "initial"` by default; the element's style is not touched. | `setCaret(ScreenshotCaret.HIDE)` still hides it. |
+| Text input (#41) | `fill()` and `keyboard.insertText()` assign the field's value and dispatch an untrusted `input` event (`isTrusted` `false`, no `inputType`) | The text goes through Firefox's editor (`execCommand("insertText")` on the focused field, from the utility world): one trusted `input` event with `inputType` `insertText`, as for text a user enters without keys. Measured with Firefox 158: Firefox fires no `beforeinput` for it, as the Input Events spec leaves out for `execCommand`; typing or pasting would fire one. A field the editor refuses gets Playwright's way. `fill("")` still presses Delete, and no key events are sent for the text, as in Playwright. | `pressSequentially()` types with key events. |
+| Scrolling into view (#42) | Before an action, and in `scrollIntoViewIfNeeded()`, a script calls `scrollIntoView({block: "center"})`; the page sees `scroll` events without any `wheel` | Firefox's mouse wheel (`input.performActions`, wheel source) scrolls the innermost container that hides the target, over its visible part, in steps of at most 120 px towards centring the target, and frames before their content; trusted `wheel` events come before the `scroll` events. A target already fully in view is not scrolled. If the wheel does not bring it into view in 8 rounds (a container that ignores the wheel, a transformed frame), Playwright's `scrollIntoView` runs, logged at debug level. | - |
 | Preload scripts (#51) | `exposeBinding`/`exposeFunction`, `addInitScript`, `clock`, `routeWebSocket` and tracing snapshots install scripts or globals in the page's main world | Unchanged, because they are what the caller asked for. The first one per context logs a warning on the driver's stderr that names the property. | - |
 
 What it does not change:
@@ -302,8 +304,11 @@ What it does not change:
   similar) that keep the browser from reaching out on its own.
 - Context options the caller sets, such as `locale`, `timezoneId`, `userAgent` or `geolocation`,
   which override Camoufox's own values; leave them unset with Camoufox.
-- Synthetic `fill()`/`selectOption()` events, direct mouse movement and scrolling (#41-#43), and
-  dialogs or HTTP authentication answered without a handler (#48).
+- `selectOption()` and `fill()` on date, time, color and range inputs, which
+  set the value and dispatch untrusted `input`/`change` events (#41); Firefox's editor does not
+  handle these controls.
+- Mouse movement, which jumps to the target (#43), and dialogs or HTTP authentication answered
+  without a handler (#48).
 
 Persistent profiles: Firefox stores the values `user.js` sets in `prefs.js`, so a profile once
 launched without the property keeps Playwright's values. A `prefs.js` line is removed only when it
@@ -330,7 +335,9 @@ Measured on Linux with the property set: `firefoxSmoke` (including `FirefoxNativ
 with Firefox 158.0.1 and with Camoufox 156.0.1-beta.36 with both BiDi fixes
 (`hotpatch_omni.py`), and so does `camoufoxSmoke` (fingerprint through `setEnv`, second page with
 the fixes). With Camoufox the popup blocker stays on, as `camoufox.cfg` leaves it. The window-count
-checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. CI on Windows runs
+checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. `FirefoxNativeInputTest`
+(text input and wheel scrolling, page, nested container and frame) passes with Firefox 158.0.1 on
+Linux, headless. CI on Windows runs
 `firefoxSmoke` with Firefox and with Camoufox, and `camoufoxSmoke`, with and without the property.
 
 The property may become the default once its compatibility with the Playwright API is shown;
