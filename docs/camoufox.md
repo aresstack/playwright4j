@@ -4,14 +4,15 @@
 This page records whether playwright4j can drive it over WebDriver BiDi (Playwright's `moz-firefox`
 channel), what fails and why, and how to reproduce the measurement.
 
-**Status (25 October 2026, master after #30, Playwright Core 1.59).** A released Camoufox starts
+**Status (25 October 2026, master after #29, Playwright Core 1.62).** A released Camoufox starts
 and a persistent context opens on the tab Camoufox started with, but every further `newPage()` and
 every `newContext()` fails because of two Camoufox behaviours described below. With two small fixes
 to Camoufox's Remote Agent code (applied to `omni.ja`, see [Fixes](#fixes)) launch, persistent
 contexts, new pages and new contexts work. The fingerprint configuration reaches Camoufox through
-`setEnv` (since #30). A manual comparison with Camoufox's own launcher is prepared
-([Comparison](#comparison-with-camoufoxs-own-launcher-manual)). Nothing in this page is part of a
-release.
+`setEnv` (since #30). Compared by hand on Windows with Camoufox's own launcher (Juggler), the same
+fingerprint gives the same page values and the same network-side signals over BiDi, and a ChatGPT
+login by hand works over BiDi ([Comparison](#comparison-with-camoufoxs-own-launcher-manual)).
+Nothing in this page is part of a release.
 
 ## What was measured
 
@@ -116,6 +117,8 @@ Fix options:
 
 ## Fixes
 
+Reported to Camoufox as [daijro/camoufox#951](https://github.com/daijro/camoufox/issues/951), with
+the fixes proposed in [daijro/camoufox#952](https://github.com/daijro/camoufox/pull/952).
 Both fixes change only Remote Agent JavaScript. Pages see no difference: a background tab still
 reports `visible` and `document.hasFocus()` stays `true`, as in released Camoufox. For Firefox nothing
 changes (its application name is `Firefox`, and `docShell.forceActiveState` does not exist there).
@@ -162,20 +165,29 @@ Camoufox 156.0.1-beta.36 with both fixes, persistent context headed:
 | Run | Result |
 | --- | --- |
 | Linux, `FirefoxPersistentWindowTest` (process and window names extended to `camoufox` locally) | 5 of 6 pass |
+| Linux, this branch on master after #29 (Core 1.62), `firefoxSmoke` | 9 of 9 pass (Firefox 158.0.1: 9 of 9) |
 | Windows (Angelo, master `4cb607f`, fixes reconstructed from the description, process name extended locally) | `FirefoxBiDiSmokeTest` 2 of 2; `firefoxSmoke` 6 of 8 |
-| Linux and Windows, `camoufoxSmoke` (fingerprint through `setEnv`, two pages) | Linux: passes; Windows: not yet run |
+| Linux and Windows, `camoufoxSmoke` (fingerprint through `setEnv`, two pages) | Linux: passes; Windows (Angelo, the script's hotpatch, master after #30 and #33): 2 of 2 pass |
 
-Remaining failures:
+The two failures of the earlier runs, both fixed in this branch:
 
 - `persistentContextUsesTheStartTabAndOpensPagesAsTabs` (Linux and Windows): `prefs.js` after close
-  lacks `user_pref("browser.startup.page", 0);`. Camoufox already has 0 as its default
+  lacked `user_pref("browser.startup.page", 0);`. Camoufox already has 0 as its default
   (`settings/camoufox.cfg`), and Firefox writes to `prefs.js` only values that differ from the
-  default. The preference applies; the test's way of proving it does not hold for Camoufox.
-- `lastTabClosedInFirefoxLeavesTheContextOpenWithoutPages` (Windows only): after Ctrl+W on the last
-  tab and `newPage()`, navigating to a `data:` URL is refused (`browsingContext.navigate`:
-  unsupported operation). Firefox refuses `data:` navigations in privileged pages such as
-  `about:newtab`, the page Firefox loads into the tab that replaces the closed one. Under
-  investigation; it passes on Linux with the same build.
+  default. The preference applied; the test's way of proving it did not hold for Camoufox. The test
+  now checks that the profile's own value (3) did not win.
+- `lastTabClosedInFirefoxLeavesTheContextOpenWithoutPages` (Windows): after Ctrl+W on the last tab
+  and `newPage()`, navigating to a `data:` URL was refused (`browsingContext.navigate`: unsupported
+  operation). The cause is in playwright4j, not in Camoufox. Firefox replaces the closed tab with a
+  tab that shows `about:blank` until `about:newtab` commits, once the process for that privileged
+  page is up: on Linux 74 to 182 ms after the close, on Angelo's machine evidently later than the
+  test's wait of at least 1.5 s (not measured there). A `newPage()` in that time took the tab over
+  as it was; `about:newtab` then loaded into the page, and Firefox refuses `data:` there. Now only
+  the blank tab playwright4j opens itself before closing the last page is taken over as it is; in
+  place of Firefox's replacement a fresh tab is opened. The test variant
+  `lastTabClosedInFirefoxWhileItsChildProcessesStartSlowly` delays Firefox's child processes
+  (`MOZ_DEBUG_CHILD_PAUSE=3`): without the fix it fails with the same error on Linux with Firefox
+  158, with the fix it passes.
 
 ## Fingerprint configuration
 
@@ -225,7 +237,13 @@ Measured on Linux with Camoufox 156.0.1-beta.36 and both fixes, one fingerprint 
 launcher (`{"os":"linux"}`): A and B print identical values (user agent `Firefox/156.0`, platform
 `Linux x86_64`, 4 cores, screen 1366x768, window 1366x741, `navigator.webdriver` false, `hasFocus()`
 true, WebGL renderer from the fingerprint). amiabot.app and ChatGPT are not reachable from that
-environment; the scores have to come from the Windows run below.
+environment.
+
+Measured on Windows (Angelo, 25 October 2026, Camoufox 156.0.1-beta.36 patched with
+`hotpatch_omni.py`, SHA-256 of both changed files checked, one saved fingerprint for both runs,
+fresh profiles, headed at `about:blank`): the 13 printed values are identical in A and B (user
+agent, platform, `navigator.webdriver` false, cores, languages, screen, window, device pixel ratio,
+time zone, colour scheme, focus, visibility, WebGL renderer); no browser process was left over.
 
 ### Steps (Windows)
 
@@ -270,9 +288,21 @@ environment; the scores have to come from the Windows run below.
 
 | | A (launcher, Juggler) | B (playwright4j, BiDi) |
 | --- | --- | --- |
-| printed values identical | | |
-| amiabot.app score and findings | | |
-| ChatGPT login | | |
+| printed values | the same 13 values as B | the same 13 values as A |
+| amiabot.app score | 75/100, also after reloading (the first load hung while collecting signals) | 75/100, then 100/100 after reloading |
+| amiabot.app findings | one deduction, `behavior_score_low` (no pointer or scroll events recorded); `likely_human`, risk low | first load: the same single deduction; after reloading none (pointer and scroll events recorded); `likely_human`, risk low |
+| Cloudflare bot management score (amiabot.app report) | 99 | 99 |
+| Google search | no CAPTCHA | no CAPTCHA |
+| ChatGPT login by hand | not tested | signed in (with two-factor authentication), a new conversation sent and answered |
+
+Measured on Windows on 25 October 2026 (Angelo, both browsers operated by hand, same saved
+fingerprint). The 25-point difference is amiabot.app's behaviour score: it depends on the input
+during the run (no events in A, pointer movement and scrolling in B after reloading), not on the
+protocol. Both runs report no deduction for WebDriver, fingerprint, network or WebRTC. Known and
+open, to be looked at separately: the first load of amiabot.app hung while collecting signals (in
+the Juggler run; a reload helped). Angelo accepted the Camoufox browser path over playwright4j and
+BiDi on that basis; the JavaScript hooks and the Browser Event Hub connection of GPT Desktop are
+not covered by it.
 
 If A and B differ, the remaining differences are on the automation side, not in the fingerprint:
 Camoufox's Juggler-only features (see below), the Remote Agent being active under BiDi, and the
