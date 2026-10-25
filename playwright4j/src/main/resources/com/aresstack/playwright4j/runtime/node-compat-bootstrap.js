@@ -5959,7 +5959,29 @@
   // activated by the user (navigator.userActivation.hasBeenActive/isActive) before any input
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
   // The touch needs no activation; evaluations the caller asks for keep upstream behaviour.
+  // Since Playwright 1.62 the evaluation sits in _createUtilityWorld, which also uses its result:
+  // that one keeps its code, and its session sends the touch without activation.
+  const utilityWorldTouchSessions = new WeakSet();
   function patchBidiPageTouchUtilityWorld(BidiPage, utilityWorldName) {
+    if (typeof BidiPage.prototype._createUtilityWorld === 'function') {
+      const originalCreateUtilityWorld = BidiPage.prototype._createUtilityWorld;
+      BidiPage.prototype._createUtilityWorld = function () {
+        const session = this._session;
+        if (session && !utilityWorldTouchSessions.has(session)) {
+          utilityWorldTouchSessions.add(session);
+          const originalSend = session.send;
+          session.send = function (method, params) {
+            if (method === 'script.evaluate' && params && params.expression === '1 + 1' && params.userActivation === true
+                && params.target && params.target.sandbox === utilityWorldName) {
+              arguments[1] = Object.assign({}, params, { userActivation: false });
+            }
+            return originalSend.apply(this, arguments);
+          };
+        }
+        return originalCreateUtilityWorld.apply(this, arguments);
+      };
+      return;
+    }
     if (typeof BidiPage.prototype._touchUtilityWorld !== 'function') {
       return;
     }
