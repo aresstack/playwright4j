@@ -12,8 +12,27 @@ public interface HostProcessLauncher {
     @HostAccess.Export
     String launchChromium(String command, String arguments, String workingDirectory);
 
+    /**
+     * Ends a process the way Node's {@code child.kill()} does: asks it to terminate, and if it is
+     * still alive after a short grace period, kills it and its descendants forcibly.
+     */
     @HostAccess.Export
     void close(String processId);
+
+    /**
+     * Kills a process and all its descendants forcibly, at once (Playwright's force kill:
+     * {@code taskkill /T /F} on Windows, {@code kill(-pid, SIGKILL)} elsewhere).
+     */
+    @HostAccess.Export
+    default void kill(String processId) {
+        close(processId);
+    }
+
+    /** The operating-system pid of a process, or -1 when there is none (e.g. an in-JVM encoder). */
+    @HostAccess.Export
+    default long pid(String processId) {
+        return -1L;
+    }
 
     /**
      * Spawns a general (non-Chromium) child process, e.g. the ffmpeg video encoder. Arguments are

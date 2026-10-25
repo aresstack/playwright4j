@@ -34,6 +34,8 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     private static final java.util.regex.Pattern DEVTOOLS_STDERR_PATTERN =
             java.util.regex.Pattern.compile("DevTools listening on (ws://\\S+)");
     private static final int STDERR_RING_BUFFER_LINES = 80;
+    /** How long {@link #close} waits after the polite terminate before it kills forcibly. */
+    static final long DEFAULT_CLOSE_GRACE_MILLIS = 5000L;
 
     private final Map<String, Process> processes = new ConcurrentHashMap<String, Process>();
     private final Map<String, java.io.OutputStream> processStdin = new ConcurrentHashMap<String, java.io.OutputStream>();
@@ -41,6 +43,15 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     private final java.util.concurrent.BlockingQueue<String> processEvents =
             new java.util.concurrent.LinkedBlockingQueue<String>();
     private static final char UNIT = '';
+    private final long closeGraceMillis;
+
+    public JdkHostProcessLauncher() {
+        this(DEFAULT_CLOSE_GRACE_MILLIS);
+    }
+
+    JdkHostProcessLauncher(long closeGraceMillis) {
+        this.closeGraceMillis = closeGraceMillis;
+    }
 
     @Override
     @HostAccess.Export
@@ -86,7 +97,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         processStdin.put(processId, process.getOutputStream());
         startProcessReader(processId, process.getInputStream(), "stdout");
         startProcessReader(processId, process.getErrorStream(), "stderr");
-        startExitWatcher(processId, process);
+        startExitWatcher(processId, process, null);
         return processId;
     }
 
@@ -229,7 +240,11 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         reader.start();
     }
 
-    private void startExitWatcher(final String processId, final Process process) {
+    /**
+     * Reports the process's real exit to the JS side and forgets the process. A profile directory
+     * the launcher created itself ({@code ownedProfile}) is removed once the browser is gone.
+     */
+    private void startExitWatcher(final String processId, final Process process, final Path ownedProfile) {
         Thread watcher = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -242,6 +257,9 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
                 }
                 processStdin.remove(processId);
                 processes.remove(processId);
+                if (ownedProfile != null) {
+                    deleteDirectory(ownedProfile);
+                }
                 processEvents.add("exit" + UNIT + processId + UNIT + code);
             }
         }, "playwright4j-proc-exit-" + processId);
@@ -259,7 +277,9 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     @HostAccess.Export
     public String launchChromiumWithEnvironment(String command, String arguments, String workingDirectory, String environment) {
         List<String> browserArguments = browserArguments(arguments);
-        Path userDataDirectory = userDataDirectory(browserArguments);
+        Path callerUserDataDirectory = callerUserDataDirectory(browserArguments);
+        Path ownedProfile = callerUserDataDirectory == null ? createProfileDirectory() : null;
+        Path userDataDirectory = callerUserDataDirectory != null ? callerUserDataDirectory : ownedProfile;
 
         List<String> commandLine = new ArrayList<String>();
         commandLine.add(command);
@@ -286,6 +306,9 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             processBuilder.redirectErrorStream(false);
             process = processBuilder.start();
         } catch (IOException exception) {
+            if (ownedProfile != null) {
+                deleteDirectory(ownedProfile);
+            }
             throw new IllegalStateException("Cannot start Chromium process: " + commandLine, exception);
         }
 
@@ -294,12 +317,33 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
 
         String processId = UUID.randomUUID().toString();
         processes.put(processId, process);
+        startExitWatcher(processId, process, ownedProfile);
 
-        String endpoint = readWebSocketEndpoint(commandLine, userDataDirectory, process, stderrBuffer);
+        String endpoint;
+        try {
+            endpoint = readWebSocketEndpoint(commandLine, userDataDirectory, process, stderrBuffer);
+        } catch (RuntimeException failure) {
+            // No endpoint, no Playwright-side handle: nobody else would ever end this browser.
+            kill(processId);
+            throw failure;
+        }
         Playwright4JDebug.log("[pw4j-launcher] endpoint=" + endpoint);
         return processId + ARGUMENT_SEPARATOR + endpoint;
     }
 
+    @Override
+    @HostAccess.Export
+    public long pid(String processId) {
+        Process process = processes.get(processId);
+        return process == null ? -1L : process.pid();
+    }
+
+    /**
+     * Node's {@code child.kill()}: a polite terminate first (SIGTERM on POSIX; on Windows the JDK
+     * has no polite variant), then, off the JS thread, a forced kill of the process and every
+     * descendant still alive after the grace period. The descendants are captured before the
+     * terminate because a dead parent no longer reports its children.
+     */
     @Override
     @HostAccess.Export
     public void close(String processId) {
@@ -307,13 +351,65 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         if (encoder != null) {
             encoder.kill();
         }
-        Process process = processes.remove(processId);
-        if (process != null) {
-            // Destroy the whole tree: Chromium spawns renderer/gpu child processes that must
-            // be terminated too, otherwise they leak (Process.destroy only targets the parent).
-            process.descendants().forEach(ProcessHandle::destroyForcibly);
-            process.destroyForcibly();
+        final Process process = processes.get(processId);
+        if (process == null) {
+            return;
         }
+        final List<ProcessHandle> descendants = descendantsOf(process);
+        process.destroy();
+        Thread reaper = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    process.waitFor(closeGraceMillis, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+                destroyForcibly(process, descendants);
+            }
+        }, "playwright4j-proc-close-" + processId);
+        reaper.setDaemon(true);
+        reaper.start();
+    }
+
+    /**
+     * Playwright's force kill: the whole tree at once. Chromium and Firefox run renderer/content
+     * processes that must go too, otherwise they leak (Process.destroy only targets the parent).
+     * The exit watcher reports the exit and forgets the process.
+     */
+    @Override
+    @HostAccess.Export
+    public void kill(String processId) {
+        VideoEncoderHandle encoder = videoEncoders.remove(processId);
+        if (encoder != null) {
+            encoder.kill();
+        }
+        Process process = processes.get(processId);
+        if (process != null) {
+            Playwright4JDebug.log("[pw4j-launcher] force kill pid=" + process.pid());
+            destroyForcibly(process, descendantsOf(process));
+        }
+    }
+
+    private static List<ProcessHandle> descendantsOf(Process process) {
+        List<ProcessHandle> descendants = new ArrayList<ProcessHandle>();
+        try {
+            process.descendants().forEach(descendants::add);
+        } catch (RuntimeException ignored) {
+            // The process just ended or its tree is not visible: nothing more to collect.
+        }
+        return descendants;
+    }
+
+    private static void destroyForcibly(Process process, List<ProcessHandle> capturedDescendants) {
+        // Captured children first, then any born since; the parent last.
+        for (ProcessHandle descendant : capturedDescendants) {
+            descendant.destroyForcibly();
+        }
+        for (ProcessHandle descendant : descendantsOf(process)) {
+            descendant.destroyForcibly();
+        }
+        process.destroyForcibly();
     }
 
     public void closeAll() {
@@ -324,7 +420,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             }
         }
         for (String processId : new ArrayList<String>(processes.keySet())) {
-            close(processId);
+            kill(processId);
         }
     }
 
@@ -385,18 +481,46 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         return false;
     }
 
-    private Path userDataDirectory(List<String> arguments) {
+    private static Path callerUserDataDirectory(List<String> arguments) {
         for (String argument : arguments) {
             if (argument.startsWith("--user-data-dir=")) {
                 return Paths.get(argument.substring("--user-data-dir=".length()));
             }
         }
+        return null;
+    }
 
+    private static Path createProfileDirectory() {
         try {
             return Files.createTempDirectory("playwright4j-chromium-");
         } catch (IOException exception) {
             throw new IllegalStateException("Cannot create Chromium profile directory.", exception);
         }
+    }
+
+    /** Removes a directory tree; retried briefly because Windows may still hold files of a just-ended process. */
+    static void deleteDirectory(Path directory) {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            try (java.util.stream.Stream<Path> walk = Files.walk(directory)) {
+                List<Path> paths = new ArrayList<Path>();
+                walk.forEach(paths::add);
+                Collections.reverse(paths);
+                for (Path path : paths) {
+                    Files.deleteIfExists(path);
+                }
+                return;
+            } catch (java.nio.file.NoSuchFileException gone) {
+                return;
+            } catch (IOException | java.io.UncheckedIOException retry) {
+                try {
+                    Thread.sleep(200L);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+        Playwright4JDebug.log("[pw4j-launcher] could not remove profile " + directory);
     }
 
     private void deleteStaleDevToolsActivePort(Path userDataDirectory) {
@@ -434,7 +558,6 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
             sleepBriefly();
         }
 
-        process.destroy();
         throw new IllegalStateException(
                 "Timed out after " + DEVTOOLS_PORT_TIMEOUT_SECONDS + "s waiting for the Chromium DevTools endpoint."
                         + describeFailure(commandLine, userDataDirectory, activePortFile, stderrBuffer));
