@@ -808,23 +808,126 @@
     return pipe;
   }
 
+  // Child processes by their pid, so that Playwright's force kill (process.kill(-pid, 'SIGKILL'),
+  // or spawnSync('taskkill /pid <pid> /T /F') on Windows) reaches the host process it means.
+  // The pid is the real OS pid where the host has one, otherwise a stand-in unique to this runtime.
+  const childProcessesByPid = {};
+  let nextStandInPid = 4000000;
+
+  function registerChildProcess(child, processId) {
+    let pid = -1;
+    try {
+      pid = Number(host.processLauncher().pid(String(processId)));
+    } catch (error) {
+      // A launcher without pids: use a stand-in.
+    }
+    child.pid = pid > 0 ? pid : nextStandInPid++;
+    childProcessesByPid[child.pid] = child;
+  }
+
+  function unregisterChildProcess(child) {
+    if (child && childProcessesByPid[child.pid] === child) {
+      delete childProcessesByPid[child.pid];
+    }
+  }
+
+  // Node's signal semantics on top of the host: SIGKILL ends the process tree at once, any other
+  // signal asks the process to terminate and kills its tree only after a grace period.
+  function signalHostProcess(processId, signal) {
+    const launcher = host.processLauncher();
+    if (signal === 'SIGKILL' || signal === 9) {
+      launcher.kill(String(processId));
+    } else {
+      launcher.close(String(processId));
+    }
+  }
+
+  function noSuchProcess(syscall, pid) {
+    const error = new Error(syscall + ' ESRCH');
+    error.code = 'ESRCH';
+    error.errno = -3;
+    error.syscall = syscall;
+    error.pid = pid;
+    return error;
+  }
+
+  // process.kill: only the children this runtime spawned are reachable (a negative pid, Node's
+  // process-group form, means the same child's tree). Signal 0 tests for existence, as in Node.
+  function killChildProcessByPid(pid, signal) {
+    const child = childProcessesByPid[Math.abs(Number(pid))];
+    if (!child) {
+      throw noSuchProcess('kill', pid);
+    }
+    if (signal === 0) {
+      return true;
+    }
+    signalHostProcess(child.__playwright4jProcessId, signal === undefined ? 'SIGTERM' : signal);
+    child.killed = true;
+    return true;
+  }
+
+  // Playwright's Windows force kill runs `taskkill /pid <pid> /T /F` through spawnSync with a
+  // shell. Recognise it and end the host process tree; no taskkill.exe is started. Returns null
+  // for any other command.
+  function taskkillFor(command, args) {
+    const words = [String(command || '')].concat((args || []).map(String)).join(' ').trim().split(/\s+/);
+    if (words.length === 0 || !/^taskkill(\.exe)?$/i.test(words[0].replace(/^.*[\\/]/, ''))) {
+      return null;
+    }
+    const pids = [];
+    let force = false;
+    for (let index = 1; index < words.length; index++) {
+      const word = words[index].toLowerCase();
+      if (word === '/pid' && index + 1 < words.length) {
+        pids.push(Number(words[++index]));
+      } else if (word === '/f') {
+        force = true;
+      }
+    }
+    const stdout = [];
+    const stderr = [];
+    pids.forEach(function (pid) {
+      const child = childProcessesByPid[pid];
+      if (!child) {
+        stderr.push('ERROR: The process "' + pid + '" not found.');
+        return;
+      }
+      signalHostProcess(child.__playwright4jProcessId, force ? 'SIGKILL' : 'SIGTERM');
+      stdout.push('SUCCESS: Sent termination signal to the process with PID ' + pid + '.');
+    });
+    return {
+      pid: 0,
+      status: stderr.length > 0 ? 128 : 0,
+      signal: null,
+      output: [null, global.Buffer.from(stdout.join('\r\n')), global.Buffer.from(stderr.join('\r\n'))],
+      stdout: global.Buffer.from(stdout.join('\r\n')),
+      stderr: global.Buffer.from(stderr.join('\r\n'))
+    };
+  }
+
   function closeSpawnedProcess(child, exitCode) {
     if (!child || child.__playwright4jClosed) {
       return;
     }
     child.__playwright4jClosed = true;
+    unregisterChildProcess(child);
+    delete browserProcessesById[child.__playwright4jProcessId];
     child.killed = true;
     const code = typeof exitCode === 'number' ? exitCode : 0;
     child.emit('exit', code, null);
     child.emit('close', code, null);
   }
 
+  // Chromium processes by host id; the host reports their real exit (see the drain below).
+  const browserProcessesById = {};
+
   function createSpawnedProcess(processId, endpoint) {
     const child = new EventEmitter();
-    child.pid = Math.floor(Math.random() * 1000000) + 1;
     child.killed = false;
     child.__playwright4jClosed = false;
     child.__playwright4jProcessId = processId;
+    registerChildProcess(child, processId);
+    browserProcessesById[processId] = child;
     child.stdin = createProcessStream();
     child.stdout = createProcessStream();
     child.stderr = createProcessStream();
@@ -835,10 +938,10 @@
       createBrowserPipe(processId, endpoint, child),
       createBrowserPipe(processId, endpoint, child)
     ];
-    child.kill = function () {
+    child.kill = function (signal) {
       if (!child.__playwright4jClosed) {
         try {
-          host.processLauncher().close(processId);
+          signalHostProcess(processId, signal);
         } catch (error) {
           // Already gone.
         }
@@ -871,9 +974,9 @@
 
   function createGeneralProcess(processId) {
     const child = new EventEmitter();
-    child.pid = Math.floor(Math.random() * 1000000) + 1;
     child.killed = false;
     child.__playwright4jProcessId = processId;
+    registerChildProcess(child, processId);
 
     const stdin = new Writable();
     stdin._write = function (chunk, encoding, callback) {
@@ -894,11 +997,12 @@
     child.stdout = stdout;
     child.stderr = stderr;
     child.stdio = [stdin, stdout, stderr];
-    child.kill = function () {
+    // Node semantics: the 'exit' event follows when the host reports the real exit.
+    child.kill = function (signal) {
       if (!child.killed) {
         child.killed = true;
         try {
-          host.processLauncher().close(processId);
+          signalHostProcess(processId, signal);
         } catch (error) {
           // Already gone.
         }
@@ -923,6 +1027,11 @@
       const parts = lines[index].split(PROC_UNIT);
       const entry = generalProcessesById[parts[1]];
       if (!entry) {
+        if (parts[0] === 'exit' && browserProcessesById[parts[1]]) {
+          // A Chromium process ended (e.g. after a force kill) before its CDP connection closed.
+          closeSpawnedProcess(browserProcessesById[parts[1]], parseInt(parts[2], 10));
+          handled++;
+        }
         continue;
       }
       if (parts[0] === 'data') {
@@ -933,6 +1042,7 @@
         entry.stdout.push(null);
         entry.stderr.push(null);
         entry.child.killed = true;
+        unregisterChildProcess(entry.child);
         entry.child.emit('exit', code, null);
         entry.child.emit('close', code, null);
         delete generalProcessesById[parts[1]];
@@ -1050,7 +1160,11 @@
     },
     execFile: unsupported('child_process.execFile'),
     execFileSync: unsupported('child_process.execFileSync'),
-    spawnSync: function () {
+    spawnSync: function (command, args) {
+      const taskkill = taskkillFor(command, Array.isArray(args) ? args : []);
+      if (taskkill) {
+        return taskkill;
+      }
       return { status: 0, stdout: global.Buffer.from(''), stderr: global.Buffer.from('') };
     }
   };
@@ -4451,8 +4565,8 @@
       global.__playwright4jExitRequested = true;
       return undefined;
     },
-    kill: function () {
-      return true;
+    kill: function (pid, signal) {
+      return killChildProcessByPid(pid, signal);
     },
     version: 'v20.0.0',
     versions: {
