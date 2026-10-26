@@ -800,38 +800,107 @@
   // Expose the existing filesystem promises implementation through that canonical module ID.
   modules['fs/promises'] = modules.fs.promises;
 
-  modules.path = {
-    join: function () {
-      return Array.prototype.join.call(arguments, '/');
-    },
-    resolve: function () {
-      return Array.prototype.join.call(arguments, '/');
-    },
-    dirname: function (value) {
-      return String(value).replace(/[\\/][^\\/]*$/, '') || '.';
-    },
-    basename: function (value) {
-      return String(value).replace(/^.*[\\/]/, '');
-    },
-    extname: function (value) {
-      const match = String(value).match(/(\.[^./\\]+)$/);
-      return match ? match[1] : '';
-    },
-    isAbsolute: function (value) {
+  // Node's path module for both flavours; process.platform picks the default one. Windows paths
+  // must keep one separator: Firefox rejects a mixed C:\dir/file path (input.setFiles).
+  function createPathModule(windows) {
+    const sep = windows ? '\\' : '/';
+    const separators = windows ? /[\\/]+/ : /\/+/;
+    function splitRoot(value) {
+      const match = windows ? /^(?:[A-Za-z]:)?[\\/]?/.exec(value) : /^\/?/.exec(value);
+      return { root: match[0].replace(/[\\/]$/, sep), rest: value.substring(match[0].length) };
+    }
+    function isAbsolute(value) {
+      return windows ? /^(?:[A-Za-z]:)?[\\/]/.test(String(value)) : String(value).charAt(0) === '/';
+    }
+    function normalize(value) {
       const text = String(value);
-      return text.indexOf('/') === 0 || /^[A-Za-z]:[\\/]/.test(text);
-    },
-    normalize: function (value) {
-      return normalizeResourceName(String(value));
-    },
-    relative: function (from, to) {
-      return String(to).replace(String(from), '').replace(/^[\\/]/, '');
-    },
-    sep: '/'
-  };
-  // Chokidar's glob-parent requires path.posix.dirname in Playwright 1.62.
-  modules.path.posix = modules.path;
-  modules.path.win32 = modules.path;
+      if (text === '') {
+        return '.';
+      }
+      const parts = splitRoot(text);
+      const segments = [];
+      parts.rest.split(separators).forEach(function (segment) {
+        if (segment === '' || segment === '.') {
+          return;
+        }
+        if (segment === '..' && segments.length > 0 && segments[segments.length - 1] !== '..') {
+          segments.pop();
+        } else if (segment !== '..' || !parts.root) {
+          segments.push(segment);
+        }
+      });
+      let result = parts.root + segments.join(sep);
+      if (segments.length > 0 && separators.test(text.charAt(text.length - 1))) {
+        result += sep;
+      }
+      return result || '.';
+    }
+    function resolve() {
+      let resolved = '';
+      for (let index = arguments.length - 1; index >= -1 && !isAbsolute(resolved); index--) {
+        const segment = index >= 0 ? String(arguments[index]) : String(global.process.cwd());
+        if (segment) {
+          resolved = resolved ? segment + sep + resolved : segment;
+        }
+      }
+      const result = normalize(resolved);
+      return result.length > splitRoot(result).root.length ? result.replace(/[\\/]$/, '') : result;
+    }
+    function basename(value, extension) {
+      const text = String(value).replace(windows ? /[\\/]+$/ : /\/+$/, '');
+      let base = text.substring(text.search(windows ? /[^\\/:]*$/ : /[^/]*$/));
+      if (extension && base !== extension && base.endsWith(extension)) {
+        base = base.substring(0, base.length - extension.length);
+      }
+      return base;
+    }
+    function dirname(value) {
+      const text = String(value);
+      const parts = splitRoot(text);
+      const root = text.substring(0, text.length - parts.rest.length);
+      const rest = parts.rest.replace(windows ? /[\\/]+$/ : /\/+$/, '');
+      const index = Math.max(rest.lastIndexOf('/'), windows ? rest.lastIndexOf('\\') : -1);
+      if (index < 0) {
+        return root || '.';
+      }
+      return root + rest.substring(0, index).replace(windows ? /[\\/]+$/ : /\/+$/, '') || root;
+    }
+    function relative(from, to) {
+      const fromParts = resolve(from).split(sep).filter(Boolean);
+      const toParts = resolve(to).split(sep).filter(Boolean);
+      const same = function (a, b) { return windows ? a.toLowerCase() === b.toLowerCase() : a === b; };
+      let common = 0;
+      while (common < fromParts.length && common < toParts.length && same(fromParts[common], toParts[common])) {
+        common++;
+      }
+      return fromParts.slice(common).map(function () { return '..'; }).concat(toParts.slice(common)).join(sep);
+    }
+    return {
+      sep: sep,
+      delimiter: windows ? ';' : ':',
+      normalize: normalize,
+      isAbsolute: isAbsolute,
+      join: function () {
+        const segments = Array.prototype.filter.call(arguments, function (segment) { return String(segment) !== ''; });
+        return segments.length === 0 ? '.' : normalize(segments.join(sep));
+      },
+      resolve: resolve,
+      relative: relative,
+      dirname: dirname,
+      basename: basename,
+      extname: function (value) {
+        const base = basename(value);
+        const index = base.lastIndexOf('.');
+        return index <= 0 ? '' : base.substring(index);
+      },
+      toNamespacedPath: function (value) { return value; }
+    };
+  }
+  const posixPath = createPathModule(false);
+  const win32Path = createPathModule(true);
+  posixPath.posix = win32Path.posix = posixPath;
+  posixPath.win32 = win32Path.win32 = win32Path;
+  modules.path = host.environment().platform() === 'win32' ? win32Path : posixPath;
 
   modules.os = {
     type: function () {
@@ -6985,9 +7054,9 @@
       }
 
       // The 1.62 bundle references its package.json using a normalized
-      // driver/package/lib/../package.json resource path.
-      if (name.indexOf('driver/package/') === 0) {
-        const candidate = normalizeResourceName(name);
+      // driver/package/lib/../package.json resource path (path.join, so backslashes on Windows).
+      const candidate = normalizeResourceName(name);
+      if (candidate.indexOf('driver/package/') === 0) {
         if (global.__playwright4jDriverBundleSource.hasResource(candidate)) {
           return loadCommonJsModule(candidate);
         }
