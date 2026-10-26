@@ -98,6 +98,7 @@ com.microsoft.playwright.TestTap > shouldNotWaitForANavigationCausedByATap  # UP
 com.microsoft.playwright.TestTap > shouldSendAllOfTheCorrectEvents  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestTap > shouldSendWellFormedTouchPoints  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestTap > shouldWorkWithModifiers  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWaitForFunction > shouldPollOnInterval  # UPSTREAM_BIDI: not deterministic: both the setTimeout(100) between polls and the Date.now() delta it asserts on run inside Firefox (the polling loop in the injected script, Frame.waitForFunction), no driver code is involved; red in 2 of 3 Linux CI runs, green 8 of 8 locally with our driver and 8 of 8 with Microsoft's
 com.microsoft.playwright.TestWebSocket > shouldCallFrameReceivedPredicate  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestWebSocket > shouldCallFrameSentPredicate  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestWebSocket > shouldEmitBinaryFrameEvents  # UPSTREAM_BIDI: fails identically with the official driver
