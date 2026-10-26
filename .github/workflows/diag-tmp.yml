@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - name: probe
-            command: sleep 150
+            command: sleep 300
     env:
       GH_TOKEN: ${{ github.token }}
       DIAG_NAME: ${{ matrix.name }}
@@ -25,12 +25,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21', cache: gradle }
-      - shell: pwsh
-        run: pwsh -NoProfile -File .github/diag/monitor.ps1 -Once
-      - shell: pwsh
-        run: Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.github/diag/monitor.ps1' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP/monitor.out" -RedirectStandardError "$env:RUNNER_TEMP/monitor.err"
       - shell: bash
-        run: ${{ matrix.command }}
+        run: |
+          pwsh -NoProfile -File .github/diag/monitor.ps1 > "$RUNNER_TEMP/monitor.out" 2>&1 &
+          ${{ matrix.command }}
       - if: always()
         shell: pwsh
         run: |

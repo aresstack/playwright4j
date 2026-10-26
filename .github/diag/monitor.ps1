@@ -20,7 +20,7 @@ while ($true) {
   Add-Content $log $line
   $text = (Get-Content $log | Select-Object -Last 400) -join "`n"
   @{ output = @{ title = "metrics $env:DIAG_NAME"; summary = $line; text = $text } } | ConvertTo-Json -Depth 3 | Set-Content $body
-  gh api -X PATCH "repos/$repo/check-runs/$id" --input $body
+  gh api -X PATCH "repos/$repo/check-runs/$id" --input $body --silent
   if ($Once) { break }
   Start-Sleep -Seconds 120
 }
