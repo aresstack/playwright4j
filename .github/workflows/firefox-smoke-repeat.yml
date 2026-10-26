@@ -79,13 +79,24 @@ jobs:
         run: |
           $failed = 0
           $total = [int]$env:REPETITIONS
+          $results = "playwright-java-contract-tests/build/test-results/firefoxSmoke"
           for ($i = 1; $i -le $total; $i++) {
             Write-Host "=== run $i of $total"
-            ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --tests "$env:TESTS" "-Pplaywright4j.bidi.nativeBehavior=$env:NATIVE_BEHAVIOR" --no-daemon
+            # --rerun: after a green run Gradle would otherwise consider the task up to date.
+            ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun --tests "$env:TESTS" "-Pplaywright4j.bidi.nativeBehavior=$env:NATIVE_BEHAVIOR" --no-daemon
             if ($LASTEXITCODE -ne 0) { $failed++ }
             $dest = "repeat-results/run-$i"
             New-Item -ItemType Directory -Force $dest | Out-Null
-            Copy-Item -Recurse -Force playwright-java-contract-tests/build/test-results/firefoxSmoke $dest -ErrorAction SilentlyContinue
+            if (Test-Path $results) {
+              Move-Item -Force "$results/*" $dest
+              # A failed persistent run keeps its BiDi protocol; print it so the job log holds it as well.
+              Get-ChildItem "$dest/protocol" -Filter *.log -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "=== protocol of run $i : $($_.Name)"
+                Get-Content $_.FullName | ForEach-Object {
+                  if ($_.Length -gt 2000) { $_.Substring(0, 2000) + " ...[" + $_.Length + " chars]" } else { $_ }
+                }
+              }
+            }
           }
           Write-Host "$failed of $total runs failed"
           if ($failed -ne 0) { exit 1 }

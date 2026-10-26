@@ -2817,35 +2817,52 @@
     }
   };
 
-  // File streams, backed by the host filesystem. createWriteStream buffers and flushes on end;
-  // createReadStream emits the file's bytes once and ends. These let Playwright's HAR/zip and
-  // download code complete their pipe()/end() lifecycles (finish/close) so the commands settle
-  // instead of awaiting forever (which previously wedged BrowserContext.close()).
+  // File streams, backed by the host filesystem. createWriteStream writes every chunk through, as
+  // Node does (flags 'w' truncate the file on open, 'a' appends), so a stream that is never ended
+  // still leaves its data on disk: Playwright's DEBUG_FILE log is such a stream. The finish/close
+  // lifecycle lets Playwright's HAR/zip and download code complete their pipe()/end() so the
+  // commands settle instead of awaiting forever (which previously wedged BrowserContext.close()).
+  // createReadStream emits the file's bytes once and ends.
   modules.fs.createWriteStream = function (path, options) {
     const target = String(path);
-    const chunks = [];
+    const flags = options && typeof options === 'object' && typeof options.flags === 'string' ? options.flags : 'w';
     const stream = new Writable();
     stream.path = target;
     stream.bytesWritten = 0;
+    let opened = false;
+    function open() {
+      if (opened) { return; }
+      opened = true;
+      if (flags.indexOf('a') < 0) {
+        hostWriteFile(target, global.Buffer.alloc(0));
+      }
+    }
     stream._write = function (chunk, encoding, callback) {
-      const buffer = global.Buffer.isBuffer(chunk)
-        ? chunk
-        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
-      chunks.push(buffer);
-      stream.bytesWritten += buffer.length;
-      callback();
+      try {
+        open();
+        const buffer = toFileBuffer(chunk, encoding);
+        hostAppendFile(target, buffer);
+        stream.bytesWritten += buffer.length;
+        callback();
+      } catch (error) {
+        callback(error);
+      }
     };
     stream._final = function (callback) {
       try {
-        const all = chunks.length > 0 ? global.Buffer.concat(chunks) : global.Buffer.alloc(0);
-        host.fileSystem().writeFileBase64(target, all.toString('base64'));
+        open();
         callback();
       } catch (error) {
-        stream.emit('error', error);
-        callback();
+        callback(error);
       }
     };
     Promise.resolve().then(function () {
+      try {
+        open();
+      } catch (error) {
+        stream.emit('error', error);
+        return;
+      }
       stream.fireSticky('open', 0);
       stream.fireSticky('ready');
     });
