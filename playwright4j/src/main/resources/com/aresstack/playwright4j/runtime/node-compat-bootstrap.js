@@ -5801,24 +5801,9 @@
   // Playwright kept a utility context whose UtilityScript handle lives in that dead realm: every
   // utility evaluate then fails, and page.title() turns the failure into "". Remember recently
   // destroyed realms so that answer is dropped; the next window realm creates the world again.
-  //
-  // Firefox also reports the destruction of the previous document's realms only when that document's
-  // window global is torn down (RootMessageHandler's realm clean-up on window-global-destroyed), which
-  // is not ordered against the new document's navigationCommitted and load. After a process switch
-  // under load it arrives after load, and the new document's sandbox is announced only after load as
-  // well, so Playwright handed the previous document's utility world to page.title() and aborted that
-  // evaluation once the realm was destroyed. A new window realm of a frame is a new document: drop the
-  // frame's utility world then, so utility evaluations wait for the new document's world.
   const DESTROYED_REALMS_KEPT = 64;
 
   function patchBidiPageStaleUtilityWorld(BidiPage) {
-    const originalOnRealmCreated = BidiPage.prototype._onRealmCreated;
-    BidiPage.prototype._onRealmCreated = function (realmInfo) {
-      if (realmInfo.type === 'window' && !realmInfo.sandbox && !this._contextIdToContext.has(realmInfo.realm)) {
-        dropUtilityWorld(this, this._page.frameManager.frame(realmInfo.context));
-      }
-      return originalOnRealmCreated.apply(this, arguments);
-    };
     const originalOnRealmDestroyed = BidiPage.prototype._onRealmDestroyed;
     BidiPage.prototype._onRealmDestroyed = function (params) {
       const destroyed = this._playwright4jDestroyedRealms || (this._playwright4jDestroyedRealms = []);
@@ -5828,19 +5813,6 @@
       }
       return originalOnRealmDestroyed.apply(this, arguments);
     };
-  }
-
-  function dropUtilityWorld(bidiPage, frame) {
-    const utility = frame && frame._contextData.get('utility').context;
-    if (!utility) {
-      return;
-    }
-    bidiPage._contextIdToContext.forEach(function (context, realm) {
-      if (context === utility) {
-        bidiPage._contextIdToContext.delete(realm);
-      }
-    });
-    frame.contextDestroyed(utility);
   }
 
   function isRealmDestroyed(bidiPage, realm) {
