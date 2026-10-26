@@ -379,7 +379,7 @@ tasks.register('upstreamTestKnownLimitations', Test) {
     // Reported on stderr by default; -Pplaywright4j.unhandledRejections=strict terminates the driver.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'warn'
 
-    testLogging { events "failed"; showStandardStreams = false; exceptionFormat "full" }
+    testLogging { events "failed"; showStandardStreams = (findProperty("tmpStreams") == "true"); exceptionFormat "full" }
 }
 
 tasks.register('knownLimitationsCheck') {
