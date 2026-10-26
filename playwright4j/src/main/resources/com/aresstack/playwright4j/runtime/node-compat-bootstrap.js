@@ -5799,8 +5799,9 @@
   // sandbox realm the context holds when Firefox runs it. During a navigation Firefox creates and
   // destroys short-lived realms (#66). If the answering realm is destroyed before the answer arrives,
   // Playwright kept a utility context whose UtilityScript handle lives in that dead realm: every
-  // utility evaluate then fails, and page.title() turns the failure into "". Remember recently
-  // destroyed realms so that answer is dropped; the next window realm creates the world again.
+  // utility evaluate then fails, and page.title() turns the failure into "". Remember the realms
+  // destroyed while the request is pending so that answer is dropped; the next window realm creates
+  // the world again.
   //
   // Firefox also reports the destruction of the previous document's realms only when that document's
   // window global is torn down (RootMessageHandler's realm clean-up on window-global-destroyed), which
@@ -5809,8 +5810,6 @@
   // well, so Playwright handed the previous document's utility world to page.title() and aborted that
   // evaluation once the realm was destroyed. A new window realm of a frame is a new document: drop the
   // frame's utility world then, so utility evaluations wait for the new document's world.
-  const DESTROYED_REALMS_KEPT = 64;
-
   function patchBidiPageStaleUtilityWorld(BidiPage) {
     const originalOnRealmCreated = BidiPage.prototype._onRealmCreated;
     BidiPage.prototype._onRealmCreated = function (realmInfo) {
@@ -5821,13 +5820,37 @@
     };
     const originalOnRealmDestroyed = BidiPage.prototype._onRealmDestroyed;
     BidiPage.prototype._onRealmDestroyed = function (params) {
-      const destroyed = this._playwright4jDestroyedRealms || (this._playwright4jDestroyedRealms = []);
-      destroyed.push(params.realm);
-      if (destroyed.length > DESTROYED_REALMS_KEPT) {
-        destroyed.shift();
+      const tracked = destroyedRealms(this);
+      if (tracked.pending > 0) {
+        tracked.realms.add(params.realm);
       }
       return originalOnRealmDestroyed.apply(this, arguments);
     };
+    const originalCreateUtilityWorld = BidiPage.prototype._createUtilityWorld;
+    BidiPage.prototype._createUtilityWorld = function () {
+      const self = this;
+      const args = arguments;
+      return whileTrackingDestroyedRealms(this, function () {
+        return originalCreateUtilityWorld.apply(self, args);
+      });
+    };
+  }
+
+  // Realms destroyed while a request whose answer names a realm is pending; cleared when none is.
+  function destroyedRealms(bidiPage) {
+    return bidiPage._playwright4jDestroyedRealms || (bidiPage._playwright4jDestroyedRealms = { pending: 0, realms: new Set() });
+  }
+
+  async function whileTrackingDestroyedRealms(bidiPage, operation) {
+    const tracked = destroyedRealms(bidiPage);
+    tracked.pending++;
+    try {
+      return await operation();
+    } finally {
+      if (--tracked.pending === 0) {
+        tracked.realms.clear();
+      }
+    }
   }
 
   function dropUtilityWorld(bidiPage, frame) {
@@ -5843,8 +5866,85 @@
     frame.contextDestroyed(utility);
   }
 
+  // A frame's navigationCommitted can name a frame Playwright does not know (detached, or never
+  // reported); ignore it like the other navigation events do.
+  function patchBidiPageUnknownFrameCommit(BidiPage) {
+    const originalOnNavigationCommitted = BidiPage.prototype._onNavigationCommitted;
+    BidiPage.prototype._onNavigationCommitted = function (params) {
+      if (this._page.frameManager.frame(params.context)) {
+        originalOnNavigationCommitted.apply(this, arguments);
+      }
+    };
+  }
+
+  // BidiNetworkManager drops a request event of a frame it does not know (detached meanwhile, or
+  // not reported yet). Firefox holds an intercepted request until it is answered, so the page would
+  // wait for it forever: let it go on unrouted, as the browser session does for tabs without a page.
+  function continueUnattributedRequest(networkManager, params) {
+    if (!params.isBlocked) {
+      return;
+    }
+    pw4jDebug('BiDi request of an unknown frame continued without routes: ' + params.request.url);
+    networkManager._session.sendMayFail('network.continueRequest', { request: params.request.request });
+  }
+
+  // BidiBrowser reads an iframe's name with browsingContext.locateNodes after reporting the frame,
+  // but the client learns a frame's name only from its navigation events, and the frame's commit can
+  // arrive before that answer. Hold the BiDi messages that follow until the name is in, so the commit
+  // carries it, as CDP's frameNavigated does. Held messages are delivered in their order, one per
+  // microtask turn, so a held contextCreated starts its own lookup before anything after it is seen.
+  function readFrameName(connection, bidiPage, frame) {
+    const hold = heldBidiMessages(connection);
+    const lookup = connection._lastId + 1;
+    const named = bidiPage._getFrameNode(frame).then(function (node) {
+      const attributes = node?.value?.attributes;
+      frame._name = attributes?.name ?? attributes?.id ?? '';
+    }, function () {});
+    // The request goes out synchronously; its answer comes with a later message.
+    if (connection._lastId !== lookup) {
+      return;
+    }
+    hold.lookups.add(lookup);
+    named.then(function () {
+      hold.lookups.delete(lookup);
+      hold.release();
+    });
+  }
+
+  function heldBidiMessages(connection) {
+    if (connection._playwright4jHeldMessages) {
+      return connection._playwright4jHeldMessages;
+    }
+    const transport = connection._transport;
+    const deliver = transport.onmessage;
+    const hold = { lookups: new Set(), queue: [], releasing: false };
+    hold.release = function () {
+      if (hold.releasing) {
+        return;
+      }
+      hold.releasing = true;
+      (function next() {
+        if (hold.lookups.size || !hold.queue.length) {
+          hold.releasing = false;
+          return;
+        }
+        deliver(hold.queue.shift());
+        Promise.resolve().then(next);
+      })();
+    };
+    transport.onmessage = function (message) {
+      if (hold.lookups.has(message.id) || (!hold.lookups.size && !hold.queue.length)) {
+        deliver(message);
+      } else {
+        hold.queue.push(message);
+      }
+    };
+    connection._playwright4jHeldMessages = hold;
+    return hold;
+  }
+
   function isRealmDestroyed(bidiPage, realm) {
-    return (bidiPage._playwright4jDestroyedRealms || []).indexOf(realm) >= 0;
+    return destroyedRealms(bidiPage).realms.has(realm);
   }
 
   // Playwright's BiDi Firefox profile (third_party/firefoxPrefs.js, taken from Puppeteer) enables
@@ -6547,13 +6647,25 @@
   // Playwright's utility world; the shim reads page state there, never in the main world.
   const UTILITY_WORLD_NAME = '__playwright_utility_world__';
 
+  // Firefox collects script.getRealms from the tab's window globals asynchronously, so the answer can
+  // be older than realm events handled meanwhile: skip realms destroyed since, and once a window realm
+  // was reported by its own event, the events are newer than the snapshot.
   async function restoreTakenOverPage(bidiPage) {
     const contextId = bidiPage._session.sessionId;
     try {
-      const { realms } = await bidiPage._session.send('script.getRealms', { context: contextId, type: 'window' });
-      for (const realm of realms) {
-        bidiPage._onRealmCreated(Object.assign({ context: contextId }, realm));
-      }
+      const mainWorld = bidiPage._page.mainFrame()._contextData.get('main');
+      const reported = mainWorld.context;
+      const realms = await whileTrackingDestroyedRealms(bidiPage, async function () {
+        const snapshot = (await bidiPage._session.send('script.getRealms', { context: contextId, type: 'window' })).realms;
+        if (mainWorld.context === reported) {
+          for (const realm of snapshot) {
+            if (!isRealmDestroyed(bidiPage, realm.realm)) {
+              bidiPage._onRealmCreated(Object.assign({ context: contextId }, realm));
+            }
+          }
+        }
+        return snapshot;
+      });
       const main = realms.find(function (realm) { return !realm.sandbox; });
       if (!main) {
         return;
@@ -7143,6 +7255,9 @@
         });
       },
       isRealmDestroyed: isRealmDestroyed,
+      readFrameName: readFrameName,
+      continueUnattributedRequest: continueUnattributedRequest,
+      restoreTakenOverPage: restoreTakenOverPage,
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
@@ -7186,6 +7301,7 @@
           bidiPageClasses.push(BidiPage);
           patchBidiPageInitialBlankLoad(BidiPage);
           patchBidiPageStaleUtilityWorld(BidiPage);
+          patchBidiPageUnknownFrameCommit(BidiPage);
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
           patchBidiPageNoScreenshotStyleToggle(BidiPage);
@@ -7226,6 +7342,14 @@
     source = replaceCoreBundleAnchor(source, '      _onAuthRequired(params2) {\n        const isBasic = ',
       '      _onAuthRequired(params2) {\n        ' + hooks + '.onBidiAuthRequired(this, params2);\n      }\n'
       + '      _answerAuthRequired(params2) {\n        const isBasic = ', 1);
+    source = replaceCoreBundleAnchor(source, 'this._page.frameManager.frame(param.context) : null;\n        if (!frame)\n          return;\n',
+      'this._page.frameManager.frame(param.context) : null;\n        if (!frame) {\n          ' + hooks
+      + '.continueUnattributedRequest(this, param);\n          return;\n        }\n', 1);
+    source = replaceCoreBundleAnchor(source, '            page2._getFrameNode(frame).then((node) => {\n'
+      + '              const attributes = node?.value?.attributes;\n'
+      + '              frame._name = attributes?.name ?? attributes?.id ?? "";\n'
+      + '            }, () => {\n            });\n',
+      '            ' + hooks + '.readFrameName(this._connection, page2, frame);\n', 1);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
     // Keyboard.down/up/press with a single grapheme outside the US layout (graphemeKeyDescription).
     source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
@@ -7298,7 +7422,7 @@
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
-      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), WSServer: WSServer, createProfile: createProfile, '
+      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), BidiNetworkManager: BidiNetworkManager, BidiConnection: BidiConnection, FrameManager: FrameManager, WSServer: WSServer, createProfile: createProfile, '
       + 'generateSelfSignedCertificate: generateSelfSignedCertificate, Keyboard: Keyboard, RawKeyboardImpl2: ' + hooks + '.bidiKeyboard(RawKeyboardImpl2) };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
