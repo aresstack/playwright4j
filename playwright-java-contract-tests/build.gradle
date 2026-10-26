@@ -407,6 +407,9 @@ tasks.register('upstreamTestKnownLimitations', Test) {
     systemProperty 'playwright4j.debug', findProperty('playwright4j.debug') ?: 'false'
     systemProperty 'playwright4j.chrome.executablePath', findProperty('playwright4j.chrome.executablePath') ?: ''
     systemProperty 'junit.jupiter.execution.timeout.default', findProperty('playwright4j.testTimeout') ?: '45 s'
+    // @BeforeAll launches the browser: Playwright's default launch timeout, since every shard starts
+    // a browser cold on a fresh runner.
+    systemProperty 'junit.jupiter.execution.timeout.beforeall.method.default', '180 s'
     systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SAME_THREAD'
     // Reported on stderr by default; -Pplaywright4j.unhandledRejections=strict terminates the driver.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'warn'

@@ -32,7 +32,8 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     private static final String ARGUMENT_SEPARATOR = "";
     private static final String REMOTE_DEBUGGING_PIPE = "--remote-debugging-pipe";
     private static final String REMOTE_DEBUGGING_PORT = "--remote-debugging-port=0";
-    private static final long DEVTOOLS_PORT_TIMEOUT_SECONDS = 30L;
+    // Playwright's default launch timeout; a cold first start on a CI runner can take longer than 30 s.
+    private static final long DEVTOOLS_PORT_TIMEOUT_SECONDS = 180L;
     private static final java.util.regex.Pattern DEVTOOLS_STDERR_PATTERN =
             java.util.regex.Pattern.compile("DevTools listening on (ws://\\S+)");
     private static final int STDERR_RING_BUFFER_LINES = 80;
