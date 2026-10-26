@@ -34,7 +34,8 @@ installed browsers. Run it with:
 CI splits the suite with `-Pplaywright4j.shard=<i>/<n>` (every n-th test class, sorted by name)
 and runs `knownLimitationsCheck` once over the results of all shards.
 
-The check fails on any failure that is not listed in
+The check also fails when an upstream test class reported no results. It fails on any failure
+that is not listed in
 `playwright-java-contract-tests/known-limitations/<browser>.txt` and on a listed failure that
 passes, except for entries that depend on the host or on upstream timing (`OS_ENVIRONMENT`,
 `UPSTREAM_BIDI`). Each entry names its category; [`../problems.md`](../problems.md) explains them.

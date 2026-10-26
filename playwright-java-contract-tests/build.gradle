@@ -420,6 +420,22 @@ tasks.register('knownLimitationsCheck') {
             throw new GradleException("knownLimitationsCheck: no JUnit XML results under ${resultsDir}")
         }
 
+        // Every upstream class with tests must have reported, so a lost shard or class fails the gate.
+        def reported = xmls.collect { it.name.replaceAll(/^TEST-|\.xml$/, '').replaceAll(/\$.*$/, '') } as Set
+        def unreported = new TreeSet<String>()
+        sourceSets.upstreamTest.java.srcDirs.each { File root ->
+            fileTree(root).matching { include '**/*.java' }.each { File source ->
+                def text = source.getText('UTF-8')
+                if (text =~ /@(Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b/ && !(text =~ /\babstract\s+class\b/)) {
+                    def name = root.toPath().relativize(source.toPath()).toString().replace(File.separatorChar, '.' as char).replaceAll(/\.java$/, '')
+                    if (!reported.contains(name)) unreported << name
+                }
+            }
+        }
+        if (!unreported.isEmpty()) {
+            throw new GradleException("knownLimitationsCheck: no results for ${unreported.size()} test class(es): ${unreported.join(', ')}")
+        }
+
         int passed = 0, failed = 0, skipped = 0
         def failedKeys = new TreeSet<String>()
         xmls.each { xml ->
