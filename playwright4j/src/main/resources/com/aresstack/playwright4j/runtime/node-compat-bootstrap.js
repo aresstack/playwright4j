@@ -6595,134 +6595,6 @@
     };
   }
 
-  // Playwright 1.62 types text it cannot press on the US keyboard layout (ä, ö, ü, ß, é, emoji,
-  // and all text of insertText/fill) through window.__pw_bidiInsertText: a function it installs
-  // in the main world of every document (BidiBrowserContext.initialize -> extendInjectedScript)
-  // and that inserts the text through the DOM with an untrusted InputEvent. Pages can see both
-  // the global and the events. WebDriver BiDi accepts any single grapheme as the value of a
-  // keyDown/keyUp action, and Firefox then dispatches trusted keydown, keypress, beforeinput,
-  // input and keyup events to the focused element, also inside iframes, as for a person typing.
-  // So sendText types one grapheme after the other, and the main-world install is dropped
-  // (patchCoreBundleSource). For keyboard.type/insertText line breaks and tabs are typed as Enter
-  // and Tab, as a person would. fill() only sets the content and must never submit or move the
-  // focus: before any input it refuses tabs, and line breaks for a single-line <input>; it types
-  // line breaks as Enter into a <textarea>
-  // and as Shift+Enter (a line break, not a new paragraph or a "send") into rich-text editors.
-  const BIDI_KEY_ENTER = '\uE007';
-  const BIDI_KEY_TAB = '\uE004';
-  const BIDI_KEY_SHIFT = '\uE008';
-  const BIDI_SEND_TEXT_CHUNK = 100;
-
-  function splitGraphemes(text) {
-    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
-      return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text), function (part) {
-        return part.segment;
-      });
-    }
-    // Without Intl.Segmenter: code points, with combining marks, variation selectors, emoji
-    // modifiers and zero-width-joiner sequences kept on the code point before them.
-    const graphemes = [];
-    let joinNext = false;
-    for (const codePoint of text) {
-      const attaches = /^[\p{M}︀-️\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}‍]$/u.test(codePoint);
-      if (graphemes.length && (attaches || joinNext)) {
-        graphemes[graphemes.length - 1] += codePoint;
-      } else {
-        graphemes.push(codePoint);
-      }
-      joinNext = codePoint === '‍';
-    }
-    return graphemes;
-  }
-
-  function bidiKeyValuesForText(text) {
-    return splitGraphemes(String(text).replace(/\r\n?/g, '\n')).map(function (grapheme) {
-      if (grapheme === '\n') {
-        return BIDI_KEY_ENTER;
-      }
-      if (grapheme === '\t') {
-        return BIDI_KEY_TAB;
-      }
-      // WebDriver reserves U+E000..U+E05D for named keys (Shift, Enter, ...); typing them as text
-      // would press those keys instead.
-      if (/[\uE000-\uE05D]/.test(grapheme)) {
-        throw new Error('Cannot type U+' + grapheme.charCodeAt(0).toString(16).toUpperCase()
-          + ' over WebDriver BiDi: the code point is reserved for a named key');
-      }
-      return grapheme;
-    });
-  }
-
-  function bidiKeyActions(value, shiftEnter) {
-    if (shiftEnter && value === BIDI_KEY_ENTER) {
-      return [{ type: 'keyDown', value: BIDI_KEY_SHIFT }, { type: 'keyDown', value: value },
-        { type: 'keyUp', value: value }, { type: 'keyUp', value: BIDI_KEY_SHIFT }];
-    }
-    return [{ type: 'keyDown', value: value }, { type: 'keyUp', value: value }];
-  }
-
-  function patchBidiKeyboardSendText(RawKeyboard) {
-    // lineBreak: 'enter' (default) or 'shift-enter'.
-    RawKeyboard.prototype.pw4jSendText = async function (progress, text, lineBreak) {
-      const values = bidiKeyValuesForText(text);
-      for (let start = 0; start < values.length; start += BIDI_SEND_TEXT_CHUNK) {
-        const actions = [];
-        values.slice(start, start + BIDI_SEND_TEXT_CHUNK).forEach(function (value) {
-          actions.push.apply(actions, bidiKeyActions(value, lineBreak === 'shift-enter'));
-        });
-        await this._performActions(progress, actions);
-      }
-    };
-    RawKeyboard.prototype.sendText = function (progress, text) {
-      return this.pw4jSendText(progress, text, 'enter');
-    };
-    // keyboard.down/up/press with a grapheme of several code points (é as e + U+0301, 👍🏽):
-    // Playwright's key mapping accepts only one code point; BiDi takes the grapheme as it is.
-    const originalKeydown = RawKeyboard.prototype.keydown;
-    const originalKeyup = RawKeyboard.prototype.keyup;
-    RawKeyboard.prototype.keydown = function (progress, modifiers, keyName, description, autoRepeat) {
-      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1) {
-        return this._performActions(progress, [{ type: 'keyDown', value: keyName }]);
-      }
-      return originalKeydown.apply(this, arguments);
-    };
-    RawKeyboard.prototype.keyup = function (progress, modifiers, keyName, description) {
-      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1) {
-        return this._performActions(progress, [{ type: 'keyUp', value: keyName }]);
-      }
-      return originalKeyup.apply(this, arguments);
-    };
-  }
-
-  // One printable grapheme that WebDriver BiDi can send as the value of a key action.
-  function isTypableGrapheme(text) {
-    return typeof text === 'string' && text.length > 0 && splitGraphemes(text).length === 1
-      && !/[\uE000-\uE05D]/.test(text) && !/^[\u0000-\u001F\u007F]$/.test(text);
-  }
-
-  // keyboard.down/up/press("ä"): Playwright knows only keys of the US layout and fails with
-  // "Unknown key" before the raw keyboard is reached. On BiDi Firefox any other single grapheme
-  // is a key of its own, sent as a real keyDown/keyUp (the browser generates the text, as for a
-  // person with a German layout). The code is only Playwright's bookkeeping of pressed keys; BiDi
-  // does not send it.
-  function graphemeKeyDescription(raw, keyString) {
-    if (!raw || typeof raw.pw4jSendText !== 'function' || !isTypableGrapheme(keyString)) {
-      return undefined;
-    }
-    return { key: keyString, keyCode: 0, keyCodeWithoutLocation: 0, code: 'pw4j:' + keyString, text: keyString, location: 0 };
-  }
-
-  // fill() after Playwright's own preparation (focus, select all) found an element that needs the
-  // text typed: a <textarea> or a rich-text element (contenteditable). Other engines keep upstream
-  // insertText.
-  function fillTypedText(keyboard, progress, value, richText) {
-    const raw = keyboard && keyboard._raw;
-    if (raw && typeof raw.pw4jSendText === 'function') {
-      return raw.pw4jSendText(progress, value, richText ? 'shift-enter' : 'enter');
-    }
-    return keyboard.insertText(progress, value);
-  }
-
   // Before a screenshot Playwright appends and removes a <style> in every frame to restart CSS
   // animations in step, a DOM change the page can observe (#40). Firefox keeps animations stable
   // without it, as Playwright's Juggler Firefox, which does not toggle either.
@@ -6868,17 +6740,7 @@
           patchBidiPageCacheBehavior(BidiPage);
           patchBidiPageNaturalPointer(BidiPage);
         });
-      },
-      bidiKeyboard: function (RawKeyboard) {
-        return patchOnce(RawKeyboard, function () {
-          patchBidiKeyboardSendText(RawKeyboard);
-        });
-      },
-      rejectsFillLineBreaks: function (keyboard) {
-        return !!(keyboard && keyboard._raw && typeof keyboard._raw.pw4jSendText === 'function');
-      },
-      fillTypedText: fillTypedText,
-      graphemeKeyDescription: graphemeKeyDescription
+      }
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
     // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
@@ -6936,37 +6798,6 @@
       + '        }\n'
       + '        const utility = await this._context.injectedScript();\n'
       + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));', 1);
-    // Text is typed as real, trusted key events (patchBidiKeyboardSendText); this replaces the
-    // utility-world insertText above (an untrusted InputEvent), which no longer runs on BiDi.
-    source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
-    // Keyboard.down/up/press: single graphemes outside the US layout (see graphemeKeyDescription).
-    source = replaceCoreBundleAnchor(source, '        let description = usKeyboardLayout.get(keyString);\n        if (!description)\n',
-      '        let description = usKeyboardLayout.get(keyString) || ' + hooks + '.graphemeKeyDescription(this._raw, keyString);\n'
-      + '        if (!description)\n', 1);
-    // ElementHandle._fill: with real key events a line break is a key press, so on BiDi Firefox
-    // fill() refuses it for a single-line <input> before any input (it could submit the form),
-    // refuses a tab for every element (Tab would move the focus and type the rest elsewhere),
-    // and tells a rich-text element apart from a <textarea> (see fillTypedText). The check runs
-    // in the utility world, inside Playwright's own fill evaluation.
-    source = replaceCoreBundleAnchor(source, 'async ([injected, node, { value: value3, force }]) => {',
-      'async ([injected, node, { value: value3, force, pw4jRejectLineBreaks }]) => {', 1);
-    source = replaceCoreBundleAnchor(source, '            return injected.fill(node, value3);',
-      '            const pw4jTarget = injected.retarget(node, "follow-label");\n'
-      + '            const pw4jTag = pw4jTarget ? pw4jTarget.nodeName.toLowerCase() : "";\n'
-      + '            if (pw4jRejectLineBreaks && pw4jTag === "input" && /[\\r\\n]/.test(value3))\n'
-      + '              throw injected.createStacklessError("Cannot fill text with a line break into a single-line <input>: '
-      + 'typing it would press Enter, which may submit the form");\n'
-      + '            if (pw4jRejectLineBreaks && /\\t/.test(value3))\n'
-      + '              throw injected.createStacklessError("Cannot fill text with a tab: typing it would press Tab, '
-      + 'which moves the focus to the next field");\n'
-      + '            const pw4jFilled = injected.fill(node, value3);\n'
-      + '            return pw4jFilled === "needsinput" && pw4jTag !== "input" && pw4jTag !== "textarea" ? "needsinput:richtext" : pw4jFilled;', 1);
-    source = replaceCoreBundleAnchor(source, '          }, { value: value2, force: options.force }));',
-      '          }, { value: value2, force: options.force, pw4jRejectLineBreaks: ' + hooks + '.rejectsFillLineBreaks(this._page.keyboard) }));', 1);
-    source = replaceCoreBundleAnchor(source, '          if (result2 === "needsinput") {',
-      '          if (result2 === "needsinput" || result2 === "needsinput:richtext") {', 1);
-    source = replaceCoreBundleAnchor(source, '              await this._page.keyboard.insertText(progress3, value2);',
-      '              await ' + hooks + '.fillTypedText(this._page.keyboard, progress3, value2, result2 === "needsinput:richtext");', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
