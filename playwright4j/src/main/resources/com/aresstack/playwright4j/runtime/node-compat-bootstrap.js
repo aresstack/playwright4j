@@ -5868,18 +5868,12 @@
 
   // A frame's navigationCommitted can name a frame Playwright does not know (detached, or never
   // reported); ignore it like the other navigation events do.
-  // BidiBrowser reads an iframe's name with browsingContext.locateNodes after reporting the frame,
-  // and the client learns a frame's name only from a navigation. When the name arrives after the
-  // frame's commit was reported, report it with a navigation of the current document.
-  function patchBidiPageFrameName(BidiPage) {
+  function patchBidiPageUnknownFrameCommit(BidiPage) {
     const originalOnNavigationCommitted = BidiPage.prototype._onNavigationCommitted;
     BidiPage.prototype._onNavigationCommitted = function (params) {
-      const frame = this._page.frameManager.frame(params.context);
-      if (!frame) {
-        return;
+      if (this._page.frameManager.frame(params.context)) {
+        originalOnNavigationCommitted.apply(this, arguments);
       }
-      originalOnNavigationCommitted.apply(this, arguments);
-      frame._playwright4jNameReported = true;
     };
   }
 
@@ -5894,14 +5888,59 @@
     networkManager._session.sendMayFail('network.continueRequest', { request: params.request.request });
   }
 
-  function frameNameResolved(bidiPage, frame, name) {
-    if (frame._name === name) {
+  // BidiBrowser reads an iframe's name with browsingContext.locateNodes after reporting the frame,
+  // but the client learns a frame's name only from its navigation events, and the frame's commit can
+  // arrive before that answer. Hold the BiDi messages that follow until the name is in, so the commit
+  // carries it, as CDP's frameNavigated does. Held messages are delivered in their order, one per
+  // microtask turn, so a held contextCreated starts its own lookup before anything after it is seen.
+  function readFrameName(connection, bidiPage, frame) {
+    const hold = heldBidiMessages(connection);
+    const lookup = connection._lastId + 1;
+    const named = bidiPage._getFrameNode(frame).then(function (node) {
+      const attributes = node?.value?.attributes;
+      frame._name = attributes?.name ?? attributes?.id ?? '';
+    }, function () {});
+    // The request goes out synchronously; its answer comes with a later message.
+    if (connection._lastId !== lookup) {
       return;
     }
-    frame._name = name;
-    if (frame._playwright4jNameReported) {
-      bidiPage._page.frameManager._fireInternalFrameNavigation(frame, { url: frame._url, name: name, isPublic: true });
+    hold.lookups.add(lookup);
+    named.then(function () {
+      hold.lookups.delete(lookup);
+      hold.release();
+    });
+  }
+
+  function heldBidiMessages(connection) {
+    if (connection._playwright4jHeldMessages) {
+      return connection._playwright4jHeldMessages;
     }
+    const transport = connection._transport;
+    const deliver = transport.onmessage;
+    const hold = { lookups: new Set(), queue: [], releasing: false };
+    hold.release = function () {
+      if (hold.releasing) {
+        return;
+      }
+      hold.releasing = true;
+      (function next() {
+        if (hold.lookups.size || !hold.queue.length) {
+          hold.releasing = false;
+          return;
+        }
+        deliver(hold.queue.shift());
+        Promise.resolve().then(next);
+      })();
+    };
+    transport.onmessage = function (message) {
+      if (hold.lookups.has(message.id) || (!hold.lookups.size && !hold.queue.length)) {
+        deliver(message);
+      } else {
+        hold.queue.push(message);
+      }
+    };
+    connection._playwright4jHeldMessages = hold;
+    return hold;
   }
 
   function isRealmDestroyed(bidiPage, realm) {
@@ -7216,7 +7255,7 @@
         });
       },
       isRealmDestroyed: isRealmDestroyed,
-      frameNameResolved: frameNameResolved,
+      readFrameName: readFrameName,
       continueUnattributedRequest: continueUnattributedRequest,
       restoreTakenOverPage: restoreTakenOverPage,
       isBidiPage: function (delegate) {
@@ -7262,7 +7301,7 @@
           bidiPageClasses.push(BidiPage);
           patchBidiPageInitialBlankLoad(BidiPage);
           patchBidiPageStaleUtilityWorld(BidiPage);
-          patchBidiPageFrameName(BidiPage);
+          patchBidiPageUnknownFrameCommit(BidiPage);
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
           patchBidiPageNoScreenshotStyleToggle(BidiPage);
@@ -7306,8 +7345,11 @@
     source = replaceCoreBundleAnchor(source, 'this._page.frameManager.frame(param.context) : null;\n        if (!frame)\n          return;\n',
       'this._page.frameManager.frame(param.context) : null;\n        if (!frame) {\n          ' + hooks
       + '.continueUnattributedRequest(this, param);\n          return;\n        }\n', 1);
-    source = replaceCoreBundleAnchor(source, '              frame._name = attributes?.name ?? attributes?.id ?? "";\n',
-      '              ' + hooks + '.frameNameResolved(page2, frame, attributes?.name ?? attributes?.id ?? "");\n', 1);
+    source = replaceCoreBundleAnchor(source, '            page2._getFrameNode(frame).then((node) => {\n'
+      + '              const attributes = node?.value?.attributes;\n'
+      + '              frame._name = attributes?.name ?? attributes?.id ?? "";\n'
+      + '            }, () => {\n            });\n',
+      '            ' + hooks + '.readFrameName(this._connection, page2, frame);\n', 1);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
     // Keyboard.down/up/press with a single grapheme outside the US layout (graphemeKeyDescription).
     source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
@@ -7380,7 +7422,7 @@
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
-      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), BidiNetworkManager: BidiNetworkManager, WSServer: WSServer, createProfile: createProfile, '
+      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), BidiNetworkManager: BidiNetworkManager, BidiConnection: BidiConnection, WSServer: WSServer, createProfile: createProfile, '
       + 'generateSelfSignedCertificate: generateSelfSignedCertificate, Keyboard: Keyboard, RawKeyboardImpl2: ' + hooks + '.bidiKeyboard(RawKeyboardImpl2) };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
