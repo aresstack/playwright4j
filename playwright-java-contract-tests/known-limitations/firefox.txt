@@ -1,0 +1,133 @@
+# Known limitations of the upstream Playwright Java suite on Firefox over WebDriver BiDi
+# (moz-firefox). Format and categories: see problems.md. UPSTREAM_BIDI entries fail the same way
+# with Microsoft's own driver on the same Firefox (-Pplaywright4j.referenceDriver=official); some
+# of them do not fail on every run there either, so they may pass.
+
+com.microsoft.playwright.TestBrowser2 > shouldSupportDeprecatedChannelEnum  # UPSTREAM_BIDI: the deprecated BrowserChannel enum has no moz-firefox
+com.microsoft.playwright.TestBrowserContextAddCookies > shouldNotBlockThirdPartyCookies  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextAddCookies > shouldSetACookieOnADifferentDomain  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextAddCookies > shouldSetACookieWithAPath  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextAddCookies > shouldSetCookieWithReasonableDefaults  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextBasic > shouldCreateNewContext  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextBasic > shouldDisableJavascript  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextBasic > shouldIsolateLocalStorageAndCookies  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextCookies > shouldAcceptSameSiteAttribute  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextCookies > shouldGetACookie  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextCookies > shouldGetANonSessionCookie  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextCookies > shouldGetCookiesFromMultipleUrls  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextCookies > shouldGetMultipleCookies  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextHar > shouldGoBackToRedirectedNavigation  # UPSTREAM_BIDI: not deterministic, fails with either driver: on goBack Firefox reports browsingContext.navigationStarted but neither navigationCommitted nor load for the page restored from history, and Playwright's goBack waits for load (BidiPage.goBack, server/bidi/bidiPage.ts); 5 repeats per CI runner: Windows ours 5/5 green and Microsoft's 5/5 red, Linux ours 5/5 red and Microsoft's 5/5 green
+com.microsoft.playwright.TestBrowserContextHar > shouldRoundTripHarWithPostData  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextStorageState > shouldRoundTripThroughTheFile  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextViewport > shouldSupportTouchWithNullViewport  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserTypeConnect > shouldRecordTraceWithSources  # KNOWN_UPSTREAM_PARITY: trace sources over connect, the official driver fails identically
+com.microsoft.playwright.TestClick > shouldClickTheButtonWithDeviceScaleFactorSet  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClick > shouldClickTheButtonWithFixedPositionInsideAnIframe  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClick > shouldDoubleClickTheButton  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClick > shouldSelectTheTextByTripleClicking  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClientCertificates > shouldWorkWithBrowserLaunchPersistentContext  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClientCertificates > shouldWorkWithBrowserNewContext  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClientCertificates > shouldWorkWithBrowserNewPage  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestClientCertificates > shouldWorkWithBrowserNewPageWhenPassingAsContent  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestDefaultBrowserContext2 > shouldSupportColorSchemeOption  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestDefaultBrowserContext2 > shouldSupportContrastOption  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestDefaultBrowserContext2 > shouldSupportHasTouchOption  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestDownload > shouldBeAbleToCancelPendingDownloads  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestElementHandleBoundingBox > shouldHandleNestedFrames  # UPSTREAM_BIDI: frame-name race, same with Microsoft's driver: BidiBrowser._onBrowsingContextCreated (server/bidi/bidiBrowser.ts) reports the frame and reads its name attribute afterwards, so page.frame(name) can be null
+com.microsoft.playwright.TestElementHandleBoundingBox > shouldWork  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestElementHandleClick > shouldDoubleClickTheButton  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestElementHandleClick > shouldWorkForTextNodes  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestElementHandleContentFrame > shouldWorkForCrossFrameEvaluations  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestElementHandleQuerySelector > shouldWorkForAdoptedElements  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.junit.TestFixtureChannelOption > testBrowserChannel  # UPSTREAM_BIDI: the test knows only the chrome and msedge channels
+com.microsoft.playwright.junit.TestFixtureDeviceOption > testPredefinedDeviceParameters  # UNSUPPORTED_ENGINE: the iPhone device descriptor launches WebKit
+com.microsoft.playwright.junit.TestFixtureOptions > testBaseUrl  # UNSUPPORTED_ENGINE: the fixture launches WebKit
+com.microsoft.playwright.junit.TestFixtureOptions > testCustomBrowser  # UNSUPPORTED_ENGINE: the fixture launches WebKit
+com.microsoft.playwright.junit.TestFixtureOptions > testCustomTestId  # UNSUPPORTED_ENGINE: the fixture launches WebKit
+com.microsoft.playwright.TestFrameNavigate > shouldContinueAfterClientRedirect  # UPSTREAM_BIDI: timing race, failed in 1 of 3 full runs here and passed 3 of 3 class runs with either driver: the test expects a timeout while a client redirect is pending, and the redirect sometimes commits first
+com.microsoft.playwright.TestGeolocation > shouldUseContextOptionsForPopup  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestLocatorClick > shouldDoubleClickTheButton  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkPostData > shouldReturnCorrectPostDataBufferForUtf8Body  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkPostData > shouldReturnPostDataForPUTRequests  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkPostData > shouldReturnPostDataWOContentType  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkRequest > shouldReturnEventSource  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkRequest > shouldReturnPostData  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkRequest > shouldWorkWithBinaryPostData  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkRequest > shouldWorkWithBinaryPostDataAndInterception  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestNetworkResponse > shouldReturnServerAddress  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageBasic > frameDragAndDropShouldWork  # UPSTREAM_BIDI: frame-name race, same with Microsoft's driver: BidiBrowser._onBrowsingContextCreated (server/bidi/bidiBrowser.ts) reports the frame and reads its name attribute afterwards, so page.frame(name) can be null
+com.microsoft.playwright.TestPageBasic > framePressShouldWork  # UPSTREAM_BIDI: frame-name race, same with Microsoft's driver: BidiBrowser._onBrowsingContextCreated (server/bidi/bidiBrowser.ts) reports the frame and reads its name attribute afterwards, so page.frame(name) can be null
+com.microsoft.playwright.TestPageBasic > pageFrameShouldRespectName  # UPSTREAM_BIDI: frame-name race, same with Microsoft's driver: BidiBrowser._onBrowsingContextCreated (server/bidi/bidiBrowser.ts) reports the frame and reads its name attribute afterwards, so page.frame(name) can be null
+com.microsoft.playwright.TestPageDrag > shouldWorkIfTheDragEventIsCapturedButNotCanceled  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageDrag > shouldWorkWithLocators  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageDrag > shouldWorkWithTheHelperMethod  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldChangeTheActualColorsInCss  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldDefaultToLight  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldEmulateContrast  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldEmulateForcedColors  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldEmulateReducedMotion  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldEmulateSchemeWork  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldEmulateType  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldWorkInCrossProcessIframe  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEmulateMedia > shouldWorkInPopup  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEventConsole > shouldNotFailForWindowObject  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEventConsole > shouldTriggerCorrectLog  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageEventConsole > shouldWork  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageKeyboard > shouldPressPlus  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageKeyboard > shouldPressShiftPlus  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageKeyboard > shouldReportMultipleModifiers  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageKeyboard > shouldThrowOnUnknownKeys  # DELIBERATE_DIVERGENCE: keyboard.press takes a grapheme outside the US layout (ё, 😊)
+com.microsoft.playwright.TestPageNavigate > shouldSendReferer  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageNetworkRequest > shouldNotAllowToAccessFrameOnPopupMainRequest  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageNetworkRequest > shouldParseDataIfContentTypeIsApplicationFormUrlEncoded  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageNetworkRequest > shouldParseDataIfContentTypeIsApplicationFormUrlEncodedCharsetUTF8  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageNetworkRequest > shouldReportPostDataFor403Request  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageNetworkResponse > shouldReportMultipleSetCookieHeaders  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageRoute > shouldBeAbortableWithCustomErrorCodes  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageRoute > shouldFailNavigationWhenAbortingMainResource  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageScreenshot > shouldNotCaptureCssAnimationsInShadowDOM  # UPSTREAM_BIDI: order race, fails with Microsoft's driver 3 of 3 when run with its class; screenshots in Playwright's BiDi page do not pause CSS animations inside shadow roots before capture
+com.microsoft.playwright.TestPageScreenshot > shouldNotCapturePseudoElementCssAnimation  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageSetInputFiles > shouldBeAbleToResetSelectedFilesWithEmptyFileList  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageSetInputFiles > shouldUploadAFolder  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageWaitForNavigation > shouldWorkWithClickingOnLinksWhichDoNotCommitNavigation  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPdf > correctExceptionWithPersistentContext  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPopup > BrowserContextAddInitScriptShouldApplyToACrossProcessPopup  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPopup > shouldUseViewportSizeFromWindowFeatures  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestRequestGC > shouldWork  # DELIBERATE_DIVERGENCE: dom.testing.testutils.enabled is off, page.requestGC() names the pref
+com.microsoft.playwright.TestTap > shouldNotSendMouseEventsTouchstartIsCanceled  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestTap > shouldNotSendMouseEventsWhenTouchendIsCanceled  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestTap > shouldNotWaitForANavigationCausedByATap  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestTap > shouldSendAllOfTheCorrectEvents  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestTap > shouldSendWellFormedTouchPoints  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestTap > shouldWorkWithModifiers  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWaitForFunction > shouldPollOnInterval  # UPSTREAM_BIDI: not deterministic: both the setTimeout(100) between polls and the Date.now() delta it asserts on run inside Firefox (the polling loop in the injected script, Frame.waitForFunction), no driver code is involved; red in 2 of 3 Linux CI runs, green 8 of 8 locally with our driver and 8 of 8 with Microsoft's
+com.microsoft.playwright.TestWebSocket > shouldCallFrameReceivedPredicate  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldCallFrameSentPredicate  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldEmitBinaryFrameEvents  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldEmitCloseEvents  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldEmitError  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldEmitFrameEvents  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldNotHaveStrayErrorEvents  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldRejectFutureEventOnPageClose  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldRejectFutureEventOnSocketClose  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldRespectFrameReceivedTimeout  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWebSocket > shouldRespectFrameSentTimeout  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > pageWorkers  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > shouldEmitCreatedAndDestroyedEvents  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > shouldEvaluate  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > shouldFormatNumberUsingContextLocale  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > shouldHaveJSHandlesForConsoleLogs  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > shouldReportConsoleEventOnTheWorker  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestWorkers > shouldReportNetworkActivity  # UPSTREAM_BIDI: fails identically with the official driver
+
+# Not listed because they pass with playwright4j, but fail with Microsoft's driver on the same Firefox
+# (playwright4j reads in Playwright's utility world, see problems.md):
+#   com.microsoft.playwright.TestDefaultBrowserContext2 > shouldRespectSelectors
+#   com.microsoft.playwright.TestElementHandleConvenience > getAttributeShouldBeAtomic
+#   com.microsoft.playwright.TestElementHandleConvenience > innerHTMLShouldBeAtomic
+#   com.microsoft.playwright.TestElementHandleConvenience > innerTextShouldBeAtomic
+#   com.microsoft.playwright.TestElementHandleConvenience > textContentShouldBeAtomic
+#   com.microsoft.playwright.TestSelectorsRegister > shouldWorkInMainAndIsolatedWorld
+#   com.microsoft.playwright.TestSelectorsRegister > shouldWorkWithPath
+#   com.microsoft.playwright.TestBrowserTypeConnect (Microsoft's driver: launch-server fails to start in this harness)
+com.microsoft.playwright.TestPageClock > whileRunningShouldFastForwardTo  # OS_ENVIRONMENT: the installed clock keeps running, so install, navigate, fastForward and evaluate must finish within 1 s of real time; red once in 7 Windows CI runs, green 8 of 8 locally with each driver, 5 of them under full CPU load

@@ -15,16 +15,47 @@ summarizes it.
 | `TestBrowserTypeConnect` (launch-server, connect, reconnect, disconnect) for Chrome and Edge | CI | yes |
 | Jar check: no native binaries in the artifact | CI, release | yes |
 | `consumer-check/`: resolves the documented setup twice, with Gradle (`build.gradle`) and with Maven from the published POM (`pom.xml`); both fail if `driver` or `driver-bundle` reaches the classpath, the Gradle check also fails on a native file in the jar | CI, release | yes |
-| Full upstream Playwright Java contract suite (`upstreamTest`) | `playwright-java-contract-tests` | no, audit |
-| `knownLimitationsCheck`: green iff exactly the known reds fail | `playwright-java-contract-tests` | no, audit |
+| Full upstream Playwright Java suite (`knownLimitationsCheck`): Chrome, Edge and Firefox on Windows, Chrome and Firefox on Linux; green iff only the listed known limitations fail | `release.yml`, jobs `upstream-gate` (8 shards per browser) and `upstream-gate-check` | yes, release gate |
 | `browserSignals`: page-observable automation signals (`navigator.webdriver`, headers, injected globals), see [browser-signals.md](browser-signals.md) | `playwright-java-contract-tests` | no, diagnostic |
+| `FirefoxBidiTest` (part of `firefoxSmoke`, also run against Camoufox): `FirefoxBidi` reads the DOM, response bodies and cookies without activating the page; `Response.body()` of a 304 | Windows CI | yes, release gate |
+| `passiveAcquisition`: response bodies and BiDi DOM reads against page-visible side effects, see [passive-acquisition.md](passive-acquisition.md) | `playwright-java-contract-tests` | no, diagnostic |
 
-A raw `upstreamTest` run reports `BUILD FAILED` because of the known reds. That is
-intentional: no silent excludes are added to the normal test path.
+## Upstream suite
 
-The upstream contract suite targets the Chromium browser type (Chrome and Edge). Firefox
-is only covered by the BiDi smoke test so far; it has not been run against the full
-contract suite.
+`playwright-java-contract-tests/src/upstreamTest` holds Microsoft's Playwright Java tests of the
+pinned version (`syncUpstreamPlaywrightJavaTests` imports them). The import passes `BROWSER` and
+`BROWSER_CHANNEL` to every browser the tests launch themselves, because playwright4j drives only
+installed browsers. Run it with:
+
+```bash
+./gradlew :playwright-java-contract-tests:knownLimitationsCheck                                   # Chrome
+./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browserChannel=msedge
+./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=firefox     # moz-firefox
+```
+
+CI splits the suite with `-Pplaywright4j.shard=<i>/<n>` (every n-th test class, sorted by name)
+and runs `knownLimitationsCheck` once over the results of all shards.
+
+The check also fails when an upstream test class reported no results. It fails on any failure
+that is not listed in
+`playwright-java-contract-tests/known-limitations/<browser>.txt` and on a listed failure that
+passes, except for entries that depend on the host or on upstream timing (`OS_ENVIRONMENT`,
+`UPSTREAM_BIDI`). Each entry names its category; [`../problems.md`](../problems.md) explains them.
+A raw `upstreamTest` run reports `BUILD FAILED` because of the known reds: no silent excludes are
+added to the normal test path.
+
+To tell a playwright4j defect from upstream behaviour, run the same tests against Microsoft's
+Node.js driver (local diagnosis only, never in CI):
+
+```bash
+./gradlew :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=firefox \
+    -Pplaywright4j.referenceDriver=official --tests '*TestPageBasic'
+```
+
+Measured on Linux with Firefox 158.0.1 and Chrome for Testing 153 (1688 tests): Chrome 1648
+passed, 6 failed, 34 skipped; Firefox 1513 passed, 111 failed, 64 skipped. 108 of the Firefox
+failures fail the same way with Microsoft's driver on the same Firefox, and 8 tests that fail
+there pass with playwright4j (selector engines and atomic reads, which run in the utility world).
 
 ## Firefox windows and tabs
 
@@ -65,6 +96,15 @@ Every Firefox smoke test also checks that no Firefox process started during the 
 line; a process still running after 5 s that ends within the 15 s is named the same way in the
 test output. The CI job uploads the `firefoxSmoke` reports and prints failures in the log.
 
+`firefoxSmoke` has a 30-minute task timeout inside a 40-minute `firefox-smoke` job, so a hang
+outside a test method still fails the task and the reporting steps still run. On the Windows
+runners the task took 11.7 to 20.4 minutes for Camoufox with `nativeBehavior=true` (runs
+40254959794, 40258264595, 40258745412, 40267211801, 40256650996, 40266546059, 40266171805,
+40258681274, October 2026). Across all these runs the slowest (20.4 minutes) took about 74 %
+longer than the fastest (11.7 minutes). Two commits with the same runtime code differed by about
+42 %: 298f809 took 19.4 minutes and bd63373, which only changed a workflow file, 13.7 minutes. Every test is slower on a slow runner, because the GraalJS driver runs interpreted and is CPU-bound. The earlier
+20-minute limit cut off one otherwise passing run at 20.4 minutes.
+
 ## Historical upstream contract-test sweep
 
 The final controlled upstream contract-test sweep for this milestone completed
@@ -89,16 +129,6 @@ The known failures are documented limitations:
 
 No known Playwright4J runtime regression remains in the supported Chrome/Edge
 scope of this milestone.
-
-> CI note: the **release gate** is the fast Chrome + Edge channel smokes (launch →
-> page → evaluate → close) plus the Firefox BiDi smoke, which run on Windows CI and
-> must pass before publishing. CI additionally runs `TestBrowserTypeConnect`
-> (launch-server, connect, reconnect, disconnect) for Chrome and Edge and checks that
-> the jar contains no native binaries.
-> The full upstream compatibility suite runs separately as a **non-blocking audit**
-> (`knownLimitationsCheck`): green iff exactly the six known reds fail. A raw
-> `upstreamTest` run reports `BUILD FAILED` because of those reds — that is honest;
-> no silent excludes are added to the normal test path.
 
 These numbers describe that earlier milestone, not the current branch. See
 [`../problems.md`](../problems.md) for the details of each known limitation.

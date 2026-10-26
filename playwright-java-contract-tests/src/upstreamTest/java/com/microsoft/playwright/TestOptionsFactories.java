@@ -24,7 +24,7 @@ public class TestOptionsFactories {
   public static class BasicOptionsFactory implements OptionsFactory {
     @Override
     public Options getOptions() {
-      return new Options().setBrowserName(getBrowserName());
+      return new Options().setBrowserName(System.getenv("BROWSER")).setChannel(System.getenv("BROWSER_CHANNEL")).setBrowserName(getBrowserName());
     }
   }
 
@@ -34,7 +34,7 @@ public class TestOptionsFactories {
 
   public static BrowserType.LaunchOptions createLaunchOptions() {
     BrowserType.LaunchOptions options;
-    options = new BrowserType.LaunchOptions();
+    options = new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL"));
     options.headless = !getHeaded();
     return options;
   }

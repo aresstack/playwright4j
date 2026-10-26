@@ -137,6 +137,45 @@ main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElemen
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
 
+### Keys outside the US layout (Firefox)
+
+Playwright's `keyboard.down`, `up` and `press` know the keys of the US layout only and fail with
+`Unknown key` for `ä`, `ß`, `é` as `e` plus a combining accent, or an emoji such as 👍🏽; `type()` quietly
+routes such characters through `insertText` instead of pressing them. Over WebDriver BiDi a key
+action can carry any single grapheme as its value, and Firefox generates the text for it, as for a
+person with that layout. playwright4j therefore accepts a single printable grapheme as a key of its
+own on Firefox and Camoufox (independent of `nativeBehavior`; issue #59): `press("ä")` and
+`press("Shift+ü")` reach the page as trusted `keydown`, `keypress`, `input` and `keyup` events.
+Several graphemes, control characters (also U+0085 and CR+LF, one grapheme by the Unicode rules),
+line separators, a lone format character and BiDi's private-use key codes stay unknown keys, and
+`type()`, `insertText()` and `fill()` are unchanged. `NodeCompatFirefoxKeyboardGraphemeTest` guards
+the key mapping, `FirefoxKeyboardGraphemeTest` (part of `firefoxSmoke`) the events in the browser.
+
+### Dialogs and HTTP authentication without a handler (Firefox)
+
+Playwright answers a JavaScript dialog (`alert`, `confirm`, `prompt`, `beforeunload`) that no
+`onDialog` handler takes at once: dismissed, or accepted for `beforeunload`. An HTTP auth challenge
+without matching `httpCredentials` is cancelled at once, too. A page can time this: `confirm()`
+returns within a few milliseconds, where a person needs hundreds (issue #48).
+
+`-Dplaywright4j.bidi.unhandledPromptDelay=MIN-MAX` (milliseconds, or one value; `0 <= MIN <= MAX
+<= 10000`) delays exactly these answers by a random time in that range, for pages over WebDriver
+BiDi (Firefox, Camoufox). It is off by default and separate from `nativeBehavior`. Set it before
+`Playwright.create()`; an invalid value fails there.
+
+- The answer stays Playwright's: dismiss, accept for `beforeunload`, cancel for auth. Only when it
+  is sent changes.
+- A dialog handler the caller registered, and `httpCredentials` that match, still answer at once:
+  the caller decides how and when. So does the cancel after configured credentials were rejected.
+- The delay adds to the action that opened the dialog or the request (an `evaluate`, a click, a
+  navigation). The upper bound keeps it well below Playwright's default 30 s timeout; a caller
+  with short timeouts must allow for it.
+- A dialog whose page closes during the delay is not answered; a handler registered during the
+  delay does not receive it, as without the delay.
+
+To control the timing of each answer, register a dialog handler that waits before it accepts or
+dismisses. `FirefoxUnhandledPromptDelayTest` (part of `firefoxSmoke`) guards both modes.
+
 ### Natural pointer opt-in
 
 Playwright moves the mouse to an action's target in one `pointerMove` and sends the press and
@@ -262,10 +301,22 @@ What it changes, each part independent of the others:
 | Area | Playwright | With `nativeBehavior` | Caller's override |
 | --- | --- | --- | --- |
 | Preferences (#44, #45, #46) | Writes test values to `user.js`: `dom.disable_open_during_load=false` (popup blocker off), `dom.min_background_timeout_value*=0`, `dom.timeout.enable_budget_timer_throttling=false`, `layout.testing.top-level-always-active=true` (background timers and rendering not throttled), `focusmanager.testmode=true`, `browser.contentblocking.features.standard` without Total Cookie Protection and fingerprinting/cryptomining lists, `dom.security.https_first=false`, `network.http.speculative-parallel-limit=0`, `network.manage-offline-status=false`, `geo.provider.testing=true` | These lines are left out of `user.js`, so the browser's defaults apply: Firefox's, or for Camoufox the values `camoufox.cfg` sets (it keeps the popup blocker, HTTPS-First and cookie partitioning on and sets `focusmanager.testmode` and `geo.provider.testing` itself). | `firefoxUserPrefs` still sets any of them. |
-| Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`. |
+| Remote Agent preferences | Firefox's Remote Agent sets its recommended test preferences at startup for every preference without a user value (`remote/shared/RecommendedPreferences.sys.mjs`), the ones above among them | `remote.prefs.recommended=false`, so it sets none. Measured: without this the popup blocker stays off even when Playwright's line is gone. One deliberate exception, see below: `dom.successive_dialog_time_limit=0`. | `firefoxUserPrefs` `{"remote.prefs.recommended": true}`. |
 | Default viewport (#47) | 1280x720 at device scale factor 1, `screen` set to the same size, which replaces the window and screen the browser or Camoufox's fingerprint reports | No viewport emulation, as with `setViewportSize(null)`; `page.viewportSize()` is `null`. Applies to `newContext()` and `launchPersistentContext()`. | A caller's `viewport`, `deviceScaleFactor` or `isMobile` is kept, with Playwright's checks. |
 | Screenshot caret (#40) | `caret: "hide"` by default, which writes `caret-color` into the focused element's style | `caret: "initial"` by default; the element's style is not touched. | `setCaret(ScreenshotCaret.HIDE)` still hides it. |
+| Text input (#41) | `fill()` and `keyboard.insertText()` assign the field's value and dispatch an untrusted `input` event (`isTrusted` `false`, no `inputType`) | The text goes through Firefox's editor (`execCommand("insertText")` on the focused field, from the utility world): one trusted `input` event with `inputType` `insertText`, as for text a user enters without keys. Measured with Firefox 158: Firefox fires no `beforeinput` for it, as the Input Events spec leaves out for `execCommand`; typing or pasting would fire one. A field the editor refuses gets Playwright's way. `fill("")` still presses Delete, and no key events are sent for the text, as in Playwright. | `pressSequentially()` types with key events. |
+| Scrolling into view (#42) | Before an action, and in `scrollIntoViewIfNeeded()`, a script calls `scrollIntoView({block: "center"})`; the page sees `scroll` events without any `wheel` | Firefox's mouse wheel (`input.performActions`, wheel source) scrolls the innermost container that hides the target, over its visible part, in steps of at most 120 px towards centring the target, and frames before their content; trusted `wheel` events come before the `scroll` events. A target already fully in view is not scrolled. If the wheel does not bring it into view in 8 rounds (a container that ignores the wheel, a transformed frame), Playwright's `scrollIntoView` runs, logged at debug level. | - |
 | Preload scripts (#51) | `exposeBinding`/`exposeFunction`, `addInitScript`, `clock`, `routeWebSocket` and tracing snapshots install scripts or globals in the page's main world | Unchanged, because they are what the caller asked for. The first one per context logs a warning on the driver's stderr that names the property. | - |
+
+The one deliberate exception: `nativeBehavior` writes `dom.successive_dialog_time_limit=0`, the
+Remote Agent's value, instead of leaving Firefox's 3 s default. With that default the next dialog
+within 3 s gets a "prevent more dialogs" checkbox, and Camoufox (tab-modal prompts) never reports
+that dialog over BiDi, so the page and the call that opened it hang. The checkbox is browser UI a
+page cannot read. The value is not written when the caller sets the preference in
+`firefoxUserPrefs`, when the profile's own `user.js` sets it, or when `prefs.js` of a persistent
+profile holds a value that `user.js` did not write (a choice in `about:config`).
+`NodeCompatFirefoxNativeBehaviorTest` guards these cases; `FirefoxUnhandledPromptDelayTest` the
+dialogs themselves.
 
 What it does not change:
 
@@ -277,8 +328,11 @@ What it does not change:
   similar) that keep the browser from reaching out on its own.
 - Context options the caller sets, such as `locale`, `timezoneId`, `userAgent` or `geolocation`,
   which override Camoufox's own values; leave them unset with Camoufox.
-- Synthetic `fill()`/`selectOption()` events, direct mouse movement and scrolling (#41-#43), and
-  dialogs or HTTP authentication answered without a handler (#48).
+- `selectOption()` and `fill()` on date, time, color and range inputs, which
+  set the value and dispatch untrusted `input`/`change` events (#41); Firefox's editor does not
+  handle these controls.
+- Mouse movement, which jumps to the target (#43), and dialogs or HTTP authentication answered
+  without a handler (#48).
 
 Persistent profiles: Firefox stores the values `user.js` sets in `prefs.js`, so a profile once
 launched without the property keeps Playwright's values. A `prefs.js` line is removed only when it
@@ -305,7 +359,9 @@ Measured on Linux with the property set: `firefoxSmoke` (including `FirefoxNativ
 with Firefox 158.0.1 and with Camoufox 156.0.1-beta.36 with both BiDi fixes
 (`hotpatch_omni.py`), and so does `camoufoxSmoke` (fingerprint through `setEnv`, second page with
 the fixes). With Camoufox the popup blocker stays on, as `camoufox.cfg` leaves it. The window-count
-checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. CI on Windows runs
+checks of `FirefoxPersistentWindowTest` need `xdotool` and were skipped there. `FirefoxNativeInputTest`
+(text input and wheel scrolling, page, nested container and frame) passes with Firefox 158.0.1 on
+Linux, headless. CI on Windows runs
 `firefoxSmoke` with Firefox and with Camoufox, and `camoufoxSmoke`, with and without the property.
 
 The property may become the default once its compatibility with the Playwright API is shown;

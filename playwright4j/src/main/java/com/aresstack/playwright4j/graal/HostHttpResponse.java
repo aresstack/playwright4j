@@ -13,6 +13,8 @@ public final class HostHttpResponse {
     private final String rawHeaders;
     private final String errorMessage;
     private final String errorCode;
+    private String remoteAddress = "";
+    private int remotePort;
 
     public HostHttpResponse(int statusCode, String statusText, byte[] body, String rawHeaders) {
         this.statusCode = statusCode;
@@ -38,6 +40,24 @@ public final class HostHttpResponse {
      */
     public static HostHttpResponse error(String errorMessage, String errorCode) {
         return new HostHttpResponse(errorMessage, errorCode);
+    }
+
+    /** Records the address the request was sent to (the proxy, if one is used). */
+    HostHttpResponse withRemote(String address, int port) {
+        this.remoteAddress = address;
+        this.remotePort = port;
+        return this;
+    }
+
+    /** IP address of the server (or proxy) the request went to, otherwise an empty string. */
+    @HostAccess.Export
+    public String remoteAddress() {
+        return remoteAddress;
+    }
+
+    @HostAccess.Export
+    public int remotePort() {
+        return remotePort;
     }
 
     @HostAccess.Export

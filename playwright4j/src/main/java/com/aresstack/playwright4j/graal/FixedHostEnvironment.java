@@ -65,6 +65,18 @@ public final class FixedHostEnvironment implements HostEnvironment {
 
     @Override
     @HostAccess.Export
+    public String homeDirectory() {
+        return HostEnvironment.super.homeDirectory();
+    }
+
+    @Override
+    @HostAccess.Export
+    public String temporaryDirectory() {
+        return HostEnvironment.super.temporaryDirectory();
+    }
+
+    @Override
+    @HostAccess.Export
     public String environmentNames() {
         return String.join("\u001E", environmentValues.keySet());
     }

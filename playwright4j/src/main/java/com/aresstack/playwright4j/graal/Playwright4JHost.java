@@ -108,6 +108,13 @@ public final class Playwright4JHost {
         return processLauncher;
     }
 
+    /** Milliseconds to wait before answering an unhandled prompt, or -1 (see {@link UnhandledPromptDelay}). */
+    @HostAccess.Export
+    public int unhandledPromptDelayMillis() {
+        UnhandledPromptDelay delay = UnhandledPromptDelay.fromSystemProperty();
+        return delay == null ? -1 : delay.nextMillis();
+    }
+
     /** Read on every use, so the driver follows the property as the JVM sees it. */
     @HostAccess.Export
     public boolean nativeBehavior() {

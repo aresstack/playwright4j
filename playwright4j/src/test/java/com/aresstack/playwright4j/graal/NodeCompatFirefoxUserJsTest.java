@@ -37,7 +37,12 @@ final class NodeCompatFirefoxUserJsTest {
 
     @BeforeEach
     void start() {
-        Playwright4JHost host = new Playwright4JHost(new FixedHostEnvironment(), new LocalHostFileSystem(), new RecordingMissingHostFunctionReporter());
+        // The profile is a real directory, so path.join must use the host's separator.
+        String platform = System.getProperty("os.name").toLowerCase().contains("win") ? "win32" : "linux";
+        Playwright4JHost host = new Playwright4JHost(
+                new FixedHostEnvironment(platform, "x64", "/", java.util.Collections.<String, String>emptyMap()),
+                new LocalHostFileSystem(),
+                new RecordingMissingHostFunctionReporter());
         runtime = new GraalPlaywrightRuntime(host, new PlaywrightDriverBundleSource(Thread.currentThread().getContextClassLoader()));
         runtime.loadNodeCompatibilityLayer();
     }

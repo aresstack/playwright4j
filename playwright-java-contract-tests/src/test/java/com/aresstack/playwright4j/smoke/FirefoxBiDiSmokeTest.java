@@ -6,11 +6,21 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Response;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.assertClosedPromptly;
 import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.deleteRecursively;
@@ -18,6 +28,7 @@ import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.runGuarded;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Firefox over WebDriver BiDi (Playwright's moz-firefox channel) against an installed Firefox.
@@ -35,7 +46,14 @@ public class FirefoxBiDiSmokeTest {
     // exercises the Windows launcher-process handoff (see -wait-for-browser in the runtime).
     @Test
     void launchPersistentContextWithInstalledFirefox() throws Throwable {
-        runGuarded(FirefoxBiDiSmokeTest::runPersistentSmoke);
+        runGuarded(configured -> runPersistentSmoke(configured, 2));
+    }
+
+    // Every start after the first finds the session store of the one before it (#66).
+    @Test
+    @Timeout(240)
+    void persistentProfileStartsRepeatedly() throws Throwable {
+        runGuarded(configured -> runPersistentSmoke(configured, 6));
     }
 
     private static void runSmoke(String configured) {
@@ -68,10 +86,24 @@ public class FirefoxBiDiSmokeTest {
         }
     }
 
-    private static void runPersistentSmoke(String configured) throws Exception {
+    private static void runPersistentSmoke(String configured, int rounds) throws Exception {
         Path userDataDir = Files.createTempDirectory("playwright4j-firefox-profile");
-        try (Playwright playwright = Playwright.create()) {
-            for (int round = 0; round < 2; round++) {
+        // The BiDi protocol of the whole run, kept next to the test results only if the run fails
+        // (#66): realm and navigation events show which document page.title() was read from.
+        Path protocol = Paths.get("build", "test-results", "firefoxSmoke", "protocol",
+                "persistent-" + rounds + "-" + System.currentTimeMillis() + ".log").toAbsolutePath();
+        Files.createDirectories(protocol.getParent());
+        Map<String, String> env = new HashMap<>();
+        env.put("DEBUG", "pw:protocol,pw:api,pw:error");
+        env.put("DEBUG_FILE", protocol.toString());
+        boolean passed = false;
+        try (Playwright playwright = Playwright.create(new Playwright.CreateOptions().setEnv(env))) {
+            for (int round = 0; round < rounds; round++) {
+                // What the profile holds and what the start tab goes through, for the message if the
+                // page does not show its document. Collected without browser calls, so building the
+                // message cannot wait on the browser or hide the failure.
+                List<String> events = new ArrayList<>();
+                events.add("launch " + round + ", profile [" + startupFiles(userDataDir) + "]");
                 BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
                         .setChannel("moz-firefox")
                         .setExecutablePath(Paths.get(configured))
@@ -79,8 +111,22 @@ public class FirefoxBiDiSmokeTest {
                 BrowserContext context = playwright.firefox().launchPersistentContext(userDataDir, options);
                 try {
                     Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
-                    page.navigate("data:text/html,<title>persistent</title>");
-                    assertEquals("persistent", page.title());
+                    events.add("start " + page.url() + ", pages " + context.pages().size());
+                    page.onFrameNavigated(frame -> events.add("navigated " + (frame == page.mainFrame() ? "" : "frame ") + frame.url()));
+                    page.onDOMContentLoaded(p -> events.add("domcontentloaded"));
+                    page.onLoad(p -> events.add("load"));
+                    page.onClose(p -> events.add("closed"));
+                    page.onCrash(p -> events.add("crashed"));
+                    context.onPage(p -> events.add("page " + p.url()));
+                    Response response = page.navigate("data:text/html,<title>persistent</title>");
+                    events.add("navigate returned, response " + (response == null ? null : response.url()));
+                    String title = page.title();
+                    if (!"persistent".equals(title)) {
+                        String state = events + ", url " + page.url() + ", pages " + context.pages().size() + ", protocol " + protocol;
+                        // Printed before any further browser call, so the record survives a hang.
+                        System.out.println("persistent title was '" + title + "': " + state);
+                        fail("expected persistent, title was '" + title + "'; " + state + "; " + titleProbes(page));
+                    }
                     // Loading a page must not grant it user activation without any input (the page
                     // records the state itself; page.title() is read only after that).
                     page.navigate("data:text/html,<script>setTimeout(() => document.title = 'activation:'"
@@ -99,8 +145,42 @@ public class FirefoxBiDiSmokeTest {
                 assertTrue(Files.isRegularFile(userDataDir.resolve("prefs.js")),
                         "Firefox profile was not written to " + userDataDir);
             }
+            passed = true;
         } finally {
             deleteRecursively(userDataDir);
+            if (passed) {
+                Files.deleteIfExists(protocol);
+            }
+        }
+    }
+
+    // After a wrong title (#66): does a second read agree, and what does the document itself say in
+    // the main world, independent of Playwright's utility world? Each probe is caught on its own, so
+    // one failing probe cannot hide the others.
+    private static String titleProbes(Page page) {
+        StringBuilder probes = new StringBuilder();
+        probe(probes, "second title", page::title);
+        probe(probes, "main world [URL, readyState, title, visibilityState]",
+                () -> page.evaluate("[document.URL, document.readyState, document.title, document.visibilityState]"));
+        return probes.toString();
+    }
+
+    private static void probe(StringBuilder into, String name, Supplier<Object> read) {
+        try {
+            into.append(name).append(": ").append(read.get()).append("; ");
+        } catch (RuntimeException exception) {
+            into.append(name).append(" failed: ").append(exception.getMessage()).append("; ");
+        }
+    }
+
+    // The profile files that decide how Firefox starts: session store, preferences and lock.
+    private static String startupFiles(Path userDataDir) throws IOException {
+        try (Stream<Path> files = Files.walk(userDataDir, 2)) {
+            return files.map(file -> userDataDir.relativize(file).toString().replace('\\', '/'))
+                    .filter(name -> name.startsWith("session") || name.startsWith("prefs.js") || name.equals("user.js")
+                            || name.endsWith("lock"))
+                    .sorted()
+                    .collect(Collectors.joining(" "));
         }
     }
 }

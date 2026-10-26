@@ -33,7 +33,7 @@ public class TestFixtureOptions {
   public static class CustomOptions implements OptionsFactory {
     @Override
     public Options getOptions() {
-      return new Options()
+      return new Options().setBrowserName(System.getenv("BROWSER")).setChannel(System.getenv("BROWSER_CHANNEL"))
         .setBaseUrl(serverMap.get(TestFixtureOptions.class).EMPTY_PAGE)
         .setBrowserName("webkit")
         .setTestIdAttribute("data-my-custom-testid");

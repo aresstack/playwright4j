@@ -60,7 +60,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   }
 
   private Page launchPersistent() {
-    return launchPersistent(null);
+    return launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
   }
 
   private Page launchPersistent(BrowserType.LaunchPersistentContextOptions options) {
@@ -72,7 +72,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
 
   @Test
   void shouldSupportHasTouchOption() {
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setHasTouch(true));
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setHasTouch(true));
     page.navigate(server.PREFIX + "/mobile.html");
     assertEquals(true, page.evaluate("() => 'ontouchstart' in window"));
   }
@@ -81,7 +81,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   @DisabledIf(value="com.microsoft.playwright.TestBase#isFirefox", disabledReason="skip")
   void shouldWorkInPersistentContext() {
     // Firefox does not support mobile.
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions()
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
       .setViewportSize(320, 480).setIsMobile(true));
     page.navigate(server.PREFIX + "/empty.html");
     assertEquals(980, page.evaluate("() => window.innerWidth"));
@@ -89,14 +89,14 @@ public class TestDefaultBrowserContext2 extends TestBase {
 
   @Test
   void shouldSupportColorSchemeOption() {
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setColorScheme(DARK));
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setColorScheme(DARK));
     assertEquals(false, page.evaluate("matchMedia('(prefers-color-scheme: light)').matches"));
     assertEquals(true, page.evaluate("matchMedia('(prefers-color-scheme: dark)').matches"));
   }
 
   @Test
   void shouldSupportTimezoneIdOption() {
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions()
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
       .setLocale("en-US").setTimezoneId("America/Jamaica"));
     assertEquals("Sat Nov 19 2016 13:12:34 GMT-0500 (Eastern Standard Time)",
       page.evaluate("new Date(1479579154987).toString()"));
@@ -104,14 +104,14 @@ public class TestDefaultBrowserContext2 extends TestBase {
 
   @Test
   void shouldSupportLocaleOption() {
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions()
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
       .setLocale("fr-FR"));
     assertEquals("fr-FR", page.evaluate("navigator.language"));
   }
 
   @Test
   void shouldSupportGeolocationAndPermissionsOptions() {
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions()
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
       .setGeolocation(new Geolocation(10, 10))
       .setPermissions(asList("geolocation")));
     page.navigate(server.EMPTY_PAGE);
@@ -124,7 +124,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   //  @Test
   void shouldSupportIgnoreHTTPSErrorsOption() {
     // TODO: net::ERR_EMPTY_RESPONSE at https://localhost:8908/empty.html
-//    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setIgnoreHTTPSErrors(true));
+//    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setIgnoreHTTPSErrors(true));
 //    Response response = page.navigate(httpsServer.EMPTY_PAGE);
 //    assertTrue(response.ok());
   }
@@ -132,7 +132,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   @Test
   void shouldSupportExtraHTTPHeadersOption() throws ExecutionException, InterruptedException {
 //   TODO: test.flaky(browserName === "firefox" && headed && platform === "linux", "Intermittent timeout on bots");
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setExtraHTTPHeaders(mapOf("foo", "bar")));
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setExtraHTTPHeaders(mapOf("foo", "bar")));
     Future<Server.Request> request = server.futureRequest("/empty.html");
     page.navigate(server.EMPTY_PAGE);
     assertEquals(asList("bar"), request.get().headers.get("foo"));
@@ -142,7 +142,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   void shouldAcceptUserDataDir() throws IOException {
 // TODO:   test.flaky(browserName === "chromium");
     Path userDataDir = tempDir.resolve("user-data-dir");
-    BrowserContext context = browserType.launchPersistentContext(userDataDir);
+    BrowserContext context = browserType.launchPersistentContext(userDataDir, new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
     assertTrue(userDataDir.toFile().listFiles().length > 0);
     context.close();
     assertTrue(userDataDir.toFile().listFiles().length > 0);
@@ -152,7 +152,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   void shouldRestoreStateFromUserDataDir() throws IOException {
 //  TODO:  test.slow();
     Path userDataDir = tempDir.resolve("user-data-dir");
-    BrowserType.LaunchPersistentContextOptions browserOptions = null;
+    BrowserType.LaunchPersistentContextOptions browserOptions = new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"));
     BrowserContext browserContext = browserType.launchPersistentContext(userDataDir, browserOptions);
     Page page = browserContext.newPage();
     page.navigate(server.EMPTY_PAGE);
@@ -183,7 +183,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
   @Test
   @DisabledIf(value="com.microsoft.playwright.TestBase#isFirefox", disabledReason="skip")
   void shouldThrowIfPageArgumentIsPassed() throws IOException {
-    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
+    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
       .setArgs(asList(server.EMPTY_PAGE));
     Path userDataDir = tempDir.resolve("user-data-dir");
     PlaywrightException e = assertThrows(PlaywrightException.class, () -> {
@@ -195,12 +195,12 @@ public class TestDefaultBrowserContext2 extends TestBase {
   @Test
   void shouldWorkWithIgnoreDefaultArgs() {
     // Ignore arguments by name.
-    BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setIgnoreDefaultArgs(asList("foo"));
+    BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setIgnoreDefaultArgs(asList("foo"));
     Browser browser = browserType.launch(options);
     Page page = browser.newPage();
     browser.close();
     // Check that there is a way to ignore all arguments.
-    new BrowserType.LaunchOptions().setIgnoreAllDefaultArgs(true);
+    new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setIgnoreAllDefaultArgs(true);
   }
 
   void shouldHavePassedURLWhenLaunchingWithIgnoreDefaultArgsTrue() {
@@ -291,7 +291,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
 
   @Test
   void shouldSupportContrastOption() {
-    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setContrast(Contrast.MORE));
+    Page page = launchPersistent(new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setContrast(Contrast.MORE));
     assertEquals(true, page.evaluate("() => matchMedia('(prefers-contrast: more)').matches"));
     assertEquals(false, page.evaluate("() => matchMedia('(prefers-contrast: no-preference)').matches"));
   }
@@ -306,7 +306,7 @@ public class TestDefaultBrowserContext2 extends TestBase {
     Path userDataDir = tempDir.resolve("user-data-dir");
     Path cwd = Paths.get("").toAbsolutePath();
     Path relativePath = cwd.relativize(userDataDir);
-    BrowserContext context = browserType.launchPersistentContext(relativePath);
+    BrowserContext context = browserType.launchPersistentContext(relativePath, new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
     assertTrue(Files.list(userDataDir).count() > 0);
     context.close();
   }

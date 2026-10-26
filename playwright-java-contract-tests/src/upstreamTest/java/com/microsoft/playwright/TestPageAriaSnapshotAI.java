@@ -9,7 +9,7 @@ import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertTha
 import static org.junit.jupiter.api.Assertions.*;
 
 @FixtureTest
-@UsePlaywright
+@UsePlaywright(com.microsoft.playwright.TestOptionsFactories.BasicOptionsFactory.class)
 public class TestPageAriaSnapshotAI {
   private static String aiSnapshot(Page page) {
     return page.ariaSnapshot(new Page.AriaSnapshotOptions().setMode(AriaSnapshotMode.AI));

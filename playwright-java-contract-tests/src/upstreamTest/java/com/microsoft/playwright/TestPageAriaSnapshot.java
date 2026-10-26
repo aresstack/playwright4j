@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @FixtureTest
-@UsePlaywright
+@UsePlaywright(com.microsoft.playwright.TestOptionsFactories.BasicOptionsFactory.class)
 public class TestPageAriaSnapshot {
   public static String unshift(String snapshot) {
     List<String> lines = Arrays.asList(snapshot.split("\n"));

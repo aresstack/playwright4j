@@ -118,19 +118,29 @@ BrowserContext context = playwright.firefox().launchPersistentContext(
 
 Everything after `launch()` / `launchPersistentContext()` is the regular Playwright API.
 
+On Firefox, `com.aresstack.playwright4j.bidi.FirefoxBidi` adds read-only WebDriver BiDi access to a
+page: the current DOM, response bodies and cookies, read without running script in the page (since
+`0.3.0`, see [docs/passive-acquisition.md](docs/passive-acquisition.md)):
+
+```java
+try (FirefoxBidi bidi = FirefoxBidi.open(page)) {
+    String text = FirefoxBidi.text(bidi.css("main"));
+}
+```
+
 ## Supported browsers
 
 | Browser | Browser type / channel | Protocol | Status |
 | --- | --- | --- | --- |
 | Google Chrome | `chromium`, channel `chrome` | CDP | Tested (upstream contract suite + CI smoke) |
 | Microsoft Edge | `chromium`, channel `msedge` | CDP | Tested (upstream contract suite + CI smoke) |
-| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Smoke-tested only (`launch`, `launchPersistentContext`), since `0.2.0` |
+| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Tested (upstream contract suite + CI smoke) |
 | WebKit | – | – | Not supported, fails fast with an unsupported-engine error |
 
-"Tested" means Chrome and Edge run against the broad upstream Playwright Java contract
-suite. Firefox is covered by a launch/navigate/close smoke test on Windows CI, which is a
-release gate, but it has **not** been run against the full contract suite. Expect gaps in
-less common Firefox features.
+"Tested" means the browser runs the upstream Playwright Java contract suite as a release gate.
+On Firefox about a hundred upstream tests fail, the same way they fail with Microsoft's own
+driver over WebDriver BiDi (touch, drag and drop, worker realms, WebSocket events, media emulation,
+cookie details); they are listed in `playwright-java-contract-tests/known-limitations/firefox.txt`.
 
 `BrowserType.connect()` to a `launch-server` also works without Node.js (since `0.2.0`):
 the server is the same JVM driver started in `--node-compat` mode
@@ -181,13 +191,14 @@ application servers and custom class loaders work. Jars nested in another jar (S
 | `playwright4j.driver.jvmArgs` | Extra driver JVM options, whitespace separated, `"..."` keeps spaces, e.g. `-Dplaywright4j.driver.jvmArgs="-Xmx1g -Dhttps.proxyHost=proxy"`. Applied last, so they win over forwarded properties. |
 | `playwright4j.driver.classpath` | Replaces the detection with an explicit path list, for containers (e.g. OSGi) whose class loaders expose no file locations. |
 | `playwright4j.bidi.nativeBehavior` | `true` keeps Firefox's own behaviour where Playwright changes it for testing (Firefox and Camoufox over WebDriver BiDi only; default `false`). See [docs/browser-signals.md](docs/browser-signals.md#native-behavior-opt-in). |
+| `playwright4j.bidi.unhandledPromptDelay` | `MIN-MAX` in milliseconds (at most 10000): dialogs no handler takes and HTTP auth challenges without matching credentials get Playwright's usual answer after a random delay in that range (Firefox and Camoufox over WebDriver BiDi only; default off). See [docs/browser-signals.md](docs/browser-signals.md#dialogs-and-http-authentication-without-a-handler-firefox). |
 | `playwright4j.bidi.naturalPointer` | `true` moves the mouse along a curved path and gives clicks a press-and-release timing, where the caller sets no `steps` or `delay` (Firefox and Camoufox over WebDriver BiDi only; default `false`). See [docs/browser-signals.md](docs/browser-signals.md#natural-pointer-opt-in). |
 
 These properties of the application JVM are forwarded to the driver JVM when set: the
 `javax.net.ssl.trustStore*`/`keyStore*` settings, `jdk.tls.client.protocols`, `https.protocols`,
 `http(s).proxyHost`/`Port`, `http.nonProxyHosts`, `socksProxy*`, `java.net.useSystemProxies`,
 `jdk.http.auth.*.disabledSchemes`, `playwright4j.video.vlc.path`, `playwright4j.bidi.nativeBehavior`,
-`playwright4j.bidi.naturalPointer` and the `playwright4j.debug*` settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver
+`playwright4j.bidi.unhandledPromptDelay`, `playwright4j.bidi.naturalPointer` and the `playwright4j.debug*` settings. Without `jdk.http.auth.tunneling.disabledSchemes` the driver
 allows Basic proxy credentials on `CONNECT`, which `APIRequestContext` needs with an authenticating proxy. Store passwords are passed in an owner-only temporary file that the driver deletes at
 startup, never on the command line.
 
@@ -195,8 +206,8 @@ startup, never on the command line.
 
 - Chrome/Edge smokes, the Firefox BiDi smoke, `launch-server`/`connect` tests and a
   no-native-binaries check run on CI and gate releases.
-- The full upstream contract suite runs as a non-blocking audit with a short, documented
-  list of known failures.
+- The full upstream contract suite runs for Chrome, Edge and Firefox and gates releases; only
+  the documented known limitations may fail.
 
 Details, the test layers and the historical test report are in
 [`docs/testing.md`](docs/testing.md). Known limitations and their analysis are in

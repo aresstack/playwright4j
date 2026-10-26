@@ -178,7 +178,7 @@ public class TestBrowserContextAddCookies {
 //    test.slow();
 // TODO:  const browser1 = browserType.launch(browserOptions);
     BrowserType browserType = Utils.getBrowserTypeFromEnv(playwright);
-    Browser browser1 = browserType.launch();
+    Browser browser1 = browserType.launch(new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
     BrowserContext context1 = browser1.newContext();
     context1.addCookies(asList(new Cookie("cookie-in-context-1", "value")
       .setUrl(server.EMPTY_PAGE)
@@ -186,7 +186,7 @@ public class TestBrowserContextAddCookies {
     browser1.close();
 
 //  const browser2 = browserType.launch(browserOptions);
-    Browser browser2 = browserType.launch();
+    Browser browser2 = browserType.launch(new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
     BrowserContext context2 = browser2.newContext();
     List<Cookie> cookies = context2.cookies();
     assertEquals(0, cookies.size());

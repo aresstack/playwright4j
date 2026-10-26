@@ -4,12 +4,18 @@ import org.graalvm.polyglot.HostAccess;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.Signature;
+import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPrivateCrtKey;
 import java.security.interfaces.RSAPublicKey;
+import java.security.spec.ECGenParameterSpec;
+import java.security.spec.ECPoint;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,8 +23,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Host-backed subset of Node's crypto used by Playwright's client-certificate support
- * (generateSelfSignedCertificate in lib/server/utils/crypto.js): RSA key-pair generation with
- * PKCS#1 export and an RSA-SHA256 signature. Only what that one function needs is implemented.
+ * (generateSelfSignedCertificate: RSA key pair, PKCS#1 export, RSA-SHA256 signature) and by its
+ * virtual WebAuthn authenticator (P-256 key pair, PKCS#8/SPKI/JWK export, ECDSA-SHA256 signature).
  *
  * The guest crypto.generateKeyPairSync returns KeyObjects whose .export({type:'pkcs1'}) yields the
  * encodings produced here; crypto.sign('sha256', data, privateKey) delegates to {@link #signSha256}.
@@ -80,6 +86,62 @@ public final class JdkHostCrypto {
         } catch (Exception exception) {
             throw new IllegalStateException("RSA-SHA256 signing failed", exception);
         }
+    }
+
+    /**
+     * Generates a P-256 key pair for Playwright's virtual WebAuthn authenticator. Returns
+     * {@code pkcs8PrivateDerBase64<UNIT>spkiPublicDerBase64<UNIT>x<UNIT>y}, x and y being the public
+     * point's coordinates as unpadded Base64url (the JWK form).
+     */
+    @HostAccess.Export
+    public String generateEcP256KeyPair() {
+        try {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+            generator.initialize(new ECGenParameterSpec("secp256r1"), secureRandom);
+            KeyPair pair = generator.generateKeyPair();
+            ECPoint point = ((ECPublicKey) pair.getPublic()).getW();
+            Base64.Encoder base64Url = Base64.getUrlEncoder().withoutPadding();
+            return Base64.getEncoder().encodeToString(pair.getPrivate().getEncoded()) + UNIT
+                    + Base64.getEncoder().encodeToString(pair.getPublic().getEncoded()) + UNIT
+                    + base64Url.encodeToString(unsigned32(point.getAffineX())) + UNIT
+                    + base64Url.encodeToString(unsigned32(point.getAffineY()));
+        } catch (Exception exception) {
+            throw new IllegalStateException("EC key-pair generation failed", exception);
+        }
+    }
+
+    /**
+     * Signs the Base64 data with SHA-256 and a PKCS#8 private key (DER, Base64): ECDSA with a DER
+     * signature for EC keys, RSASSA-PKCS1-v1_5 for RSA keys, as Node's crypto.sign does.
+     */
+    @HostAccess.Export
+    public String signSha256Pkcs8(String pkcs8Base64, String base64Data) {
+        PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(Base64.getDecoder().decode(pkcs8Base64));
+        try {
+            PrivateKey privateKey;
+            String algorithm;
+            try {
+                privateKey = KeyFactory.getInstance("EC").generatePrivate(spec);
+                algorithm = "SHA256withECDSA";
+            } catch (InvalidKeySpecException notEc) {
+                privateKey = KeyFactory.getInstance("RSA").generatePrivate(spec);
+                algorithm = "SHA256withRSA";
+            }
+            Signature signature = Signature.getInstance(algorithm);
+            signature.initSign(privateKey);
+            signature.update(Base64.getDecoder().decode(base64Data));
+            return Base64.getEncoder().encodeToString(signature.sign());
+        } catch (Exception exception) {
+            throw new IllegalStateException("SHA-256 signing with a PKCS#8 key failed", exception);
+        }
+    }
+
+    private static byte[] unsigned32(BigInteger value) {
+        byte[] raw = value.toByteArray();
+        byte[] out = new byte[32];
+        int length = Math.min(raw.length, 32);
+        System.arraycopy(raw, raw.length - length, out, 32 - length, length);
+        return out;
     }
 
     @HostAccess.Export

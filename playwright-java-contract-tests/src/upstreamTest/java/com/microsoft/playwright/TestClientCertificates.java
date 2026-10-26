@@ -227,7 +227,7 @@ public class TestClientCertificates extends TestBase {
   // No cleanup: on Windows Chromium may keep chrome_debug.log in the user data dir
   // locked briefly after close, failing the deletion.
   public void shouldWorkWithBrowserLaunchPersistentContext(@TempDir(cleanup = CleanupMode.NEVER) Path tmpDir) {
-    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions()
+    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
       .setIgnoreHTTPSErrors(true) // TODO: remove once we can pass a custom CA.
       .setClientCertificates(asList(
         new ClientCertificate(customServer.origin)
