@@ -15,7 +15,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -84,7 +86,16 @@ public class FirefoxBiDiSmokeTest {
 
     private static void runPersistentSmoke(String configured, int rounds) throws Exception {
         Path userDataDir = Files.createTempDirectory("playwright4j-firefox-profile");
-        try (Playwright playwright = Playwright.create()) {
+        // The BiDi protocol of the whole run, kept next to the test results only if the run fails
+        // (#66): realm and navigation events show which document page.title() was read from.
+        Path protocol = Paths.get("build", "test-results", "firefoxSmoke", "protocol",
+                "persistent-" + rounds + "-" + System.currentTimeMillis() + ".log").toAbsolutePath();
+        Files.createDirectories(protocol.getParent());
+        Map<String, String> env = new HashMap<>();
+        env.put("DEBUG", "pw:protocol");
+        env.put("DEBUG_FILE", protocol.toString());
+        boolean passed = false;
+        try (Playwright playwright = Playwright.create(new Playwright.CreateOptions().setEnv(env))) {
             for (int round = 0; round < rounds; round++) {
                 // What the profile holds and what the start tab goes through, for the message if the
                 // page does not show its document. Collected without browser calls, so building the
@@ -108,7 +119,7 @@ public class FirefoxBiDiSmokeTest {
                     Response response = page.navigate("data:text/html,<title>persistent</title>");
                     events.add("navigate returned, response " + (response == null ? null : response.url()));
                     assertEquals("persistent", page.title(),
-                            () -> events + ", url " + page.url() + ", pages " + context.pages().size());
+                            () -> events + ", url " + page.url() + ", pages " + context.pages().size() + ", protocol " + protocol);
                     // Loading a page must not grant it user activation without any input (the page
                     // records the state itself; page.title() is read only after that).
                     page.navigate("data:text/html,<script>setTimeout(() => document.title = 'activation:'"
@@ -127,8 +138,12 @@ public class FirefoxBiDiSmokeTest {
                 assertTrue(Files.isRegularFile(userDataDir.resolve("prefs.js")),
                         "Firefox profile was not written to " + userDataDir);
             }
+            passed = true;
         } finally {
             deleteRecursively(userDataDir);
+            if (passed) {
+                Files.deleteIfExists(protocol);
+            }
         }
     }
 
