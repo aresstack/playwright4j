@@ -41,7 +41,8 @@ public class FirefoxUnhandledPromptDelayTest {
 
     @Test
     void withThePropertyUnhandledDialogsAndAuthWait() throws Throwable {
-        runGuarded(configured -> run(configured, "4000-4200"));
+        // Well above the 3.7-4.2 s the wrong-credentials navigation itself takes on Camoufox/Windows.
+        runGuarded(configured -> run(configured, "9000-9500"));
     }
 
     private static void run(String configured, String delay) throws IOException {
@@ -88,9 +89,9 @@ public class FirefoxUnhandledPromptDelayTest {
                     assertTrue(millis(confirmed) < 1000, "confirm took " + confirmed.get(1) + " ms");
                     assertTrue(millis(prompted) < 1000, "prompt took " + prompted.get(1) + " ms");
                 } else {
-                    assertTrue(millis(confirmed) >= 3990, "confirm took " + confirmed.get(1) + " ms");
-                    assertTrue(millis(prompted) >= 3990, "prompt took " + prompted.get(1) + " ms");
-                    assertTrue(authMillis >= 4000, "auth was cancelled after " + authMillis + " ms");
+                    assertTrue(millis(confirmed) >= 8990, "confirm took " + confirmed.get(1) + " ms");
+                    assertTrue(millis(prompted) >= 8990, "prompt took " + prompted.get(1) + " ms");
+                    assertTrue(authMillis >= 9000, "auth was cancelled after " + authMillis + " ms");
                 }
 
                 // The caller's own handler decides, and when: the delay never applies to it.
@@ -114,8 +115,8 @@ public class FirefoxUnhandledPromptDelayTest {
                 long rejectedMillis = (System.nanoTime() - started) / 1_000_000;
                 assertEquals(401, rejected.status());
                 if (delay != null) {
-                    // Relative to the delayed 401 navigation above (navigation + 4000 ms): Windows runners need
-                    // seconds for the navigation itself, the delay would add 4000 ms on top.
+                    // Relative to the delayed 401 navigation above (navigation + 9000 ms): Windows runners need
+                    // seconds for the navigation itself, the delay would add 9000 ms on top.
                     assertTrue(rejectedMillis < authMillis - 2000,
                             "wrong credentials were cancelled after " + rejectedMillis + " ms, the delayed 401 took " + authMillis + " ms");
                 }
