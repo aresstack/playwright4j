@@ -5883,6 +5883,17 @@
     };
   }
 
+  // BidiNetworkManager drops a request event of a frame it does not know (detached meanwhile, or
+  // not reported yet). Firefox holds an intercepted request until it is answered, so the page would
+  // wait for it forever: let it go on unrouted, as the browser session does for tabs without a page.
+  function continueUnattributedRequest(networkManager, params) {
+    if (!params.isBlocked) {
+      return;
+    }
+    pw4jDebug('BiDi request of an unknown frame continued without routes: ' + params.request.url);
+    networkManager._session.sendMayFail('network.continueRequest', { request: params.request.request });
+  }
+
   function frameNameResolved(bidiPage, frame, name) {
     if (frame._name === name) {
       return;
@@ -7206,6 +7217,7 @@
       },
       isRealmDestroyed: isRealmDestroyed,
       frameNameResolved: frameNameResolved,
+      continueUnattributedRequest: continueUnattributedRequest,
       restoreTakenOverPage: restoreTakenOverPage,
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
@@ -7291,6 +7303,9 @@
     source = replaceCoreBundleAnchor(source, '      _onAuthRequired(params2) {\n        const isBasic = ',
       '      _onAuthRequired(params2) {\n        ' + hooks + '.onBidiAuthRequired(this, params2);\n      }\n'
       + '      _answerAuthRequired(params2) {\n        const isBasic = ', 1);
+    source = replaceCoreBundleAnchor(source, 'this._page.frameManager.frame(param.context) : null;\n        if (!frame)\n          return;\n',
+      'this._page.frameManager.frame(param.context) : null;\n        if (!frame) {\n          ' + hooks
+      + '.continueUnattributedRequest(this, param);\n          return;\n        }\n', 1);
     source = replaceCoreBundleAnchor(source, '              frame._name = attributes?.name ?? attributes?.id ?? "";\n',
       '              ' + hooks + '.frameNameResolved(page2, frame, attributes?.name ?? attributes?.id ?? "");\n', 1);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
@@ -7365,7 +7380,7 @@
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
-      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), WSServer: WSServer, createProfile: createProfile, '
+      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), BidiNetworkManager: BidiNetworkManager, WSServer: WSServer, createProfile: createProfile, '
       + 'generateSelfSignedCertificate: generateSelfSignedCertificate, Keyboard: Keyboard, RawKeyboardImpl2: ' + hooks + '.bidiKeyboard(RawKeyboardImpl2) };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
