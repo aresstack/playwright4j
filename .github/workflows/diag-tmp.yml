@@ -14,8 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: probe
-            command: sleep 300
+          - name: chrome-1
+            command: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=chromium -Pplaywright4j.browserChannel=chrome --no-daemon --stacktrace
+          - name: chrome-2
+            command: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=chromium -Pplaywright4j.browserChannel=chrome --no-daemon --stacktrace
+          - name: msedge
+            command: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=chromium -Pplaywright4j.browserChannel=msedge --no-daemon --stacktrace
     env:
       GH_TOKEN: ${{ github.token }}
       DIAG_NAME: ${{ matrix.name }}
