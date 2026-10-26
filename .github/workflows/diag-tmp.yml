@@ -4,6 +4,7 @@ on:
     branches: [claude/project-thread-g2gyvk]
 permissions:
   contents: read
+  checks: write
 jobs:
   diag:
     name: diag ${{ matrix.name }}
@@ -13,20 +14,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: AB
-            tests: "--tests 'com.microsoft.playwright.TestA*' --tests 'com.microsoft.playwright.TestB*'"
-          - name: CtoO
-            tests: "--tests 'com.microsoft.playwright.TestC*' --tests 'com.microsoft.playwright.TestD*' --tests 'com.microsoft.playwright.TestE*' --tests 'com.microsoft.playwright.TestF*' --tests 'com.microsoft.playwright.TestG*' --tests 'com.microsoft.playwright.TestH*' --tests 'com.microsoft.playwright.TestJ*' --tests 'com.microsoft.playwright.TestL*' --tests 'com.microsoft.playwright.TestN*' --tests 'com.microsoft.playwright.TestO*'"
-          - name: P
-            tests: "--tests 'com.microsoft.playwright.TestP*'"
-          - name: QtoW
-            tests: "--tests 'com.microsoft.playwright.TestQ*' --tests 'com.microsoft.playwright.TestR*' --tests 'com.microsoft.playwright.TestS*' --tests 'com.microsoft.playwright.TestT*' --tests 'com.microsoft.playwright.TestU*' --tests 'com.microsoft.playwright.TestV*' --tests 'com.microsoft.playwright.TestW*' --tests 'com.microsoft.playwright.junit.*'"
+          - name: probe
+            command: sleep 300
     env:
+      GH_TOKEN: ${{ github.token }}
+      DIAG_NAME: ${{ matrix.name }}
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21', cache: gradle }
+      - shell: pwsh
+        run: Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.github/diag/monitor.ps1' -WindowStyle Hidden
       - shell: bash
-        run: ./gradlew :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=chromium -Pplaywright4j.browserChannel=chrome ${{ matrix.tests }} --no-daemon
+        run: ${{ matrix.command }}
+      - if: always()
+        shell: pwsh
+        run: gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/check-runs/$(Get-Content (Join-Path $env:RUNNER_TEMP 'metrics-id.txt'))" -f status=completed -f conclusion=neutral --silent
