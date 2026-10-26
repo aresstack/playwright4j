@@ -16,6 +16,7 @@ com.microsoft.playwright.TestBrowserContextCookies > shouldGetACookie  # UPSTREA
 com.microsoft.playwright.TestBrowserContextCookies > shouldGetANonSessionCookie  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestBrowserContextCookies > shouldGetCookiesFromMultipleUrls  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestBrowserContextCookies > shouldGetMultipleCookies  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestBrowserContextHar > shouldGoBackToRedirectedNavigation  # UPSTREAM_BIDI: not deterministic, fails with either driver: on goBack Firefox reports browsingContext.navigationStarted but neither navigationCommitted nor load for the page restored from history, and Playwright's goBack waits for load (BidiPage.goBack, server/bidi/bidiPage.ts); 5 repeats per CI runner: Windows ours 5/5 green and Microsoft's 5/5 red, Linux ours 5/5 red and Microsoft's 5/5 green
 com.microsoft.playwright.TestBrowserContextHar > shouldRoundTripHarWithPostData  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestBrowserContextStorageState > shouldRoundTripThroughTheFile  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestBrowserContextViewport > shouldSupportTouchWithNullViewport  # UPSTREAM_BIDI: fails identically with the official driver
