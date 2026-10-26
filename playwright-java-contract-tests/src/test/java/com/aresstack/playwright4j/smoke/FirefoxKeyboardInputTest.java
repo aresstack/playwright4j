@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -95,6 +96,35 @@ public class FirefoxKeyboardInputTest {
             assertEquals(1, ((Number) page.evaluate("submits")).intValue());
 
             assertEquals(Arrays.asList("t:false:true", "e:true:true", "s:false:true"), page.evaluate("enters"));
+        }));
+    }
+
+    // fill() into a search field of a form, recorded on its own: exactly this one call types every
+    // character, also the ones outside the US layout, as trusted key events on the field, replaces
+    // the old value and submits nothing.
+    @Test
+    void fillIntoASearchFieldTypesTrustedKeyEvents() throws Throwable {
+        runGuarded(executable -> withPage(executable, page -> {
+            page.setContent("<html><body>"
+                    + "<form id=form><input id=s type=search value=alt><button>Go</button></form>"
+                    + "<script>window.submits = 0; window.seen = [];"
+                    + "form.addEventListener('submit', e => { e.preventDefault(); submits++; });"
+                    + "for (const type of ['keydown', 'keypress', 'beforeinput', 'input', 'keyup'])"
+                    + "  document.addEventListener(type, e => seen.push(type + ':' + e.isTrusted + ':' + e.target.id + ':' + (e.key || e.data || '')), true);"
+                    + "</script></body></html>");
+
+            page.fill("#s", "Größe");
+
+            assertEquals("Größe", page.inputValue("#s"));
+            assertEquals(0, ((Number) page.evaluate("submits")).intValue());
+            List<String> expected = new ArrayList<>();
+            for (String key : new String[] {"G", "r", "ö", "ß", "e"}) {
+                for (String type : new String[] {"keydown", "keypress", "beforeinput", "input", "keyup"}) {
+                    expected.add(type + ":true:s:" + key);
+                }
+            }
+            assertEquals(expected, page.evaluate("seen"));
+            assertEquals("undefined", page.evaluate("typeof window.__pw_bidiInsertText"));
         }));
     }
 
