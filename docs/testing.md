@@ -67,6 +67,14 @@ Every Firefox smoke test also checks that no Firefox process started during the 
 line; a process still running after 5 s that ends within the 15 s is named the same way in the
 test output. The CI job uploads the `firefoxSmoke` reports and prints failures in the log.
 
+`firefoxSmoke` has a 30-minute task timeout inside a 40-minute `firefox-smoke` job, so a hang
+outside a test method still fails the task and the reporting steps still run. On the Windows
+runners the task took 11.7 to 20.4 minutes for Camoufox with `nativeBehavior=true` (runs
+40254959794, 40258264595, 40258745412, 40267211801, 40256650996, 40266546059, 40266171805,
+40258681274, October 2026). The same commit varied by about 40 % between runners; every test is
+slower on a slow runner, because the GraalJS driver runs interpreted and is CPU-bound. The earlier
+20-minute limit cut off one otherwise passing run at 20.4 minutes.
+
 ## Historical upstream contract-test sweep
 
 The final controlled upstream contract-test sweep for this milestone completed
