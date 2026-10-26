@@ -38,6 +38,14 @@ final class NodeCompatProcessEnvTest {
     }
 
     @Test
+    void osHomedirAndTmpdirAreTheJvmsDirectories() {
+        try (GraalPlaywrightRuntime runtime = runtime("linux", new RecordingProcessLauncher())) {
+            assertEquals(System.getProperty("user.home"), eval(runtime, "require('os').homedir()"));
+            assertEquals(java.nio.file.Paths.get(System.getProperty("java.io.tmpdir")).toString(), eval(runtime, "require('os').tmpdir()"));
+        }
+    }
+
+    @Test
     void spawnPassesOptionsEnvAsTheCompleteEnvironment() {
         RecordingProcessLauncher launcher = new RecordingProcessLauncher();
         try (GraalPlaywrightRuntime runtime = runtime("linux", launcher)) {

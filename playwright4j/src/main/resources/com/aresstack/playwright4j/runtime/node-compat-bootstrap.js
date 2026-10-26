@@ -845,10 +845,10 @@
       return host.environment().architecture();
     },
     tmpdir: function () {
-      return '/tmp';
+      return String(host.environment().temporaryDirectory());
     },
     homedir: function () {
-      return '/home/playwright4j';
+      return String(host.environment().homeDirectory());
     },
     release: function () {
       return 'playwright4j';
