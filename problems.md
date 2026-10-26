@@ -74,6 +74,15 @@ requests` instead of connecting directly. Credentials are sent when the proxy an
 preemptively as Playwright on Node does. The driver JVM enables Basic for `CONNECT`
 (`jdk.http.auth.tunneling.disabledSchemes`) unless the application sets that property.
 
+## DELIBERATE_DIVERGENCE — Firefox keys outside the US layout
+
+Playwright knows only the keys of the US keyboard layout and rejects any other key name with
+`Unknown key`. Over BiDi, playwright4j's `keyboard.down`, `up` and `press` accept a single
+grapheme outside that layout (`ё`, `😊`, `é`) and send it as the key value of a BiDi key action,
+so text in other languages can be entered key by key. `TestPageKeyboard.shouldThrowOnUnknownKeys`
+expects `Unknown key` for `ё` and `😊` and therefore fails. Key names that are neither a known key
+nor one grapheme (`NotARealKey`) are still rejected. Chrome and Edge keep Playwright's behaviour.
+
 ## UNSUPPORTED_ENGINE — WebKit
 
 playwright4j drives Chrome, Edge and Firefox. Fixtures that request WebKit

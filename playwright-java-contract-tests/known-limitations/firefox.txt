@@ -76,6 +76,7 @@ com.microsoft.playwright.TestPageEventConsole > shouldWork  # UPSTREAM_BIDI: fai
 com.microsoft.playwright.TestPageKeyboard > shouldPressPlus  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestPageKeyboard > shouldPressShiftPlus  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestPageKeyboard > shouldReportMultipleModifiers  # UPSTREAM_BIDI: fails identically with the official driver
+com.microsoft.playwright.TestPageKeyboard > shouldThrowOnUnknownKeys  # DELIBERATE_DIVERGENCE: keyboard.press takes a grapheme outside the US layout (ё, 😊)
 com.microsoft.playwright.TestPageNavigate > shouldSendReferer  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestPageNetworkRequest > shouldNotAllowToAccessFrameOnPopupMainRequest  # UPSTREAM_BIDI: fails identically with the official driver
 com.microsoft.playwright.TestPageNetworkRequest > shouldParseDataIfContentTypeIsApplicationFormUrlEncoded  # UPSTREAM_BIDI: fails identically with the official driver
