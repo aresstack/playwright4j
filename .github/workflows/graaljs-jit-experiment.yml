@@ -2,7 +2,8 @@ name: GraalJS JIT experiment
 
 # Measures the Camoufox firefoxSmoke (nativeBehavior=true) on the same commit with the GraalJS
 # interpreter (Temurin 21, Truffle fallback runtime) and with runtime compilation (Oracle GraalVM 21).
-# All jobs start together so both variants share the same runner pool and time window.
+# Toolchain auto-detection is off so the tests and the driver run on the JDK set up here, not on a
+# preinstalled one. All jobs start together so both variants share the same runner pool and time window.
 on:
   push:
     branches: [ claude/project-thread-m5yk20 ]
@@ -43,14 +44,14 @@ jobs:
 
       - name: Build test classes
         shell: pwsh
-        run: ./gradlew.bat :playwright-java-contract-tests:testClasses --no-daemon
+        run: ./gradlew.bat :playwright-java-contract-tests:testClasses "-Porg.gradle.java.installations.auto-detect=false" --no-daemon
 
       - name: Firefox smoke (Camoufox, nativeBehavior=true)
         shell: pwsh
         run: |
           java -version
           $start = Get-Date
-          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke "-Pplaywright4j.bidi.nativeBehavior=true" --no-daemon *>&1 | Tee-Object smoke.log
+          ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke "-Pplaywright4j.bidi.nativeBehavior=true" "-Porg.gradle.java.installations.auto-detect=false" --no-daemon *>&1 | Tee-Object smoke.log
           $code = $LASTEXITCODE
           $secs = [int]((Get-Date) - $start).TotalSeconds
           $fallback = (Select-String -Path smoke.log -SimpleMatch "fallback runtime").Count
