@@ -1,4 +1,5 @@
 # Temporary diagnostics for #72: samples runner health every two minutes into a check run, which survives a lost runner.
+param([switch]$Once)
 $ErrorActionPreference = 'Continue'
 $repo = $env:GITHUB_REPOSITORY
 $log = Join-Path $env:RUNNER_TEMP 'metrics.txt'
@@ -20,5 +21,6 @@ while ($true) {
   $text = (Get-Content $log | Select-Object -Last 400) -join "`n"
   @{ output = @{ title = "metrics $env:DIAG_NAME"; summary = $line; text = $text } } | ConvertTo-Json -Depth 3 | Set-Content $body
   gh api -X PATCH "repos/$repo/check-runs/$id" --input $body
+  if ($Once) { break }
   Start-Sleep -Seconds 120
 }

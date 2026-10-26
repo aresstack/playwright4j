@@ -26,6 +26,8 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21', cache: gradle }
       - shell: pwsh
+        run: pwsh -NoProfile -File .github/diag/monitor.ps1 -Once
+      - shell: pwsh
         run: Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.github/diag/monitor.ps1' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP/monitor.out" -RedirectStandardError "$env:RUNNER_TEMP/monitor.err"
       - shell: bash
         run: ${{ matrix.command }}
