@@ -15,10 +15,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -38,6 +40,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
     static final long DEFAULT_CLOSE_GRACE_MILLIS = 5000L;
 
     private final Map<String, Process> processes = new ConcurrentHashMap<String, Process>();
+    private final Map<String, Instant> startTimes = new ConcurrentHashMap<String, Instant>();
     private final Map<String, java.io.OutputStream> processStdin = new ConcurrentHashMap<String, java.io.OutputStream>();
     private final Map<String, VideoEncoderHandle> videoEncoders = new ConcurrentHashMap<String, VideoEncoderHandle>();
     private final java.util.concurrent.BlockingQueue<String> processEvents =
@@ -94,6 +97,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
 
         final String processId = UUID.randomUUID().toString();
         processes.put(processId, process);
+        process.toHandle().info().startInstant().ifPresent(start -> startTimes.put(processId, start));
         processStdin.put(processId, process.getOutputStream());
         startProcessReader(processId, process.getInputStream(), "stdout");
         startProcessReader(processId, process.getErrorStream(), "stderr");
@@ -257,6 +261,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
                 }
                 processStdin.remove(processId);
                 processes.remove(processId);
+                startTimes.remove(processId);
                 if (ownedProfile != null) {
                     deleteDirectory(ownedProfile);
                 }
@@ -317,6 +322,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
 
         String processId = UUID.randomUUID().toString();
         processes.put(processId, process);
+        process.toHandle().info().startInstant().ifPresent(start -> startTimes.put(processId, start));
         startExitWatcher(processId, process, ownedProfile);
 
         String endpoint;
@@ -355,7 +361,8 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         if (process == null) {
             return;
         }
-        final List<ProcessHandle> descendants = descendantsOf(process);
+        final Instant start = startTimes.get(processId);
+        final List<ProcessHandle> descendants = descendantsOf(process, start);
         process.destroy();
         Thread reaper = new Thread(new Runnable() {
             @Override
@@ -365,7 +372,7 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
                 } catch (InterruptedException exception) {
                     Thread.currentThread().interrupt();
                 }
-                destroyForcibly(process, descendants);
+                destroyForcibly(process, start, descendants);
             }
         }, "playwright4j-proc-close-" + processId);
         reaper.setDaemon(true);
@@ -387,26 +394,81 @@ public final class JdkHostProcessLauncher implements HostProcessLauncher {
         Process process = processes.get(processId);
         if (process != null) {
             Playwright4JDebug.log("[pw4j-launcher] force kill pid=" + process.pid());
-            destroyForcibly(process, descendantsOf(process));
+            Instant start = startTimes.get(processId);
+            destroyForcibly(process, start, descendantsOf(process, start));
         }
     }
 
-    private static List<ProcessHandle> descendantsOf(Process process) {
-        List<ProcessHandle> descendants = new ArrayList<ProcessHandle>();
+    /**
+     * The process tree below {@code process}. Not {@link Process#descendants()}: once the parent has
+     * exited, the JDK no longer knows its start time and returns every process whose recorded parent
+     * id merely equals the old pid. On Windows that id outlives the parent and pids are reused, so
+     * unrelated processes (the CI runner itself) would be killed. A child counts only if it started
+     * after its parent; without the parent's start time nothing is collected.
+     */
+    private static List<ProcessHandle> descendantsOf(Process process, Instant start) {
+        if (start == null) {
+            return Collections.emptyList();
+        }
+        List<ProcessEntry> all = new ArrayList<ProcessEntry>();
         try {
-            process.descendants().forEach(descendants::add);
+            ProcessHandle.allProcesses().forEach(handle -> {
+                Instant started = handle.info().startInstant().orElse(null);
+                Long parent = handle.parent().map(ProcessHandle::pid).orElse(null);
+                if (started != null && parent != null) {
+                    all.add(new ProcessEntry(handle, handle.pid(), parent, started));
+                }
+            });
         } catch (RuntimeException ignored) {
-            // The process just ended or its tree is not visible: nothing more to collect.
+            // The process table is not readable: nothing more to collect.
+        }
+        List<ProcessHandle> descendants = new ArrayList<ProcessHandle>();
+        for (ProcessEntry entry : descendantsAmong(process.pid(), start, all)) {
+            descendants.add(entry.handle);
         }
         return descendants;
     }
 
-    private static void destroyForcibly(Process process, List<ProcessHandle> capturedDescendants) {
+    static List<ProcessEntry> descendantsAmong(long pid, Instant start, List<ProcessEntry> all) {
+        Map<Long, List<ProcessEntry>> byParent = new HashMap<Long, List<ProcessEntry>>();
+        for (ProcessEntry entry : all) {
+            byParent.computeIfAbsent(entry.parentPid, key -> new ArrayList<ProcessEntry>()).add(entry);
+        }
+        List<ProcessEntry> descendants = new ArrayList<ProcessEntry>();
+        collectChildren(pid, start, byParent, descendants);
+        return descendants;
+    }
+
+    private static void collectChildren(long pid, Instant start, Map<Long, List<ProcessEntry>> byParent,
+            List<ProcessEntry> descendants) {
+        for (ProcessEntry child : byParent.getOrDefault(pid, Collections.<ProcessEntry>emptyList())) {
+            if (!child.start.isBefore(start) && !descendants.contains(child)) {
+                descendants.add(child);
+                collectChildren(child.pid, child.start, byParent, descendants);
+            }
+        }
+    }
+
+    static final class ProcessEntry {
+        final ProcessHandle handle;
+        final long pid;
+        final long parentPid;
+        final Instant start;
+
+        ProcessEntry(ProcessHandle handle, long pid, long parentPid, Instant start) {
+            this.handle = handle;
+            this.pid = pid;
+            this.parentPid = parentPid;
+            this.start = start;
+        }
+    }
+
+    private static void destroyForcibly(Process process, Instant start, List<ProcessHandle> capturedDescendants) {
         // Captured children first, then any born since; the parent last.
         for (ProcessHandle descendant : capturedDescendants) {
             descendant.destroyForcibly();
         }
-        for (ProcessHandle descendant : descendantsOf(process)) {
+        for (ProcessHandle descendant : descendantsOf(process, start)) {
             descendant.destroyForcibly();
         }
         process.destroyForcibly();
