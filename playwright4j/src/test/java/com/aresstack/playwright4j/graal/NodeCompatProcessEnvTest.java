@@ -51,6 +51,9 @@ final class NodeCompatProcessEnvTest {
         try (GraalPlaywrightRuntime runtime = runtime("win32", new RecordingProcessLauncher())) {
             assertEquals("C:\\tmp\\upload\\file.txt", eval(runtime, "require('path').join('C:\\\\tmp', 'upload/x/..', 'file.txt')"));
             assertEquals("a/b", eval(runtime, "require('path').posix.join('a', 'b')"));
+            // A profile on a network share keeps its UNC root.
+            assertEquals("\\\\server\\share\\profile\\user.js",
+                    eval(runtime, "require('path').join('\\\\\\\\server\\\\share\\\\profile', 'user.js')"));
         }
         try (GraalPlaywrightRuntime runtime = runtime("linux", new RecordingProcessLauncher())) {
             assertEquals("/tmp/file.txt", eval(runtime, "require('path').resolve('/tmp/upload', '../file.txt')"));

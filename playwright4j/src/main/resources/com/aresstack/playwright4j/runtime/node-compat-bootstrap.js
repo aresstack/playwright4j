@@ -806,6 +806,11 @@
     const sep = windows ? '\\' : '/';
     const separators = windows ? /[\\/]+/ : /\/+/;
     function splitRoot(value) {
+      // A UNC root (\\server\share\) keeps both leading separators, as in Node.
+      const unc = windows ? /^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)[\\/]*/.exec(value) : null;
+      if (unc) {
+        return { root: '\\\\' + unc[1] + '\\' + unc[2] + '\\', rest: value.substring(unc[0].length) };
+      }
       const match = windows ? /^(?:[A-Za-z]:)?[\\/]?/.exec(value) : /^\/?/.exec(value);
       return { root: match[0].replace(/[\\/]$/, sep), rest: value.substring(match[0].length) };
     }
