@@ -35,7 +35,7 @@ jobs:
   upstream-gate:
     name: Upstream suite (${{ matrix.config.os }}, ${{ matrix.config.channel }}, ${{ matrix.shard }}/8)
     runs-on: ${{ matrix.config.os }}
-    timeout-minutes: 45
+    timeout-minutes: 25
     permissions:
       contents: read
     strategy:

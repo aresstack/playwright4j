@@ -32,7 +32,9 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
 
 The `upstream-gate` jobs run the suite in eight shards per browser (about 5 to 15 minutes each)
 and upload their test reports; `upstream-gate-check` evaluates the known limitations over all
-shards of a browser.
+shards of a browser. A shard that loses its runner (it happens on the Windows runners, without a
+log, independent of memory, disk or job length) is re-run with "Re-run failed jobs"; the check
+then evaluates all shards again.
 
 ## Credentials (already set as organization GitHub secrets)
 
