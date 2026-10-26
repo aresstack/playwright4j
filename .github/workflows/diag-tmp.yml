@@ -6,19 +6,27 @@ permissions:
   contents: read
 jobs:
   diag:
+    name: diag ${{ matrix.name }}
     runs-on: windows-2022
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        repeat: [1, 2, 3, 4]
+        include:
+          - name: AB
+            tests: "--tests 'com.microsoft.playwright.TestA*' --tests 'com.microsoft.playwright.TestB*'"
+          - name: CtoO
+            tests: "--tests 'com.microsoft.playwright.TestC*' --tests 'com.microsoft.playwright.TestD*' --tests 'com.microsoft.playwright.TestE*' --tests 'com.microsoft.playwright.TestF*' --tests 'com.microsoft.playwright.TestG*' --tests 'com.microsoft.playwright.TestH*' --tests 'com.microsoft.playwright.TestJ*' --tests 'com.microsoft.playwright.TestL*' --tests 'com.microsoft.playwright.TestN*' --tests 'com.microsoft.playwright.TestO*'"
+          - name: P
+            tests: "--tests 'com.microsoft.playwright.TestP*'"
+          - name: QtoW
+            tests: "--tests 'com.microsoft.playwright.TestQ*' --tests 'com.microsoft.playwright.TestR*' --tests 'com.microsoft.playwright.TestS*' --tests 'com.microsoft.playwright.TestT*' --tests 'com.microsoft.playwright.TestU*' --tests 'com.microsoft.playwright.TestV*' --tests 'com.microsoft.playwright.TestW*' --tests 'com.microsoft.playwright.junit.*'"
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
-      JAVA_TOOL_OPTIONS: "-Xmx2g -XX:+ExitOnOutOfMemoryError"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21', cache: gradle }
       - shell: bash
-        run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=chromium -Pplaywright4j.browserChannel=chrome --no-daemon
+        run: ./gradlew :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=chromium -Pplaywright4j.browserChannel=chrome ${{ matrix.tests }} --no-daemon
