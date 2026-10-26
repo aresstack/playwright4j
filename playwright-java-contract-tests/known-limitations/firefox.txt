@@ -130,3 +130,4 @@ com.microsoft.playwright.TestWorkers > shouldReportNetworkActivity  # UPSTREAM_B
 #   com.microsoft.playwright.TestSelectorsRegister > shouldWorkInMainAndIsolatedWorld
 #   com.microsoft.playwright.TestSelectorsRegister > shouldWorkWithPath
 #   com.microsoft.playwright.TestBrowserTypeConnect (Microsoft's driver: launch-server fails to start in this harness)
+com.microsoft.playwright.TestPageClock > whileRunningShouldFastForwardTo  # OS_ENVIRONMENT: the installed clock keeps running, so install, navigate, fastForward and evaluate must finish within 1 s of real time; red once in 7 Windows CI runs, green 8 of 8 locally with each driver, 5 of them under full CPU load

@@ -34,6 +34,14 @@ The test expects `prefers-color-scheme: light` as the default; on a Windows host
 Chrome inherits `dark` without an override. Environmental, not a driver defect. Do not force Chrome
 globally to light (that would diverge from official behaviour).
 
+## OS_ENVIRONMENT — Firefox `TestPageClock.whileRunningShouldFastForwardTo`
+
+`clock().install()` leaves the fake clock running in real time. The test then navigates,
+fast-forwards by 10 s and accepts `Date.now()` only up to 11 s, so the four calls must finish
+within one second. A slow host misses that window: the test failed once in seven Windows CI runs
+and passed every time locally, also under full CPU load, with playwright4j and with Microsoft's
+driver alike.
+
 ## DELIBERATE_DIVERGENCE — Firefox `TestUtils` / `page.requestGC()`
 
 Playwright's BiDi Firefox profile enables `dom.testing.testutils.enabled`, which exposes a
