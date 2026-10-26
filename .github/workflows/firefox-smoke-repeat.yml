@@ -1,0 +1,122 @@
+name: Firefox smoke repeat
+
+# Repeats one Firefox smoke test class on Windows to reproduce a sporadic failure (#66) without
+# running the whole CI. Every run's results and protocol traces are uploaded. Started by hand
+# (once the file is on the default branch) or by a push to the repeat branch below, which runs
+# the defaults twice: without and with CPU load.
+on:
+  push:
+    branches: [ claude/project-thread-dz6oyr-repeat ]
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Gradle --tests pattern, within the firefoxSmoke task filter
+        default: "com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest"
+      nativeBehavior:
+        description: playwright4j.bidi.nativeBehavior
+        default: "true"
+      repetitions:
+        description: How often the pattern runs
+        default: "5"
+      busyThreads:
+        description: Busy loops started before the runs, to starve the browser of CPU
+        default: "0"
+
+jobs:
+  repeat:
+    name: repeat (${{ inputs.tests || 'FirefoxBiDiSmokeTest' }}, nativeBehavior=${{ inputs.nativeBehavior || 'true' }}, x${{ inputs.repetitions || '8' }}, busy ${{ inputs.busyThreads || matrix.busyThreads }})
+    runs-on: windows-2022
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        busyThreads: ${{ github.event_name == 'push' && fromJSON('["0", "3"]') || fromJSON('["dispatch"]') }}
+
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
+      PLAYWRIGHT4J_REQUIRE_FIREFOX: "true"
+      TESTS: ${{ inputs.tests || 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest' }}
+      NATIVE_BEHAVIOR: ${{ inputs.nativeBehavior || 'true' }}
+      REPETITIONS: ${{ inputs.repetitions || '8' }}
+      BUSY_THREADS: ${{ inputs.busyThreads || matrix.busyThreads }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Locate installed Firefox (fail if missing)
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+            "${env:ProgramFiles(x86)}\Mozilla Firefox\firefox.exe"
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Firefox is not installed on this runner; the Firefox smoke cannot run."
+            exit 1
+          }
+          (Get-Item $exe).VersionInfo.ProductVersion | ForEach-Object { Write-Host "Firefox $_ at $exe" }
+          "FIREFOX_EXECUTABLE=$exe" >> $env:GITHUB_ENV
+
+      - name: Start CPU load
+        if: env.BUSY_THREADS != '0'
+        shell: pwsh
+        run: |
+          1..[int]$env:BUSY_THREADS | ForEach-Object {
+            Start-Process pwsh -ArgumentList "-NoProfile", "-Command", "while (`$true) {}" -WindowStyle Hidden
+          }
+          Write-Host "Started $env:BUSY_THREADS busy loops"
+
+      - name: Repeat the Firefox smoke
+        shell: pwsh
+        run: |
+          $failed = 0
+          $total = [int]$env:REPETITIONS
+          $results = "playwright-java-contract-tests/build/test-results/firefoxSmoke"
+          for ($i = 1; $i -le $total; $i++) {
+            Write-Host "=== run $i of $total"
+            # --rerun: after a green run Gradle would otherwise consider the task up to date.
+            ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --rerun --tests "$env:TESTS" "-Pplaywright4j.bidi.nativeBehavior=$env:NATIVE_BEHAVIOR" --no-daemon
+            if ($LASTEXITCODE -ne 0) { $failed++ }
+            $dest = "repeat-results/run-$i"
+            New-Item -ItemType Directory -Force $dest | Out-Null
+            if (Test-Path $results) {
+              Move-Item -Force "$results/*" $dest
+              # A failed persistent run keeps its BiDi protocol; print it so the job log holds it as well.
+              Get-ChildItem "$dest/protocol" -Filter *.log -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "=== protocol of run $i : $($_.Name)"
+                Get-Content $_.FullName | ForEach-Object {
+                  if ($_.Length -gt 2000) { $_.Substring(0, 2000) + " ...[" + $_.Length + " chars]" } else { $_ }
+                }
+              }
+            }
+          }
+          Write-Host "$failed of $total runs failed"
+          if ($failed -ne 0) { exit 1 }
+
+      - name: Stop CPU load and report leftover browser processes
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process -Filter "Name='pwsh.exe'" | Where-Object { $_.CommandLine -like '*while (`$true) {}*' } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $left = Get-CimInstance Win32_Process -Filter "Name='firefox.exe'"
+          if ($left) {
+            $left | Format-List Name, ProcessId, ParentProcessId, CreationDate, CommandLine
+            $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
+          else { Write-Host "No Firefox processes left." }
+
+      - name: Upload results of every run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-smoke-repeat-nativeBehavior-${{ env.NATIVE_BEHAVIOR }}-busy-${{ env.BUSY_THREADS }}
+          path: repeat-results/**

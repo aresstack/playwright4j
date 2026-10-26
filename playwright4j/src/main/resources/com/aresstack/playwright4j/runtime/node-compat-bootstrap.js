@@ -2817,35 +2817,52 @@
     }
   };
 
-  // File streams, backed by the host filesystem. createWriteStream buffers and flushes on end;
-  // createReadStream emits the file's bytes once and ends. These let Playwright's HAR/zip and
-  // download code complete their pipe()/end() lifecycles (finish/close) so the commands settle
-  // instead of awaiting forever (which previously wedged BrowserContext.close()).
+  // File streams, backed by the host filesystem. createWriteStream writes every chunk through, as
+  // Node does (flags 'w' truncate the file on open, 'a' appends), so a stream that is never ended
+  // still leaves its data on disk: Playwright's DEBUG_FILE log is such a stream. The finish/close
+  // lifecycle lets Playwright's HAR/zip and download code complete their pipe()/end() so the
+  // commands settle instead of awaiting forever (which previously wedged BrowserContext.close()).
+  // createReadStream emits the file's bytes once and ends.
   modules.fs.createWriteStream = function (path, options) {
     const target = String(path);
-    const chunks = [];
+    const flags = options && typeof options === 'object' && typeof options.flags === 'string' ? options.flags : 'w';
     const stream = new Writable();
     stream.path = target;
     stream.bytesWritten = 0;
+    let opened = false;
+    function open() {
+      if (opened) { return; }
+      opened = true;
+      if (flags.indexOf('a') < 0) {
+        hostWriteFile(target, global.Buffer.alloc(0));
+      }
+    }
     stream._write = function (chunk, encoding, callback) {
-      const buffer = global.Buffer.isBuffer(chunk)
-        ? chunk
-        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
-      chunks.push(buffer);
-      stream.bytesWritten += buffer.length;
-      callback();
+      try {
+        open();
+        const buffer = toFileBuffer(chunk, encoding);
+        hostAppendFile(target, buffer);
+        stream.bytesWritten += buffer.length;
+        callback();
+      } catch (error) {
+        callback(error);
+      }
     };
     stream._final = function (callback) {
       try {
-        const all = chunks.length > 0 ? global.Buffer.concat(chunks) : global.Buffer.alloc(0);
-        host.fileSystem().writeFileBase64(target, all.toString('base64'));
+        open();
         callback();
       } catch (error) {
-        stream.emit('error', error);
-        callback();
+        callback(error);
       }
     };
     Promise.resolve().then(function () {
+      try {
+        open();
+      } catch (error) {
+        stream.emit('error', error);
+        return;
+      }
       stream.fireSticky('open', 0);
       stream.fireSticky('ready');
     });
@@ -5784,9 +5801,24 @@
   // Playwright kept a utility context whose UtilityScript handle lives in that dead realm: every
   // utility evaluate then fails, and page.title() turns the failure into "". Remember recently
   // destroyed realms so that answer is dropped; the next window realm creates the world again.
+  //
+  // Firefox also reports the destruction of the previous document's realms only when that document's
+  // window global is torn down (RootMessageHandler's realm clean-up on window-global-destroyed), which
+  // is not ordered against the new document's navigationCommitted and load. After a process switch
+  // under load it arrives after load, and the new document's sandbox is announced only after load as
+  // well, so Playwright handed the previous document's utility world to page.title() and aborted that
+  // evaluation once the realm was destroyed. A new window realm of a frame is a new document: drop the
+  // frame's utility world then, so utility evaluations wait for the new document's world.
   const DESTROYED_REALMS_KEPT = 64;
 
   function patchBidiPageStaleUtilityWorld(BidiPage) {
+    const originalOnRealmCreated = BidiPage.prototype._onRealmCreated;
+    BidiPage.prototype._onRealmCreated = function (realmInfo) {
+      if (realmInfo.type === 'window' && !realmInfo.sandbox && !this._contextIdToContext.has(realmInfo.realm)) {
+        dropUtilityWorld(this, this._page.frameManager.frame(realmInfo.context));
+      }
+      return originalOnRealmCreated.apply(this, arguments);
+    };
     const originalOnRealmDestroyed = BidiPage.prototype._onRealmDestroyed;
     BidiPage.prototype._onRealmDestroyed = function (params) {
       const destroyed = this._playwright4jDestroyedRealms || (this._playwright4jDestroyedRealms = []);
@@ -5796,6 +5828,19 @@
       }
       return originalOnRealmDestroyed.apply(this, arguments);
     };
+  }
+
+  function dropUtilityWorld(bidiPage, frame) {
+    const utility = frame && frame._contextData.get('utility').context;
+    if (!utility) {
+      return;
+    }
+    bidiPage._contextIdToContext.forEach(function (context, realm) {
+      if (context === utility) {
+        bidiPage._contextIdToContext.delete(realm);
+      }
+    });
+    frame.contextDestroyed(utility);
   }
 
   function isRealmDestroyed(bidiPage, realm) {
