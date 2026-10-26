@@ -380,6 +380,31 @@ tasks.register('upstreamTestKnownLimitations', Test) {
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'warn'
 
     testLogging { events "failed"; showStandardStreams = false; exceptionFormat "full" }
+
+    // -Pplaywright4j.shard=<i>/<n> runs every n-th top-level test class (sorted by name, from the
+    // i-th), so CI spreads the suite over parallel jobs; knownLimitationsCheck then reads all shards.
+    def shard = findProperty('playwright4j.shard')
+    if (shard) {
+        def (index, count) = shard.split('/').collect { it as int }
+        if (count < 1 || index < 1 || index > count) {
+            throw new GradleException("playwright4j.shard must be <i>/<n> with 1 <= i <= n, not ${shard}")
+        }
+        inputs.property 'shard', shard
+        def topLevel = { String path -> path.replaceAll(/(\$.*)?\.class$/, '') }
+        def positions = null
+        exclude { FileTreeElement element ->
+            if (element.directory) return false
+            if (positions == null) {
+                def names = new TreeSet<String>()
+                testClassesDirs.asFileTree.matching { include '**/*.class' }.visit { FileVisitDetails details ->
+                    if (!details.directory) names << topLevel(details.relativePath.pathString)
+                }
+                positions = [:]
+                names.eachWithIndex { String name, int position -> positions[name] = position }
+            }
+            positions[topLevel(element.relativePath.pathString)] % count != index - 1
+        }
+    }
 }
 
 tasks.register('knownLimitationsCheck') {

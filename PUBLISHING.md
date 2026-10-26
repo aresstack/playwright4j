@@ -24,13 +24,15 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
    is needed; the project contains no native code.
 3. **Release gate:** the Chrome + Edge channel smokes (`channelSmoke`, launch → page →
    evaluate → close), the Firefox WebDriver BiDi smoke (`firefoxSmoke`) and the upstream suite
-   (job `upstream-gate`: `knownLimitationsCheck` for Chrome, Edge and Firefox on Windows, Chrome
-   and Firefox on Linux) must pass before anything is published.
+   (jobs `upstream-gate` and `upstream-gate-check`: `knownLimitationsCheck` for Chrome, Edge and
+   Firefox on Windows, Chrome and Firefox on Linux) must pass before anything is published.
 4. A `publishToMavenLocal` sanity assembles the jar / sources / javadoc / POM.
 5. Gradle builds, signs (in-memory PGP key), and publishes via
    `publishAggregationToCentralPortal`.
 
-The `upstream-gate` jobs take about an hour each and upload their test reports.
+The `upstream-gate` jobs run the suite in eight shards per browser (about 5 to 15 minutes each)
+and upload their test reports; `upstream-gate-check` evaluates the known limitations over all
+shards of a browser.
 
 ## Credentials (already set as organization GitHub secrets)
 

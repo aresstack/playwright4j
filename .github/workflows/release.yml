@@ -7,7 +7,7 @@ name: Release to Maven Central
 # Release gate = the Chrome + Edge channel smokes (launch -> page -> evaluate -> close) plus the
 # Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and process exit), and the full
 # upstream Playwright Java suite (upstream-gate) for Chrome, Edge and Firefox on Windows and Chrome
-# and Firefox on Linux: green iff exactly the failures listed in
+# and Firefox on Linux, in eight shards per browser: green iff exactly the failures listed in
 # playwright-java-contract-tests/known-limitations/ fail (see problems.md). All are mandatory; a
 # missing browser fails the release.
 #
@@ -30,21 +30,24 @@ on:
       - 'playwright-java-contract-tests/known-limitations/**'
 
 jobs:
+  # The suite runs in eight shards per browser (-Pplaywright4j.shard) so each job stays short;
+  # upstream-gate-check then evaluates the known limitations over the results of all shards.
   upstream-gate:
-    name: Upstream suite (${{ matrix.os }}, ${{ matrix.channel }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 150
+    name: Upstream suite (${{ matrix.config.os }}, ${{ matrix.config.channel }}, ${{ matrix.shard }}/8)
+    runs-on: ${{ matrix.config.os }}
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        include:
+        config:
           - { os: windows-2022, browser: chromium, channel: chrome }
           - { os: windows-2022, browser: chromium, channel: msedge }
           - { os: windows-2022, browser: firefox, channel: moz-firefox }
           - { os: ubuntu-24.04, browser: chromium, channel: chrome }
           - { os: ubuntu-24.04, browser: firefox, channel: moz-firefox }
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
 
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
@@ -64,27 +67,66 @@ jobs:
       # Playwright's moz-firefox channel looks for Firefox at /snap/bin/firefox on Linux; the runner
       # installs it elsewhere.
       - name: Point the moz-firefox channel at the installed Firefox (Linux)
-        if: runner.os == 'Linux' && matrix.browser == 'firefox'
+        if: runner.os == 'Linux' && matrix.config.browser == 'firefox'
         run: |
           firefox --version
           sudo mkdir -p /snap/bin
           sudo ln -sf "$(readlink -f "$(command -v firefox)")" /snap/bin/firefox
 
-      - name: Upstream suite against the known limitations
+      - name: Upstream suite, shard ${{ matrix.shard }}/8
         shell: bash
-        run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=${{ matrix.browser }} -Pplaywright4j.browserChannel=${{ matrix.channel }} --no-daemon --stacktrace
+        run: ./gradlew :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=${{ matrix.config.browser }} -Pplaywright4j.browserChannel=${{ matrix.config.channel }} -Pplaywright4j.shard=${{ matrix.shard }}/8 --no-daemon --stacktrace
 
-      - name: Upload test reports
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: upstream-gate-${{ matrix.os }}-${{ matrix.channel }}
+          name: upstream-gate-${{ matrix.config.os }}-${{ matrix.config.channel }}-${{ matrix.shard }}
           path: |
             playwright-java-contract-tests/build/reports/tests/upstreamTestKnownLimitations/**
             playwright-java-contract-tests/build/test-results/upstreamTestKnownLimitations/**
 
-  publish:
+  upstream-gate-check:
+    name: Upstream gate (${{ matrix.os }}, ${{ matrix.channel }})
     needs: upstream-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, browser: chromium, channel: chrome }
+          - { os: windows-2022, browser: chromium, channel: msedge }
+          - { os: windows-2022, browser: firefox, channel: moz-firefox }
+          - { os: ubuntu-24.04, browser: chromium, channel: chrome }
+          - { os: ubuntu-24.04, browser: firefox, channel: moz-firefox }
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Collect the results of all shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: upstream-gate-${{ matrix.os }}-${{ matrix.channel }}-*
+          path: playwright-java-contract-tests/build
+          merge-multiple: true
+
+      - name: Known limitations over the whole suite
+        shell: bash
+        run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -x :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=${{ matrix.browser }} -Pplaywright4j.browserChannel=${{ matrix.channel }} --no-daemon --stacktrace
+
+  publish:
+    needs: upstream-gate-check
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:
