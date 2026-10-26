@@ -137,6 +137,20 @@ main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElemen
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
 
+### Keys outside the US layout (Firefox)
+
+Playwright's `keyboard.down`, `up` and `press` know the keys of the US layout only and fail with
+`Unknown key` for `ä`, `ß`, `é` as `e` plus a combining accent, or an emoji such as 👍🏽; `type()` quietly
+routes such characters through `insertText` instead of pressing them. Over WebDriver BiDi a key
+action can carry any single grapheme as its value, and Firefox generates the text for it, as for a
+person with that layout. playwright4j therefore accepts a single printable grapheme as a key of its
+own on Firefox and Camoufox (independent of `nativeBehavior`; issue #59): `press("ä")` and
+`press("Shift+ü")` reach the page as trusted `keydown`, `keypress`, `input` and `keyup` events.
+Several graphemes, control characters (also U+0085 and CR+LF, one grapheme by the Unicode rules),
+line separators, a lone format character and BiDi's private-use key codes stay unknown keys, and
+`type()`, `insertText()` and `fill()` are unchanged. `NodeCompatFirefoxKeyboardGraphemeTest` guards
+the key mapping, `FirefoxKeyboardGraphemeTest` (part of `firefoxSmoke`) the events in the browser.
+
 ### Dialogs and HTTP authentication without a handler (Firefox)
 
 Playwright answers a JavaScript dialog (`alert`, `confirm`, `prompt`, `beforeunload`) that no
