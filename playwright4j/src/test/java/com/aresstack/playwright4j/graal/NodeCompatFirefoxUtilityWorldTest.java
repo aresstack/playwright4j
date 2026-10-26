@@ -1,7 +1,9 @@
 package com.aresstack.playwright4j.graal;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,7 +17,7 @@ import org.junit.jupiter.api.Test;
  */
 final class NodeCompatFirefoxUtilityWorldTest {
 
-    private static final long TIMEOUT_MILLIS = 30_000;
+    private static final int SETTLE_EVALUATIONS = 5;
 
     private GraalPlaywrightRuntime runtime;
 
@@ -59,12 +61,12 @@ final class NodeCompatFirefoxUtilityWorldTest {
                 "answers.shift()('S2');"));
     }
 
-    // Each step runs in its own macrotask, after the previous step's promises settled; the result lists
-    // the utility realm after every step but the first.
+    // Each step is its own script evaluation; the promise jobs it starts settle before the next one
+    // (GraalJS runs them when an evaluation ends). The result lists the utility realm after every step
+    // but the first.
     private String replay(String... steps) {
-        StringBuilder script = new StringBuilder("(function () {\n"
+        evaluate("(function () {\n"
                 + "  const { BidiPage } = (require('playwright-core/lib/coreBundle'), globalThis.__playwright4jCoreBundle.internals);\n"
-                + "  const test = globalThis.__utilityWorldTest = { state: 'running', seen: [] };\n"
                 + "  const realms = new Map();\n"
                 + "  const answers = [];\n"
                 + "  const session = { send: () => new Promise(resolve => answers.push(realm => resolve({ realm, result: { type: 'number', value: 2 } }))) };\n"
@@ -84,34 +86,27 @@ final class NodeCompatFirefoxUtilityWorldTest {
                 + "  const page = Object.create(BidiPage.prototype);\n"
                 + "  Object.assign(page, { _session: session, _contextIdToContext: realms, _realmToWorkerContext: new Map(),\n"
                 + "    _page: { frameManager: { frame: () => frame } } });\n"
-                + "  const windowRealm = realm => ({ realm, type: 'window', context: 'C1', origin: 'null' });\n"
-                + "  const utilityRealm = () => {\n"
-                + "    for (const [realm, context] of realms) { if (context === worlds.get('utility').context) { return realm; } }\n"
-                + "    return 'none';\n"
+                + "  globalThis.__utilityWorldTest = {\n"
+                + "    page, answers,\n"
+                + "    windowRealm: realm => ({ realm, type: 'window', context: 'C1', origin: 'null' }),\n"
+                + "    utilityRealm() {\n"
+                + "      for (const [realm, context] of realms) { if (context === worlds.get('utility').context) { return realm; } }\n"
+                + "      return 'none';\n"
+                + "    }\n"
                 + "  };\n"
-                + "  const steps = [\n");
-        for (String step : steps) {
-            script.append("    () => { ").append(step).append(" },\n");
-        }
-        script.append("  ];\n"
-                + "  const next = index => setTimeout(() => {\n"
-                + "    if (index > 0) { test.seen.push(utilityRealm()); }\n"
-                + "    if (index === steps.length) { test.state = 'done'; return; }\n"
-                + "    steps[index]();\n"
-                + "    next(index + 1);\n"
-                + "  }, 0);\n"
-                + "  next(0);\n"
                 + "})();");
-        evaluate(script.toString());
-        long deadline = System.currentTimeMillis() + TIMEOUT_MILLIS;
-        while (!evaluate("__utilityWorldTest.state").equals("done")) {
-            if (System.currentTimeMillis() > deadline) {
-                fail("utility world replay did not finish");
+        List<String> seen = new ArrayList<>();
+        for (int i = 0; i < steps.length; i++) {
+            evaluate("(function () { const { page, answers, windowRealm } = __utilityWorldTest; " + steps[i] + " })(); ''");
+            // Playwright's handlers chain a few awaits; let each settle in a later evaluation.
+            for (int turn = 0; turn < SETTLE_EVALUATIONS; turn++) {
+                evaluate("''");
             }
-            runtime.runDueTimers();
+            if (i > 0) {
+                seen.add(evaluate("__utilityWorldTest.utilityRealm()"));
+            }
         }
-        String seen = evaluate("__utilityWorldTest.seen.join(', ')");
-        return seen.substring(seen.indexOf(", ") < 0 ? 0 : seen.indexOf(", ") + 2);
+        return String.join(", ", seen);
     }
 
     private String evaluate(String source) {
