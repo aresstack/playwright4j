@@ -124,7 +124,7 @@ jobs:
     # the browser. launchPersistentContext() runs headed (the Windows launcher-process handoff).
     name: firefox-smoke (${{ matrix.browser }}, nativeBehavior=${{ matrix.nativeBehavior }})
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:

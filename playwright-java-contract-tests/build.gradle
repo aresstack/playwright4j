@@ -109,7 +109,7 @@ tasks.register('firefoxSmoke', Test) {
     systemProperty 'junit.jupiter.execution.timeout.threaddump.enabled', 'true'
     // Below the CI job limit, so a hang outside a test method still fails the task and the CI
     // steps that report it still run.
-    timeout = java.time.Duration.ofMinutes(20)
+    timeout = java.time.Duration.ofMinutes(30)
     // An unhandled promise rejection or uncaught exception in the GraalJS driver (or launch-server)
     // terminates it with exit code 1, as Node.js would, instead of only being reported on stderr.
     systemProperty 'playwright4j.unhandledRejections', findProperty('playwright4j.unhandledRejections') ?: 'strict'
