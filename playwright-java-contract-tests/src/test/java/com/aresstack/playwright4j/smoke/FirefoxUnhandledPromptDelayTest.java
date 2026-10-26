@@ -114,8 +114,10 @@ public class FirefoxUnhandledPromptDelayTest {
                 long rejectedMillis = (System.nanoTime() - started) / 1_000_000;
                 assertEquals(401, rejected.status());
                 if (delay != null) {
-                    // Below the configured minimum: the delay does not apply (Windows runners need seconds for this navigation).
-                    assertTrue(rejectedMillis < 4000, "wrong credentials were cancelled after " + rejectedMillis + " ms");
+                    // Relative to the delayed 401 navigation above (navigation + 4000 ms): Windows runners need
+                    // seconds for the navigation itself, the delay would add 4000 ms on top.
+                    assertTrue(rejectedMillis < authMillis - 2000,
+                            "wrong credentials were cancelled after " + rejectedMillis + " ms, the delayed 401 took " + authMillis + " ms");
                 }
                 wrongCredentials.close();
 
