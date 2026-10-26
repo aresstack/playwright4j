@@ -98,6 +98,38 @@ public class FirefoxKeyboardInputTest {
         }));
     }
 
+    // fill() never moves the focus: a tab would be a real Tab key press, so text with a tab is
+    // refused before anything is typed, also for a textarea or a rich-text editor.
+    @Test
+    void fillWithTabsNeverMovesTheFocus() throws Throwable {
+        runGuarded(executable -> withPage(executable, page -> {
+            page.setContent("<html><body>"
+                    + "<textarea id=t></textarea><input id=afterT>"
+                    + "<div id=e contenteditable></div><input id=afterE>"
+                    + "<input id=s><input id=afterS>"
+                    + "</body></html>");
+
+            for (String target : new String[] {"t", "e", "s"}) {
+                PlaywrightException refused = assertThrows(PlaywrightException.class,
+                        () -> page.fill("#" + target, "first\tsecond"));
+                assertTrue(refused.getMessage().contains("Cannot fill text with a tab"), refused.getMessage());
+            }
+            assertEquals("", page.inputValue("#t"));
+            assertEquals("", page.textContent("#e"));
+            assertEquals("", page.inputValue("#s"));
+            assertEquals("", page.inputValue("#afterT"));
+            assertEquals("", page.inputValue("#afterE"));
+            assertEquals("", page.inputValue("#afterS"));
+            assertEquals("BODY", page.evaluate("document.activeElement.tagName"));
+
+            // keyboard.type keeps the Tab key, as a person pressing it.
+            page.locator("#s").click();
+            page.keyboard().type("first\tsecond");
+            assertEquals("first", page.inputValue("#s"));
+            assertEquals("second", page.inputValue("#afterS"));
+        }));
+    }
+
     private interface PageCheck {
         void run(Page page) throws Exception;
     }

@@ -6604,8 +6604,9 @@
   // input and keyup events to the focused element, also inside iframes, as for a person typing.
   // So sendText types one grapheme after the other, and the main-world install is dropped
   // (patchCoreBundleSource). For keyboard.type/insertText line breaks and tabs are typed as Enter
-  // and Tab, as a person would. fill() only sets the content and must never submit: it refuses
-  // line breaks for a single-line <input> before any input, types them as Enter into a <textarea>
+  // and Tab, as a person would. fill() only sets the content and must never submit or move the
+  // focus: before any input it refuses tabs, and line breaks for a single-line <input>; it types
+  // line breaks as Enter into a <textarea>
   // and as Shift+Enter (a line break, not a new paragraph or a "send") into rich-text editors.
   const BIDI_KEY_ENTER = '\uE007';
   const BIDI_KEY_TAB = '\uE004';
@@ -6944,6 +6945,7 @@
       + '        if (!description)\n', 1);
     // ElementHandle._fill: with real key events a line break is a key press, so on BiDi Firefox
     // fill() refuses it for a single-line <input> before any input (it could submit the form),
+    // refuses a tab for every element (Tab would move the focus and type the rest elsewhere),
     // and tells a rich-text element apart from a <textarea> (see fillTypedText). The check runs
     // in the utility world, inside Playwright's own fill evaluation.
     source = replaceCoreBundleAnchor(source, 'async ([injected, node, { value: value3, force }]) => {',
@@ -6954,6 +6956,9 @@
       + '            if (pw4jRejectLineBreaks && pw4jTag === "input" && /[\\r\\n]/.test(value3))\n'
       + '              throw injected.createStacklessError("Cannot fill text with a line break into a single-line <input>: '
       + 'typing it would press Enter, which may submit the form");\n'
+      + '            if (pw4jRejectLineBreaks && /\\t/.test(value3))\n'
+      + '              throw injected.createStacklessError("Cannot fill text with a tab: typing it would press Tab, '
+      + 'which moves the focus to the next field");\n'
       + '            const pw4jFilled = injected.fill(node, value3);\n'
       + '            return pw4jFilled === "needsinput" && pw4jTag !== "input" && pw4jTag !== "textarea" ? "needsinput:richtext" : pw4jFilled;', 1);
     source = replaceCoreBundleAnchor(source, '          }, { value: value2, force: options.force }));',
