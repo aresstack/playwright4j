@@ -52,12 +52,27 @@ final class NodeCompatFirefoxUtilityWorldTest {
     // Firefox reports the previous document's realms destroyed only when its window global is torn
     // down, which can be after the new document loaded; the new document's sandbox is announced only
     // after load too. Until the new world exists, utility evaluations must not run in the old one.
+    // The order of the failing Windows runs: R1/S1 are the start tab's about:blank, R2 the navigated
+    // document, whose world S2 is created after load, and only then R1 and S1 are reported destroyed.
+    // Between R2 and S2 the frame has no utility world, so page.title() waits for S2.
     @Test
     void aNewDocumentDropsThePreviousDocumentsUtilityWorld() {
-        assertEquals("S1, none, S2", replay(
+        assertEquals("S1, none, S2, S2", replay(
                 "page._onRealmCreated(windowRealm('R1'));",
                 "answers.shift()('S1');",
                 "page._onRealmCreated(windowRealm('R2'));",
+                "answers.shift()('S2');",
+                "page._onRealmDestroyed({ realm: 'R1' }); page._onRealmDestroyed({ realm: 'S1' });"));
+    }
+
+    // The previous document's world creation answers only after the new document's window realm:
+    // that late answer must not become the frame's utility world.
+    @Test
+    void aLateAnswerForThePreviousDocumentIsNotKept() {
+        assertEquals("none, none, S2", replay(
+                "page._onRealmCreated(windowRealm('R1'));",
+                "page._onRealmCreated(windowRealm('R2'));",
+                "answers.shift()('S1');",
                 "answers.shift()('S2');"));
     }
 
