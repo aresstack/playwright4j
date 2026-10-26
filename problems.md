@@ -53,6 +53,17 @@ Firefox, a minimal BiDi client and Chrome over CDP do not. playwright4j sends th
 actions the caller asks for keep `userActivation: true`, so `page.evaluate` and clicks still
 activate the page. The official driver activates every page on load.
 
+## DELIBERATE_DIVERGENCE — Firefox intercepted requests of an unknown frame
+
+Playwright's BiDi backend ignores a request event whose browsing context it does not map to a
+frame: a frame detached meanwhile, a popup or iframe not reported yet, or a worker request. When
+the request was intercepted (`page.route`, `context.route`, `httpCredentials`), Firefox holds it
+until it is answered, so the page waits for it forever; the official driver hangs there too.
+playwright4j continues such a request once with `network.continueRequest`, unrouted, and logs it
+under `playwright4j.debug`. Routes therefore do not apply to these requests. Holding them until the
+frame is reported was rejected: a worker request has no frame that ever arrives, so a buffer would
+turn into a hang of its own.
+
 ## DELIBERATE_DIVERGENCE — `APIRequestContext` proxy schemes
 
 The `proxy` option of `APIRequest.newContext` (and of a browser context's `request()`) is honoured,

@@ -17,6 +17,8 @@ summarizes it.
 | `consumer-check/`: resolves the documented setup twice, with Gradle (`build.gradle`) and with Maven from the published POM (`pom.xml`); both fail if `driver` or `driver-bundle` reaches the classpath, the Gradle check also fails on a native file in the jar | CI, release | yes |
 | Full upstream Playwright Java suite (`knownLimitationsCheck`): Chrome, Edge and Firefox on Windows, Chrome and Firefox on Linux; green iff only the listed known limitations fail | `release.yml`, jobs `upstream-gate` (8 shards per browser) and `upstream-gate-check` | yes, release gate |
 | `browserSignals`: page-observable automation signals (`navigator.webdriver`, headers, injected globals), see [browser-signals.md](browser-signals.md) | `playwright-java-contract-tests` | no, diagnostic |
+| `FirefoxBidiTest` (part of `firefoxSmoke`, also run against Camoufox): `FirefoxBidi` reads the DOM, response bodies and cookies without activating the page; `Response.body()` of a 304 | Windows CI | yes, release gate |
+| `passiveAcquisition`: response bodies and BiDi DOM reads against page-visible side effects, see [passive-acquisition.md](passive-acquisition.md) | `playwright-java-contract-tests` | no, diagnostic |
 
 ## Upstream suite
 
@@ -93,6 +95,15 @@ Every Firefox smoke test also checks that no Firefox process started during the 
 15 s after the browser was closed. A survivor fails the test with its pid, parent pid and command
 line; a process still running after 5 s that ends within the 15 s is named the same way in the
 test output. The CI job uploads the `firefoxSmoke` reports and prints failures in the log.
+
+`firefoxSmoke` has a 30-minute task timeout inside a 40-minute `firefox-smoke` job, so a hang
+outside a test method still fails the task and the reporting steps still run. On the Windows
+runners the task took 11.7 to 20.4 minutes for Camoufox with `nativeBehavior=true` (runs
+40254959794, 40258264595, 40258745412, 40267211801, 40256650996, 40266546059, 40266171805,
+40258681274, October 2026). Across all these runs the slowest (20.4 minutes) took about 74 %
+longer than the fastest (11.7 minutes). Two commits with the same runtime code differed by about
+42 %: 298f809 took 19.4 minutes and bd63373, which only changed a workflow file, 13.7 minutes. Every test is slower on a slow runner, because the GraalJS driver runs interpreted and is CPU-bound. The earlier
+20-minute limit cut off one otherwise passing run at 20.4 minutes.
 
 ## Historical upstream contract-test sweep
 

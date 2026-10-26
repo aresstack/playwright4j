@@ -1,5 +1,6 @@
 package com.aresstack.playwright4j.smoke;
 
+import com.aresstack.playwright4j.bidi.FirefoxBidi;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
@@ -7,6 +8,8 @@ import com.microsoft.playwright.Playwright;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Minimal browser-channel smoke for CI: launch the configured Chromium channel
@@ -33,6 +36,19 @@ public class BrowserChannelSmokeTest {
                         "evaluate(1 + 1) should be 2 on channel '" + channel + "'");
                 page.close();
             }
+        }
+    }
+
+    @Test
+    void firefoxBidiIsRefusedOnChromium() {
+        String channel = System.getenv().getOrDefault("BROWSER_CHANNEL", "chrome");
+        try (Playwright playwright = Playwright.create();
+             Browser browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setChannel(channel).setHeadless(true))) {
+            Page page = browser.newPage();
+            UnsupportedOperationException refused = assertThrows(UnsupportedOperationException.class, () -> FirefoxBidi.open(page));
+            assertTrue(refused.getMessage().contains("newCDPSession"), refused.getMessage());
+            // The CDP session FirefoxBidi tried is detached again; CDP itself still works.
+            assertEquals(2, ((Number) page.evaluate("1 + 1")).intValue());
         }
     }
 }

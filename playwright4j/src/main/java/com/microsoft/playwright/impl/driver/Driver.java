@@ -1,6 +1,7 @@
 package com.microsoft.playwright.impl.driver;
 
 import com.aresstack.playwright4j.graal.Playwright4JHost;
+import com.aresstack.playwright4j.graal.UnhandledPromptDelay;
 
 import java.io.File;
 import java.io.IOException;
@@ -56,6 +57,7 @@ public final class Driver {
             "playwright4j.debug",
             "playwright4j.debug.file",
             "playwright4j.unhandledRejections",
+            UnhandledPromptDelay.PROPERTY,
             Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY,
             Playwright4JHost.NATURAL_POINTER_PROPERTY,
             "playwright4j.video.vlc.path",
@@ -87,6 +89,8 @@ public final class Driver {
     };
 
     public ProcessBuilder createProcessBuilder() {
+        // Fail on Playwright.create() rather than at the first dialog.
+        UnhandledPromptDelay.fromSystemProperty();
         java.util.List<String> command = new java.util.ArrayList<>();
         command.add(javaExecutable());
         command.add("-cp");

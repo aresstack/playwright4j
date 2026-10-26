@@ -2944,35 +2944,52 @@
     }
   };
 
-  // File streams, backed by the host filesystem. createWriteStream buffers and flushes on end;
-  // createReadStream emits the file's bytes once and ends. These let Playwright's HAR/zip and
-  // download code complete their pipe()/end() lifecycles (finish/close) so the commands settle
-  // instead of awaiting forever (which previously wedged BrowserContext.close()).
+  // File streams, backed by the host filesystem. createWriteStream writes every chunk through, as
+  // Node does (flags 'w' truncate the file on open, 'a' appends), so a stream that is never ended
+  // still leaves its data on disk: Playwright's DEBUG_FILE log is such a stream. The finish/close
+  // lifecycle lets Playwright's HAR/zip and download code complete their pipe()/end() so the
+  // commands settle instead of awaiting forever (which previously wedged BrowserContext.close()).
+  // createReadStream emits the file's bytes once and ends.
   modules.fs.createWriteStream = function (path, options) {
     const target = String(path);
-    const chunks = [];
+    const flags = options && typeof options === 'object' && typeof options.flags === 'string' ? options.flags : 'w';
     const stream = new Writable();
     stream.path = target;
     stream.bytesWritten = 0;
+    let opened = false;
+    function open() {
+      if (opened) { return; }
+      opened = true;
+      if (flags.indexOf('a') < 0) {
+        hostWriteFile(target, global.Buffer.alloc(0));
+      }
+    }
     stream._write = function (chunk, encoding, callback) {
-      const buffer = global.Buffer.isBuffer(chunk)
-        ? chunk
-        : global.Buffer.from(String(chunk), typeof encoding === 'string' ? encoding : 'utf8');
-      chunks.push(buffer);
-      stream.bytesWritten += buffer.length;
-      callback();
+      try {
+        open();
+        const buffer = toFileBuffer(chunk, encoding);
+        hostAppendFile(target, buffer);
+        stream.bytesWritten += buffer.length;
+        callback();
+      } catch (error) {
+        callback(error);
+      }
     };
     stream._final = function (callback) {
       try {
-        const all = chunks.length > 0 ? global.Buffer.concat(chunks) : global.Buffer.alloc(0);
-        host.fileSystem().writeFileBase64(target, all.toString('base64'));
+        open();
         callback();
       } catch (error) {
-        stream.emit('error', error);
-        callback();
+        callback(error);
       }
     };
     Promise.resolve().then(function () {
+      try {
+        open();
+      } catch (error) {
+        stream.emit('error', error);
+        return;
+      }
       stream.fireSticky('open', 0);
       stream.fireSticky('ready');
     });
@@ -5919,6 +5936,158 @@
     };
   }
 
+  // BidiPage._createUtilityWorld evaluates at {context, sandbox}, so the answer comes from whatever
+  // sandbox realm the context holds when Firefox runs it. During a navigation Firefox creates and
+  // destroys short-lived realms (#66). If the answering realm is destroyed before the answer arrives,
+  // Playwright kept a utility context whose UtilityScript handle lives in that dead realm: every
+  // utility evaluate then fails, and page.title() turns the failure into "". Remember the realms
+  // destroyed while the request is pending so that answer is dropped; the next window realm creates
+  // the world again.
+  //
+  // Firefox also reports the destruction of the previous document's realms only when that document's
+  // window global is torn down (RootMessageHandler's realm clean-up on window-global-destroyed), which
+  // is not ordered against the new document's navigationCommitted and load. After a process switch
+  // under load it arrives after load, and the new document's sandbox is announced only after load as
+  // well, so Playwright handed the previous document's utility world to page.title() and aborted that
+  // evaluation once the realm was destroyed. A new window realm of a frame is a new document: drop the
+  // frame's utility world then, so utility evaluations wait for the new document's world.
+  function patchBidiPageStaleUtilityWorld(BidiPage) {
+    const originalOnRealmCreated = BidiPage.prototype._onRealmCreated;
+    BidiPage.prototype._onRealmCreated = function (realmInfo) {
+      if (realmInfo.type === 'window' && !realmInfo.sandbox && !this._contextIdToContext.has(realmInfo.realm)) {
+        dropUtilityWorld(this, this._page.frameManager.frame(realmInfo.context));
+      }
+      return originalOnRealmCreated.apply(this, arguments);
+    };
+    const originalOnRealmDestroyed = BidiPage.prototype._onRealmDestroyed;
+    BidiPage.prototype._onRealmDestroyed = function (params) {
+      const tracked = destroyedRealms(this);
+      if (tracked.pending > 0) {
+        tracked.realms.add(params.realm);
+      }
+      return originalOnRealmDestroyed.apply(this, arguments);
+    };
+    const originalCreateUtilityWorld = BidiPage.prototype._createUtilityWorld;
+    BidiPage.prototype._createUtilityWorld = function () {
+      const self = this;
+      const args = arguments;
+      return whileTrackingDestroyedRealms(this, function () {
+        return originalCreateUtilityWorld.apply(self, args);
+      });
+    };
+  }
+
+  // Realms destroyed while a request whose answer names a realm is pending; cleared when none is.
+  function destroyedRealms(bidiPage) {
+    return bidiPage._playwright4jDestroyedRealms || (bidiPage._playwright4jDestroyedRealms = { pending: 0, realms: new Set() });
+  }
+
+  async function whileTrackingDestroyedRealms(bidiPage, operation) {
+    const tracked = destroyedRealms(bidiPage);
+    tracked.pending++;
+    try {
+      return await operation();
+    } finally {
+      if (--tracked.pending === 0) {
+        tracked.realms.clear();
+      }
+    }
+  }
+
+  function dropUtilityWorld(bidiPage, frame) {
+    const utility = frame && frame._contextData.get('utility').context;
+    if (!utility) {
+      return;
+    }
+    bidiPage._contextIdToContext.forEach(function (context, realm) {
+      if (context === utility) {
+        bidiPage._contextIdToContext.delete(realm);
+      }
+    });
+    frame.contextDestroyed(utility);
+  }
+
+  // A frame's navigationCommitted can name a frame Playwright does not know (detached, or never
+  // reported); ignore it like the other navigation events do.
+  function patchBidiPageUnknownFrameCommit(BidiPage) {
+    const originalOnNavigationCommitted = BidiPage.prototype._onNavigationCommitted;
+    BidiPage.prototype._onNavigationCommitted = function (params) {
+      if (this._page.frameManager.frame(params.context)) {
+        originalOnNavigationCommitted.apply(this, arguments);
+      }
+    };
+  }
+
+  // BidiNetworkManager drops a request event of a frame it does not know (detached meanwhile, or
+  // not reported yet). Firefox holds an intercepted request until it is answered, so the page would
+  // wait for it forever: let it go on unrouted, as the browser session does for tabs without a page.
+  function continueUnattributedRequest(networkManager, params) {
+    if (!params.isBlocked) {
+      return;
+    }
+    pw4jDebug('BiDi request of an unknown frame continued without routes: ' + params.request.url);
+    networkManager._session.sendMayFail('network.continueRequest', { request: params.request.request });
+  }
+
+  // BidiBrowser reads an iframe's name with browsingContext.locateNodes after reporting the frame,
+  // but the client learns a frame's name only from its navigation events, and the frame's commit can
+  // arrive before that answer. Hold the BiDi messages that follow until the name is in, so the commit
+  // carries it, as CDP's frameNavigated does. Held messages are delivered in their order, one per
+  // microtask turn, so a held contextCreated starts its own lookup before anything after it is seen.
+  function readFrameName(connection, bidiPage, frame) {
+    const hold = heldBidiMessages(connection);
+    const lookup = connection._lastId + 1;
+    const named = bidiPage._getFrameNode(frame).then(function (node) {
+      const attributes = node?.value?.attributes;
+      frame._name = attributes?.name ?? attributes?.id ?? '';
+    }, function () {});
+    // The request goes out synchronously; its answer comes with a later message.
+    if (connection._lastId !== lookup) {
+      return;
+    }
+    hold.lookups.add(lookup);
+    named.then(function () {
+      hold.lookups.delete(lookup);
+      hold.release();
+    });
+  }
+
+  function heldBidiMessages(connection) {
+    if (connection._playwright4jHeldMessages) {
+      return connection._playwright4jHeldMessages;
+    }
+    const transport = connection._transport;
+    const deliver = transport.onmessage;
+    const hold = { lookups: new Set(), queue: [], releasing: false };
+    hold.release = function () {
+      if (hold.releasing) {
+        return;
+      }
+      hold.releasing = true;
+      (function next() {
+        if (hold.lookups.size || !hold.queue.length) {
+          hold.releasing = false;
+          return;
+        }
+        deliver(hold.queue.shift());
+        Promise.resolve().then(next);
+      })();
+    };
+    transport.onmessage = function (message) {
+      if (hold.lookups.has(message.id) || (!hold.lookups.size && !hold.queue.length)) {
+        deliver(message);
+      } else {
+        hold.queue.push(message);
+      }
+    };
+    connection._playwright4jHeldMessages = hold;
+    return hold;
+  }
+
+  function isRealmDestroyed(bidiPage, realm) {
+    return destroyedRealms(bidiPage).realms.has(realm);
+  }
+
   // Playwright's BiDi Firefox profile (third_party/firefoxPrefs.js, taken from Puppeteer) enables
   // dom.testing.testutils.enabled only for page.requestGC(). That pref exposes a TestUtils global to
   // every web page, which neither a normal Firefox nor Playwright's own Firefox build (Juggler) has.
@@ -5937,6 +6106,89 @@
   // BidiPage.requestGC evaluates TestUtils.gc() and reports any failure as "Method not implemented.".
   // With dom.testing.testutils.enabled off by default (see patchBidiFirefoxProfilePrefs) say how to
   // turn it back on instead.
+  // Read-only WebDriver BiDi access for com.aresstack.playwright4j.bidi.FirefoxBidi. Firefox accepts
+  // one BiDi session, Playwright's, so a second client cannot connect. FirefoxBidi reaches this
+  // object through BrowserContext.newCDPSession(page), the only page-bound session channel of the
+  // Playwright protocol, and attaches with "playwright4j.bidi.attach" before anything else is
+  // accepted. Only commands that run no script in the page and leave Playwright's state alone pass.
+  const BIDI_READ_COMMANDS = new Set([
+    'browsingContext.getTree',
+    'browsingContext.locateNodes',
+    'network.getData',
+    'storage.getCookies'
+  ]);
+  const BIDI_DEFAULT_DATA_TIMEOUT_MS = 10000;
+
+  function createBidiReadSession(SdkObject, context, target) {
+    const frame = typeof target.mainFrame === 'function' ? target.mainFrame() : target;
+    const session = frame._page.delegate._session;
+    class BidiReadSession extends SdkObject {
+      constructor() {
+        super(context, 'cdp-session');
+        this._attached = false;
+      }
+
+      async send(progress, method, params) {
+        if (method === 'playwright4j.bidi.attach') {
+          if (!this._attached) {
+            this._attached = true;
+            this._forwardEvents();
+          }
+          return { context: frame._id };
+        }
+        if (!this._attached) {
+          throw new Error('Firefox over WebDriver BiDi has no CDP session. Use '
+            + 'com.aresstack.playwright4j.bidi.FirefoxBidi.open(page) for read-only BiDi access.');
+        }
+        if (!BIDI_READ_COMMANDS.has(method)) {
+          throw new Error('FirefoxBidi does not send ' + method + '; read-only commands: '
+            + Array.from(BIDI_READ_COMMANDS).join(', '));
+        }
+        params = Object.assign({}, params);
+        if (method !== 'network.getData') {
+          return await progress.race(session.send(method, params));
+        }
+        // Firefox can hold network.getData for seconds (reported for 304 revalidations);
+        // a caller reading many responses must not stall on one of them.
+        const timeout = typeof params.timeout === 'number' ? params.timeout : BIDI_DEFAULT_DATA_TIMEOUT_MS;
+        delete params.timeout;
+        let timer;
+        const expired = new Promise(function (resolve, reject) {
+          timer = setTimeout(function () {
+            reject(new Error('network.getData for request ' + params.request + ' timed out after ' + timeout + ' ms'));
+          }, timeout);
+        });
+        try {
+          return await progress.race(Promise.race([session.send(method, params), expired]));
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      _forwardEvents() {
+        const self = this;
+        const originalEmit = session.emit;
+        session.emit = function (name, params) {
+          if (typeof name === 'string' && (name.indexOf('network.') === 0 || name.indexOf('browsingContext.') === 0)) {
+            self.emit('event', { method: name, params: params });
+          }
+          return originalEmit.apply(this, arguments);
+        };
+        this._restore = function () {
+          session.emit = originalEmit;
+        };
+      }
+
+      async detach() {
+        if (this._restore) {
+          this._restore();
+        }
+        this.emit('close');
+      }
+    }
+    return new BidiReadSession();
+  }
+
   function patchBidiPageRequestGC(BidiPage) {
     const originalRequestGC = BidiPage.prototype.requestGC;
     if (typeof originalRequestGC !== 'function') {
@@ -6045,6 +6297,235 @@
     BidiPage.prototype.addInitScript = function () {
       warnNativeBehaviorPreload(this._browserContext);
       return originalPageAdd.apply(this, arguments);
+    };
+  }
+
+  // playwright4j.bidi.nativeBehavior: text from fill() and keyboard.insertText() goes through
+  // Firefox's editor (execCommand "insertText" on the focused field), which fires trusted
+  // beforeinput and input events, as typing or pasting does (#41). Playwright assigns the value
+  // and dispatches an untrusted input event instead; that stays the way for a field the editor
+  // refuses, so the result is the same either way.
+  function nativeInsertText(window, text, playwrightInsertText) {
+    let element = window.document.activeElement;
+    while (element && element.shadowRoot)
+      element = element.shadowRoot.activeElement;
+    if (!element)
+      return;
+    const type = element.nodeName.toLowerCase();
+    if (type === 'iframe' || type === 'frame')
+      return element;
+    if ((type === 'input' || type === 'textarea' || element.isContentEditable)
+        && window.document.execCommand('insertText', false, text))
+      return;
+    return playwrightInsertText(window, text);
+  }
+
+  function insertTextExpression(bidiPage, bidiInsertTextSource) {
+    const insert = nativeBehavior() && isBidiFirefox(bidiPage._browserContext._browser)
+      ? '(' + nativeInsertText.toString() + ')(window, text, bidiInsertText)'
+      : 'bidiInsertText(window, text)';
+    return '(text) => {\nconst module = { exports: {} };\n' + bidiInsertTextSource + '\nreturn ' + insert + ';\n}';
+  }
+
+  // keyboard.down/up/press("ä"): Playwright knows only the keys of the US layout and fails with
+  // "Unknown key" before the raw keyboard is reached. Over WebDriver BiDi any other single printable
+  // grapheme is a key of its own, sent as a real keyDown/keyUp whose text the browser generates, as
+  // for a person with a German layout (#59). The code is only Playwright's bookkeeping of pressed
+  // keys; BiDi does not send it. The hook marks the raw keyboard, so other engines keep refusing.
+  // Not typable: a control character anywhere (CR+LF is one grapheme, U+0085 is beyond ASCII), a
+  // line or paragraph separator, BiDi's own key codes, or a grapheme that starts with a format
+  // character (a lone zero-width joiner); inside a grapheme a format character joins an emoji.
+  function isTypableGrapheme(text) {
+    if (typeof text !== 'string' || text.length === 0 || /[\p{Cc}\p{Zl}\p{Zp}\uE000-\uE05D]/u.test(text) || /^\p{Cf}/u.test(text))
+      return false;
+    const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)[Symbol.iterator]();
+    return !graphemes.next().done && graphemes.next().done;
+  }
+
+  function graphemeKeyDescription(raw, keyString) {
+    if (!raw || raw.pw4jGraphemeKeys !== true || !isTypableGrapheme(keyString))
+      return undefined;
+    return { key: keyString, keyCode: 0, keyCodeWithoutLocation: 0, code: 'pw4j:' + keyString, text: keyString, location: 0 };
+  }
+
+  // A grapheme of several code points (é as e + U+0301, 👍🏽) is not one of Playwright's key names;
+  // the BiDi key action takes it as its value as it is.
+  function patchBidiKeyboardGraphemeKeys(RawKeyboard) {
+    RawKeyboard.prototype.pw4jGraphemeKeys = true;
+    const originalKeydown = RawKeyboard.prototype.keydown;
+    const originalKeyup = RawKeyboard.prototype.keyup;
+    RawKeyboard.prototype.keydown = function (progress, modifiers, keyName) {
+      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1)
+        return this._performActions(progress, [{ type: 'keyDown', value: keyName }]);
+      return originalKeydown.apply(this, arguments);
+    };
+    RawKeyboard.prototype.keyup = function (progress, modifiers, keyName) {
+      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1)
+        return this._performActions(progress, [{ type: 'keyUp', value: keyName }]);
+      return originalKeyup.apply(this, arguments);
+    };
+  }
+
+  // playwright4j.bidi.nativeBehavior: an action scrolls its target into view with the mouse wheel
+  // (input.performActions), as a user does, instead of calling scrollIntoView from a script (#42).
+  // Each round wheels the innermost scroll container that still hides the target, over the visible
+  // part of that container, towards centring the target, as Playwright's scrollIntoView does.
+  // A target the wheel cannot reach (a container that ignores the wheel, a transformed frame)
+  // falls back to Playwright's scrollIntoView, so the action still runs.
+  const NATIVE_SCROLL_ROUNDS = 8;
+  const NATIVE_SCROLL_TICK_PIXELS = 120;
+
+  function nativeScrollStep([, node], rect) {
+    if (!node.isConnected)
+      return 'error:notconnected';
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    if (!element || element.getClientRects().length === 0)
+      return 'error:notvisible';
+    const window = element.ownerDocument.defaultView;
+    const box = element.getBoundingClientRect();
+    const target = rect
+      ? { left: box.left + rect.x, top: box.top + rect.y, right: box.left + rect.x + rect.width, bottom: box.top + rect.y + rect.height }
+      : { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    const root = element.ownerDocument.scrollingElement || element.ownerDocument.documentElement;
+    const viewport = { left: 0, top: 0, right: root.clientWidth, bottom: root.clientHeight };
+    const containers = [];
+    for (let parent = element.parentElement; parent && parent !== root; parent = parent.parentElement) {
+      const style = window.getComputedStyle(parent);
+      const scrolls = /(auto|scroll)/.test(style.overflowX + ' ' + style.overflowY);
+      if (scrolls && (parent.scrollHeight > parent.clientHeight || parent.scrollWidth > parent.clientWidth)) {
+        const outer = parent.getBoundingClientRect();
+        const left = outer.left + parent.clientLeft;
+        const top = outer.top + parent.clientTop;
+        containers.push({ scroller: parent, box: { left: left, top: top, right: left + parent.clientWidth, bottom: top + parent.clientHeight } });
+      }
+    }
+    containers.push({ scroller: root, box: viewport });
+    // How far the container has to scroll along one axis: none while the target fits inside,
+    // otherwise towards centring it, within what the container can still scroll.
+    function delta(start, end, boxStart, boxEnd, scrolled, scrollSize, clientSize) {
+      const fits = end - start <= boxEnd - boxStart;
+      if (fits ? start >= boxStart && end <= boxEnd : start <= boxStart && end >= boxEnd)
+        return 0;
+      const wanted = Math.round((start + end) / 2 - (boxStart + boxEnd) / 2);
+      return Math.max(-scrolled, Math.min(scrollSize - clientSize - scrolled, wanted));
+    }
+    for (let i = 0; i < containers.length; i++) {
+      const { scroller, box: area } = containers[i];
+      const dx = delta(target.left, target.right, area.left, area.right, scroller.scrollLeft, scroller.scrollWidth, scroller.clientWidth);
+      const dy = delta(target.top, target.bottom, area.top, area.bottom, scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight);
+      if (dx === 0 && dy === 0)
+        continue;
+      // The wheel goes to the visible part of this container; while that is empty, an outer
+      // container has to scroll first.
+      const visible = { left: area.left, top: area.top, right: area.right, bottom: area.bottom };
+      containers.slice(i + 1).forEach(function (outer) {
+        visible.left = Math.max(visible.left, outer.box.left);
+        visible.top = Math.max(visible.top, outer.box.top);
+        visible.right = Math.min(visible.right, outer.box.right);
+        visible.bottom = Math.min(visible.bottom, outer.box.bottom);
+      });
+      if (visible.right - visible.left < 1 || visible.bottom - visible.top < 1)
+        continue;
+      return { x: (visible.left + visible.right) / 2, y: (visible.top + visible.bottom) / 2, deltaX: dx, deltaY: dy };
+    }
+    return 'done';
+  }
+
+  // Resolves once no scroll position under the document changed for two animation frames, so the
+  // next round measures after Firefox's smooth scrolling ended.
+  function nativeScrollSettled([, node]) {
+    const window = node.ownerDocument.defaultView;
+    const positions = () => {
+      const values = [];
+      for (let element = node.parentElement; element; element = element.parentElement)
+        values.push(element.scrollLeft, element.scrollTop);
+      return values.join();
+    };
+    return new Promise(resolve => {
+      const deadline = Date.now() + 2000;
+      let last = positions();
+      let stable = 0;
+      const check = () => {
+        const now = positions();
+        stable = now === last ? stable + 1 : 0;
+        last = now;
+        if (stable >= 2 || Date.now() > deadline)
+          resolve();
+        else
+          window.requestAnimationFrame(check);
+      };
+      window.requestAnimationFrame(check);
+    });
+  }
+
+  function wheelTicks(x, y, deltaX, deltaY) {
+    const count = Math.max(1, Math.ceil(Math.max(Math.abs(deltaX), Math.abs(deltaY)) / NATIVE_SCROLL_TICK_PIXELS));
+    const ticks = [];
+    let sentX = 0;
+    let sentY = 0;
+    for (let i = 1; i <= count; i++) {
+      const nextX = Math.round(deltaX * i / count);
+      const nextY = Math.round(deltaY * i / count);
+      ticks.push({ type: 'scroll', x: x, y: y, deltaX: nextX - sentX, deltaY: nextY - sentY });
+      sentX = nextX;
+      sentY = nextY;
+    }
+    return ticks;
+  }
+
+  // Returns Playwright's result ("done", "error:notconnected", "error:notvisible"), or null when the
+  // wheel did not bring the target into view.
+  async function wheelIntoView(bidiPage, handle, rect) {
+    let offset = { x: 0, y: 0 };
+    if (handle._frame !== bidiPage._page.mainFrame()) {
+      const frameElement = await handle._frame.frameElement(nullProgress);
+      try {
+        const result = await wheelIntoView(bidiPage, frameElement);
+        if (result !== 'done')
+          return result === 'error:notconnected' ? result : null;
+      } finally {
+        frameElement.dispose();
+      }
+      offset = await bidiPage._framePosition(handle._frame);
+      if (!offset)
+        return null;
+    }
+    for (let round = 0; round < NATIVE_SCROLL_ROUNDS; round++) {
+      const step = await handle.evaluateInUtility(nativeScrollStep, rect || null);
+      if (typeof step === 'string')
+        return step;
+      await bidiPage._session.send('input.performActions', {
+        context: bidiPage._session.sessionId,
+        actions: [{
+          type: 'wheel',
+          id: 'pw_mouse_wheel',
+          actions: wheelTicks(Math.floor(offset.x + step.x), Math.floor(offset.y + step.y), step.deltaX, step.deltaY)
+        }]
+      });
+      await handle.evaluateInUtility(nativeScrollSettled, null);
+    }
+    return null;
+  }
+
+  // The bundle's nullProgress, for frame.frameElement() outside of an action's progress.
+  let nullProgress;
+  function patchBidiPageNativeScroll(BidiPage, bundleNullProgress) {
+    nullProgress = bundleNullProgress;
+    const originalScroll = BidiPage.prototype.scrollRectIntoViewIfNeeded;
+    BidiPage.prototype.scrollRectIntoViewIfNeeded = async function (handle, rect) {
+      if (!nativeBehavior() || !isBidiFirefox(this._browserContext._browser)) {
+        return originalScroll.apply(this, arguments);
+      }
+      const result = await wheelIntoView(this, handle, rect).catch(function (error) {
+        if (error && /Node is detached|not connected/.test(String(error.message)))
+          return 'error:notconnected';
+        throw error;
+      });
+      if (result !== null) {
+        return result;
+      }
+      pw4jDebug('nativeBehavior: the mouse wheel did not bring the element into view; using scrollIntoView');
+      return originalScroll.apply(this, arguments);
     };
   }
 
@@ -6307,13 +6788,25 @@
   // Playwright's utility world; the shim reads page state there, never in the main world.
   const UTILITY_WORLD_NAME = '__playwright_utility_world__';
 
+  // Firefox collects script.getRealms from the tab's window globals asynchronously, so the answer can
+  // be older than realm events handled meanwhile: skip realms destroyed since, and once a window realm
+  // was reported by its own event, the events are newer than the snapshot.
   async function restoreTakenOverPage(bidiPage) {
     const contextId = bidiPage._session.sessionId;
     try {
-      const { realms } = await bidiPage._session.send('script.getRealms', { context: contextId, type: 'window' });
-      for (const realm of realms) {
-        bidiPage._onRealmCreated(Object.assign({ context: contextId }, realm));
-      }
+      const mainWorld = bidiPage._page.mainFrame()._contextData.get('main');
+      const reported = mainWorld.context;
+      const realms = await whileTrackingDestroyedRealms(bidiPage, async function () {
+        const snapshot = (await bidiPage._session.send('script.getRealms', { context: contextId, type: 'window' })).realms;
+        if (mainWorld.context === reported) {
+          for (const realm of snapshot) {
+            if (!isRealmDestroyed(bidiPage, realm.realm)) {
+              bidiPage._onRealmCreated(Object.assign({ context: contextId }, realm));
+            }
+          }
+        }
+        return snapshot;
+      });
       const main = realms.find(function (realm) { return !realm.sandbox; });
       if (!main) {
         return;
@@ -6544,9 +7037,43 @@
   // Firefox's Remote Agent sets its own recommended test preferences at startup, the ones above
   // among them, for every preference without a user value (remote/shared/RecommendedPreferences).
   // Leaving Playwright's lines out would hand them to the Remote Agent, so it is told not to.
+  // Without them Firefox's 3 s successive-dialog limit applies: the next dialog within it gets a
+  // "prevent more dialogs" checkbox, and Camoufox (tab-modal prompts) never reports that dialog over
+  // BiDi, so the page and the caller's call hang. 0 is what the Remote Agent sets.
   const NATIVE_BEHAVIOR_ADDED_PREFS = {
-    'remote.prefs.recommended': false
+    'remote.prefs.recommended': false,
+    'dom.successive_dialog_time_limit': 0
   };
+
+  // A value the profile sets itself (its own user.js lines, or a prefs.js value user.js did not
+  // write) wins over an added preference, as firefoxUserPrefs does.
+  function nativeBehaviorAddedPrefs(userDataDir, previousUserJs) {
+    if (!nativeBehavior()) {
+      return {};
+    }
+    const prefName = function (line) {
+      const match = /^\s*user_pref\(\s*"([^"]+)"/.exec(line);
+      return match ? match[1] : undefined;
+    };
+    const previousLines = new Set(previousUserJs.split(/\r?\n/));
+    const own = new Set(previousUserJs ? keptUserJsLines(previousUserJs, new Set()).map(prefName) : []);
+    const prefsJs = modules.path.join(String(userDataDir), 'prefs.js');
+    if (modules.fs.existsSync(prefsJs)) {
+      String(modules.fs.readFileSync(prefsJs, 'latin1')).split('\n').forEach(function (line) {
+        const text = line.replace(/\r$/, '');
+        if (!previousLines.has(text)) {
+          own.add(prefName(text));
+        }
+      });
+    }
+    const added = {};
+    Object.keys(NATIVE_BEHAVIOR_ADDED_PREFS).forEach(function (name) {
+      if (!own.has(name)) {
+        added[name] = NATIVE_BEHAVIOR_ADDED_PREFS[name];
+      }
+    });
+    return added;
+  }
 
   function nativeBehavior() {
     return host.nativeBehavior() === true;
@@ -6649,7 +7176,7 @@
       const previous = readUserJsBytes(userJs);
       const prefs = Object.assign({}, FIREFOX_DEFAULT_PREFS,
           options && options[PERSISTENT_LAUNCH_OPTION] ? FIREFOX_PERSISTENT_DEFAULT_PREFS : {},
-          nativeBehavior() ? NATIVE_BEHAVIOR_ADDED_PREFS : {},
+          nativeBehaviorAddedPrefs(userDataDir, previous),
           (options && options.firefoxUserPrefs) || {});
       await originalPrepareUserDataDir.call(this, Object.assign({}, options, { firefoxUserPrefs: prefs }), userDataDir);
       const callerPrefs = (options && options.firefoxUserPrefs) || {};
@@ -6680,7 +7207,9 @@
   // event, which neither a normal Firefox, Playwright's Juggler Firefox nor Chrome over CDP does.
   // The same holds for every other utility-world evaluation: Playwright reads the page there
   // (page.content(), textContent(), count(), screenshots), and a read must not
-  // activate the page (#37). Only the caller's main-world evaluations keep upstream behaviour.
+  // activate the page (#37). Only the caller's main-world evaluations keep upstream behaviour;
+  // with playwright4j.bidi.nativeBehavior they run without activation too, as a page's own script
+  // does, so main-world reads (allTextContents(), boundingBox()) do not activate the page either.
   // Evaluations Playwright sends for its own setup, never for the caller: the utility-world touch,
   // creating its InjectedScript/UtilityScript in a world, and injectedScript.extend (the recorder).
   const PLAYWRIGHT_SETUP_SCRIPT = /new \(module\.exports\.(?:InjectedScript|UtilityScript)\(\)\)\(/;
@@ -6712,7 +7241,8 @@
           utilityWorldTouchSessions.add(session);
           const originalSend = session.send;
           session.send = function (method, params) {
-            if (params && params.userActivation === true && isEvaluationWithoutActivation(method, params, utilityWorldName)) {
+            if (params && params.userActivation === true
+                && (nativeBehavior() || isEvaluationWithoutActivation(method, params, utilityWorldName))) {
               arguments[1] = Object.assign({}, params, { userActivation: false });
             }
             return originalSend.apply(this, arguments);
@@ -6865,13 +7395,54 @@
           patchBidiBrowserCacheBehavior(BidiBrowser);
         });
       },
+      isRealmDestroyed: isRealmDestroyed,
+      readFrameName: readFrameName,
+      continueUnattributedRequest: continueUnattributedRequest,
+      restoreTakenOverPage: restoreTakenOverPage,
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
-      bidiPage: function (BidiPage) {
+      // -Dplaywright4j.bidi.unhandledPromptDelay (#48): Playwright answers a dialog nobody handles
+      // and an auth challenge without credentials at once; this only delays that same answer.
+      closeUnhandledDialog: function (dialog) {
+        const delay = global.__playwright4jCoreBundle.isBidiPage(dialog.page().delegate) ? host.unhandledPromptDelayMillis() : -1;
+        if (delay < 0) {
+          dialog._close().then(function () {});
+          return;
+        }
+        setTimeout(function () {
+          // isClosed, not isClosedOrClosing: page.close({ runBeforeUnload }) waits for this answer.
+          if (!dialog._handled && !dialog.page().isClosed())
+            dialog._close().catch(function () {});
+        }, delay);
+      },
+      onBidiAuthRequired: function (networkManager, params) {
+        // A second challenge after Playwright sent the configured credentials means they were
+        // wrong; that cancel is the caller's configuration at work and stays immediate.
+        const delay = networkManager._attemptedAuthentications.has(params.request.request) ? -1 : host.unhandledPromptDelayMillis();
+        if (delay < 0) {
+          networkManager._answerAuthRequired(params);
+          return;
+        }
+        // Playwright's own decision runs unchanged; only its "cancel" reaches the browser later.
+        const session = networkManager._session;
+        const delayedCancel = {
+          sendMayFail: function (method, answer) {
+            if (answer.action !== 'cancel')
+              return session.sendMayFail(method, answer);
+            setTimeout(function () { session.sendMayFail(method, answer); }, delay);
+          }
+        };
+        networkManager._answerAuthRequired.call(Object.create(networkManager, { _session: { value: delayedCancel } }), params);
+      },
+      bidiRead: createBidiReadSession,
+      bidiPage: function (BidiPage, nullProgress) {
         return patchOnce(BidiPage, function () {
+          patchBidiPageNativeScroll(BidiPage, nullProgress);
           bidiPageClasses.push(BidiPage);
           patchBidiPageInitialBlankLoad(BidiPage);
+          patchBidiPageStaleUtilityWorld(BidiPage);
+          patchBidiPageUnknownFrameCommit(BidiPage);
           patchBidiPageRequestGC(BidiPage);
           patchBidiPageTouchUtilityWorld(BidiPage, UTILITY_WORLD_NAME);
           patchBidiPageNoScreenshotStyleToggle(BidiPage);
@@ -6881,7 +7452,14 @@
           patchBidiPageCacheBehavior(BidiPage);
           patchBidiPageNaturalPointer(BidiPage);
         });
-      }
+      },
+      insertTextExpression: insertTextExpression,
+      bidiKeyboard: function (RawKeyboard) {
+        return patchOnce(RawKeyboard, function () {
+          patchBidiKeyboardGraphemeKeys(RawKeyboard);
+        });
+      },
+      graphemeKeyDescription: graphemeKeyDescription
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
     // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
@@ -6900,7 +7478,29 @@
       '      async _markAsTargetElement(progress2) {\n        if (!this._page' + snapshotsRecorded + ')\n          return;\n', 1);
     source = replaceCoreBundleAnchor(source, 'markTargets: options.markTargets }',
       'markTargets: this.frame._page' + snapshotsRecorded + ' ? options.markTargets : void 0 }', 2);
-    source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage))(', 1);
+    source = replaceCoreBundleAnchor(source, '        if (!hasHandlers)\n          dialog._close().then(() => {\n          });\n',
+      '        if (!hasHandlers)\n          ' + hooks + '.closeUnhandledDialog(dialog);\n', 1);
+    source = replaceCoreBundleAnchor(source, '      _onAuthRequired(params2) {\n        const isBasic = ',
+      '      _onAuthRequired(params2) {\n        ' + hooks + '.onBidiAuthRequired(this, params2);\n      }\n'
+      + '      _answerAuthRequired(params2) {\n        const isBasic = ', 1);
+    source = replaceCoreBundleAnchor(source, 'this._page.frameManager.frame(param.context) : null;\n        if (!frame)\n          return;\n',
+      'this._page.frameManager.frame(param.context) : null;\n        if (!frame) {\n          ' + hooks
+      + '.continueUnattributedRequest(this, param);\n          return;\n        }\n', 1);
+    source = replaceCoreBundleAnchor(source, '            page2._getFrameNode(frame).then((node) => {\n'
+      + '              const attributes = node?.value?.attributes;\n'
+      + '              frame._name = attributes?.name ?? attributes?.id ?? "";\n'
+      + '            }, () => {\n            });\n',
+      '            ' + hooks + '.readFrameName(this._connection, page2, frame);\n', 1);
+    source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
+    // Keyboard.down/up/press with a single grapheme outside the US layout (graphemeKeyDescription).
+    source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
+    source = replaceCoreBundleAnchor(source, '        let description = usKeyboardLayout.get(keyString);\n        if (!description)\n',
+      '        let description = usKeyboardLayout.get(keyString) || ' + hooks + '.graphemeKeyDescription(this._raw, keyString);\n'
+      + '        if (!description)\n', 1);
+    source = replaceCoreBundleAnchor(source,
+      '          if (await frame.mainContext() !== mainContext)\n            return;\n          const delegate = new BidiExecutionContext(',
+      '          if (await frame.mainContext() !== mainContext || ' + hooks + '.isRealmDestroyed(this, result2.realm))\n'
+      + '            return;\n          const delegate = new BidiExecutionContext(', 1);
     // Firefox over BiDi: keep Playwright's own code out of the page's main world, where page
     // scripts see globals and can hook the prototypes it calls (#36, #39, #50). The caller's
     // evaluations and main-world handles stay there, as the API defines.
@@ -6911,7 +7511,7 @@
       + '          const handle = await progress2.race(context2.evaluateHandle((text3) => window.__pw_bidiInsertText(text3), text2));',
       '          const context2 = await progress2.race(frame.utilityContext());\n'
       + '          const handle = await progress2.race(context2.evaluateExpressionHandle('
-      + '"(text) => {\\nconst module = { exports: {} };\\n" + source7 + "\\nreturn bidiInsertText(window, text);\\n}", { isFunction: true }, text2));', 1);
+      + hooks + '.insertTextExpression(this._page, source7), { isFunction: true }, text2));', 1);
     source = replaceCoreBundleAnchor(source,
       '        const box = await handle.evaluate((element3) => {\n'
       + '          if (!(element3 instanceof Element) || element3.getClientRects().length === 0)\n'
@@ -6967,11 +7567,32 @@
       + '        }\n'
       + '        const utility = await this._context.injectedScript();\n'
       + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));', 1);
+    // locator.drop() builds the DataTransfer and
+    // dispatches the drag events in the utility world; the page sees the same events (#50).
+    source = replaceCoreBundleAnchor(source,
+      'return this._retryPointerAction(progress2, "drop", false, async (progress3, point) => {\n'
+      + '          const mainContext = await progress3.race(this._frame.mainContext());',
+      'return this._retryPointerAction(progress2, "drop", false, async (progress3, point) => {\n'
+      + '          const mainContext = await progress3.race(' + hooks + '.isBidiPage(this._page.delegate)'
+      + ' ? this._frame.utilityContext() : this._frame.mainContext());', 1);
+    // Firefox sends the cached body of a 304 revalidation through network.getData; Response.body()
+    // treats every 3xx as a redirect without a body. Only responses from BiDi pages are marked.
+    source = replaceCoreBundleAnchor(source,
+      '        const response2 = new Response2(request2.request, params2.response.status, params2.response.statusText, fromBidiHeaders(params2.response.headers), timing, getResponseBody, false);\n',
+      '        const response2 = new Response2(request2.request, params2.response.status, params2.response.statusText, fromBidiHeaders(params2.response.headers), timing, getResponseBody, false);\n'
+      + '        response2._playwright4jBodyOn304 = true;\n', 1);
+    source = replaceCoreBundleAnchor(source, '            if (this._status >= 300 && this._status <= 399)\n',
+      '            if (this._status >= 300 && this._status <= 399 && !(this._status === 304 && this._playwright4jBodyOn304))\n', 1);
+    source = replaceCoreBundleAnchor(source, '      async newCDPSession(params2, progress2) {\n',
+      '      async newCDPSession(params2, progress2) {\n'
+      + '        if (this._object._browser._browserSession && (params2.page || params2.frame))\n'
+      + '          return { session: new CDPSessionDispatcher(this, ' + hooks
+      + '.bidiRead(SdkObject, this._object, (params2.page || params2.frame)._object)) };\n', 1);
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
-      + '.bidiFirefox(BidiFirefox), WSServer: WSServer, createProfile: createProfile, '
-      + 'generateSelfSignedCertificate: generateSelfSignedCertificate };\n';
+      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), BidiNetworkManager: BidiNetworkManager, BidiConnection: BidiConnection, FrameManager: FrameManager, WSServer: WSServer, createProfile: createProfile, '
+      + 'generateSelfSignedCertificate: generateSelfSignedCertificate, Keyboard: Keyboard, RawKeyboardImpl2: ' + hooks + '.bidiKeyboard(RawKeyboardImpl2) };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
   }

@@ -30,6 +30,7 @@ final class NodeCompatFirefoxNativeBehaviorTest {
     private static final String NO_HTTPS_FIRST = "user_pref(\"dom.security.https_first\", false);";
     private static final String TRACKING_OFF = "user_pref(\"browser.contentblocking.features.standard\", \"-tp,tpPrivate,cookieBehavior0,-cm,-fp\");";
     private static final String NO_REMOTE_AGENT_PREFS = "user_pref(\"remote.prefs.recommended\", false);";
+    private static final String NO_DIALOG_LIMIT = "user_pref(\"dom.successive_dialog_time_limit\", 0);";
     private static final String TESTUTILS_OFF = "user_pref(\"dom.testing.testutils.enabled\", false);";
 
     @TempDir
@@ -61,6 +62,7 @@ final class NodeCompatFirefoxNativeBehaviorTest {
         List<String> lines = userJs();
         assertTrue(lines.containsAll(Arrays.asList(POPUPS_ALLOWED, TEST_FOCUS, NO_HTTPS_FIRST, TRACKING_OFF)), lines.toString());
         assertFalse(lines.contains(NO_REMOTE_AGENT_PREFS), lines.toString());
+        assertFalse(lines.contains(NO_DIALOG_LIMIT), lines.toString());
     }
 
     @Test
@@ -84,6 +86,8 @@ final class NodeCompatFirefoxNativeBehaviorTest {
         }
         // The Remote Agent would set most of them again.
         assertTrue(lines.contains(NO_REMOTE_AGENT_PREFS), lines.toString());
+        // Successive dialogs must stay reported over BiDi (Camoufox hung on the third one).
+        assertTrue(lines.contains(NO_DIALOG_LIMIT), lines.toString());
         // Everything else Playwright and playwright4j write stays.
         assertTrue(lines.contains(TESTUTILS_OFF), lines.toString());
         assertTrue(lines.contains("user_pref(\"app.normandy.api_url\", \"\");"), lines.toString());
@@ -101,6 +105,40 @@ final class NodeCompatFirefoxNativeBehaviorTest {
         launch("{ 'remote.prefs.recommended': true }");
         assertTrue(userJs().contains("user_pref(\"remote.prefs.recommended\", true);"));
         assertFalse(userJs().contains(NO_REMOTE_AGENT_PREFS));
+    }
+
+    @Test
+    void theDialogLimitExceptionYieldsToTheCallerAndTheProfile() throws Exception {
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
+        String callerLimit = "user_pref(\"dom.successive_dialog_time_limit\", 3);";
+        launch("{ 'dom.successive_dialog_time_limit': 3 }");
+        assertTrue(userJs().contains(callerLimit), userJs().toString());
+        assertFalse(userJs().contains(NO_DIALOG_LIMIT), userJs().toString());
+
+        // A value the user set in about:config (prefs.js) and user.js did not write stays in force.
+        launch("{}");
+        Files.write(profile.resolve("prefs.js"), Arrays.asList("user_pref(\"dom.successive_dialog_time_limit\", 5);"),
+                StandardCharsets.ISO_8859_1);
+        launch("{}");
+        assertFalse(userJs().stream().anyMatch(line -> line.contains("dom.successive_dialog_time_limit")), userJs().toString());
+
+        // Firefox saving the value user.js wrote is not the user's choice.
+        Files.delete(profile.resolve("prefs.js"));
+        launch("{}");
+        Files.write(profile.resolve("prefs.js"), Arrays.asList(NO_DIALOG_LIMIT), StandardCharsets.ISO_8859_1);
+        launch("{}");
+        assertTrue(userJs().contains(NO_DIALOG_LIMIT), userJs().toString());
+    }
+
+    @Test
+    void theDialogLimitExceptionYieldsToTheProfilesOwnUserJs() throws Exception {
+        System.setProperty(Playwright4JHost.NATIVE_BEHAVIOR_PROPERTY, "true");
+        String own = "user_pref(\"dom.successive_dialog_time_limit\", 7);";
+        Files.write(profile.resolve("user.js"), Arrays.asList(own), StandardCharsets.ISO_8859_1);
+        launch("{}");
+        List<String> lines = userJs();
+        assertTrue(lines.contains(own), lines.toString());
+        assertFalse(lines.contains(NO_DIALOG_LIMIT), lines.toString());
     }
 
     @Test

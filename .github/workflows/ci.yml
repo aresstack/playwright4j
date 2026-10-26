@@ -4,7 +4,7 @@ name: CI
 # The full upstream suite (knownLimitationsCheck) is the upstream-gate job of release.yml.
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, develop ]
   pull_request:
 
 jobs:
@@ -123,7 +123,7 @@ jobs:
     # the browser. launchPersistentContext() runs headed (the Windows launcher-process handoff).
     name: firefox-smoke (${{ matrix.browser }}, nativeBehavior=${{ matrix.nativeBehavior }})
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -160,18 +160,14 @@ jobs:
           (Get-Item $exe).VersionInfo.ProductVersion | ForEach-Object { Write-Host "Firefox $_ at $exe" }
           "FIREFOX_EXECUTABLE=$exe" >> $env:GITHUB_ENV
 
+      # Camoufox (Firefox under another name, see docs/camoufox.md) with the two WebDriver BiDi fixes:
+      # the script pins the release, checks the archive and both changed files.
       - name: Install Camoufox (pinned, with the WebDriver BiDi fixes)
         if: matrix.browser == 'camoufox'
         shell: pwsh
         run: |
-          $version = "156.0.1-beta.36"
-          $zip = "$env:RUNNER_TEMP\camoufox.zip"
-          Invoke-WebRequest "https://github.com/daijro/camoufox/releases/download/v$version/camoufox-$version-win.x86_64.zip" -OutFile $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne "096fd4832a7a32f2aa7f7bdd07fe6253dda296cbe783acd7bc2c86cf5ae62031") { Write-Error "Camoufox archive SHA-256 $hash"; exit 1 }
           $dir = "$env:RUNNER_TEMP\camoufox"
-          Expand-Archive $zip -DestinationPath $dir
-          python docs/camoufox/hotpatch_omni.py $dir window visibility
+          python docs/camoufox/hotpatch_omni.py --install $dir
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "CAMOUFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
           "FIREFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
