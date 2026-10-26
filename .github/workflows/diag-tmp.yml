@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - name: probe
-            command: sleep 300
+            command: sleep 150
     env:
       GH_TOKEN: ${{ github.token }}
       DIAG_NAME: ${{ matrix.name }}
@@ -26,9 +26,11 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21', cache: gradle }
       - shell: pwsh
-        run: Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.github/diag/monitor.ps1' -WindowStyle Hidden
+        run: Start-Process pwsh -ArgumentList '-NoProfile', '-File', '.github/diag/monitor.ps1' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP/monitor.out" -RedirectStandardError "$env:RUNNER_TEMP/monitor.err"
       - shell: bash
         run: ${{ matrix.command }}
       - if: always()
         shell: pwsh
-        run: gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/check-runs/$(Get-Content (Join-Path $env:RUNNER_TEMP 'metrics-id.txt'))" -f status=completed -f conclusion=neutral --silent
+        run: |
+          Get-Content "$env:RUNNER_TEMP/metrics.txt", "$env:RUNNER_TEMP/monitor.out", "$env:RUNNER_TEMP/monitor.err", "$env:RUNNER_TEMP/metrics.json" -ErrorAction SilentlyContinue
+          gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/check-runs/$(Get-Content (Join-Path $env:RUNNER_TEMP 'metrics-id.txt'))" -f status=completed -f conclusion=neutral --silent
