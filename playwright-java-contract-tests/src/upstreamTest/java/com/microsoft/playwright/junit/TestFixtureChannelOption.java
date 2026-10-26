@@ -33,7 +33,7 @@ public class TestFixtureChannelOption {
   public static class CustomOptions implements OptionsFactory {
     @Override
     public Options getOptions() {
-      return new Options().setChannel(channel());
+      return new Options().setBrowserName(System.getenv("BROWSER")).setChannel(System.getenv("BROWSER_CHANNEL")).setChannel(channel());
     }
   }
 

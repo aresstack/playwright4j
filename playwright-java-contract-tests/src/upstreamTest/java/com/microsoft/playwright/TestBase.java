@@ -80,7 +80,7 @@ public class TestBase {
 
   static BrowserType.LaunchOptions createLaunchOptions() {
     BrowserType.LaunchOptions options;
-    options = new BrowserType.LaunchOptions();
+    options = new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL"));
     options.headless = !headed;
     options.channel = getBrowserChannelFromEnv();
     return options;

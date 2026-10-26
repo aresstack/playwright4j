@@ -24,10 +24,17 @@ configurations {
 }
 
 dependencies {
-    testImplementation project(':playwright4j')
-    testImplementation("com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}") {
-        exclude group: 'com.microsoft.playwright', module: 'driver'
-        exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
+    // -Pplaywright4j.referenceDriver=official runs the tests against Microsoft's own Node.js driver
+    // instead, to tell a playwright4j defect from upstream behaviour (see problems.md). Never in CI.
+    if (findProperty('playwright4j.referenceDriver') == 'official') {
+        testCompileOnly project(':playwright4j')
+        testImplementation "com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}"
+    } else {
+        testImplementation project(':playwright4j')
+        testImplementation("com.microsoft.playwright:playwright:${upstreamPlaywrightVersion}") {
+            exclude group: 'com.microsoft.playwright', module: 'driver'
+            exclude group: 'com.microsoft.playwright', module: 'driver-bundle'
+        }
     }
 
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.13.1'
@@ -240,6 +247,12 @@ tasks.named('processUpstreamTestResources') {
 // touching the driver or rewriting upstream tests.
 def upstreamTestCwd = layout.buildDirectory.dir('upstreamTestCwd')
 
+// Engine and channel of the upstream suite: -Pplaywright4j.browser / BROWSER (chromium, firefox)
+// and -Pplaywright4j.browserChannel / BROWSER_CHANNEL. Firefox runs over WebDriver BiDi (moz-firefox).
+ext.upstreamBrowser = findProperty('playwright4j.browser') ?: (System.getenv('BROWSER') ?: 'chromium')
+ext.upstreamBrowserChannel = findProperty('playwright4j.browserChannel') ?: (System.getenv('BROWSER_CHANNEL')
+        ?: (upstreamBrowser == 'firefox' ? 'moz-firefox' : 'chrome'))
+
 tasks.register('syncUpstreamTestCwd', Copy) {
     description = 'Mirrors upstream test fixtures to <cwd>/src/test/resources for relative-path access.'
     from 'src/upstreamTest/resources'
@@ -259,8 +272,8 @@ tasks.register('upstreamTest', Test) {
 
     // Drive the official Microsoft test fixture onto the locally installed Chrome via the
     // standard Playwright browser-channel mechanism instead of a downloaded browser.
-    environment 'BROWSER', 'chromium'
-    environment 'BROWSER_CHANNEL', findProperty('playwright4j.browserChannel') ?: 'chrome'
+    environment 'BROWSER', upstreamBrowser
+    environment 'BROWSER_CHANNEL', upstreamBrowserChannel
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
     environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
 
@@ -332,16 +345,12 @@ tasks.register('browserTypeConnectTest', Test) {
 // ONLY when exactly the known-limitation reds fail. It fails on any NEW red AND on any known red
 // that unexpectedly disappears (forcing a conscious update of the list below).
 //
-// The ONLY tolerated failures. Keyed as "<fully-qualified-class> > <method-without-params>".
-// Update this list consciously (with justification in problems.md) when the known set changes.
-ext.knownLimitationReds = [
-        'com.microsoft.playwright.TestBrowserTypeConnect > shouldRecordTraceWithSources',
-        'com.microsoft.playwright.TestPageEmulateMedia > shouldDefaultToLight',
-        'com.microsoft.playwright.junit.TestFixtureDeviceOption > testPredefinedDeviceParameters',
-        'com.microsoft.playwright.junit.TestFixtureOptions > testCustomBrowser',
-        'com.microsoft.playwright.junit.TestFixtureOptions > testBaseUrl',
-        'com.microsoft.playwright.junit.TestFixtureOptions > testCustomTestId',
-] as Set
+// The ONLY tolerated failures, one file per engine: known-limitations/<browser>.txt. Each line is
+// "<fully-qualified-class> > <method-without-params>  # CATEGORY: reason"; the reason is explained in
+// problems.md. OS_ENVIRONMENT (depends on the host, e.g. Dark Mode) and UPSTREAM_BIDI (fails with
+// Microsoft's own driver too, not on every run) entries may also pass; every other entry must fail,
+// so a fixed limitation forces an update of the list.
+def knownLimitationsFile = file("known-limitations/${upstreamBrowser}.txt")
 
 // Same configuration as `upstreamTest`, but tolerant (always completes and writes JUnit XMLs) so
 // the evaluator below can inspect the full result set. Uses the realistic 45s per-method timeout
@@ -354,9 +363,11 @@ tasks.register('upstreamTestKnownLimitations', Test) {
     dependsOn 'syncUpstreamTestCwd'
     workingDir = upstreamTestCwd.get().asFile
     ignoreFailures = true
+    inputs.property 'browser', upstreamBrowser
+    inputs.property 'browserChannel', upstreamBrowserChannel
 
-    environment 'BROWSER', 'chromium'
-    environment 'BROWSER_CHANNEL', findProperty('playwright4j.browserChannel') ?: 'chrome'
+    environment 'BROWSER', upstreamBrowser
+    environment 'BROWSER_CHANNEL', upstreamBrowserChannel
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
     environment 'PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS', '1'
     environment 'PLAYWRIGHT_JAVA_SRC', file('src/upstreamTest/java').absolutePath
@@ -375,6 +386,7 @@ tasks.register('knownLimitationsCheck') {
     description = 'Green iff exactly the known-limitation reds fail; red on any new red or a vanished known red.'
     group = 'verification'
     dependsOn 'upstreamTestKnownLimitations'
+    inputs.file knownLimitationsFile
 
     doLast {
         def resultsDir = layout.buildDirectory.dir('test-results/upstreamTestKnownLimitations').get().asFile
@@ -399,12 +411,22 @@ tasks.register('knownLimitationsCheck') {
             }
         }
 
-        def known = project.ext.knownLimitationReds
+        if (!knownLimitationsFile.file) {
+            throw new GradleException("knownLimitationsCheck: no known-limitations list ${knownLimitationsFile}")
+        }
+        def known = new TreeSet<String>()
+        def mayPass = new TreeSet<String>()
+        knownLimitationsFile.eachLine { line ->
+            def key = line.replaceAll(/#.*$/, '').trim()
+            if (key.isEmpty()) return
+            known << key
+            if (line.contains('# OS_ENVIRONMENT') || line.contains('# UPSTREAM_BIDI')) mayPass << key
+        }
         def newReds = new TreeSet<String>(failedKeys); newReds.removeAll(known)
-        def missingReds = new TreeSet<String>(known); missingReds.removeAll(failedKeys)
+        def missingReds = new TreeSet<String>(known); missingReds.removeAll(failedKeys); missingReds.removeAll(mayPass)
         def presentKnown = new TreeSet<String>(failedKeys); presentKnown.retainAll(known)
 
-        println "\n================ known-limitations check ================"
+        println "\n========== known-limitations check (${upstreamBrowser}, ${upstreamBrowserChannel}) =========="
         println "passed:  ${passed}"
         println "failed:  ${failed}"
         println "skipped: ${skipped}"
@@ -413,15 +435,49 @@ tasks.register('knownLimitationsCheck') {
         println "new reds (must be empty): ${newReds.size()}"
         newReds.each { println "  ! ${it}" }
         println "vanished known reds (must be empty): ${missingReds.size()}"
-        missingReds.each { println "  ? ${it}  (unexpectedly not failing — update the known list + problems.md)" }
+        missingReds.each { println "  ? ${it}  (unexpectedly not failing — update ${knownLimitationsFile.name} + problems.md)" }
         println "========================================================\n"
 
         if (!newReds.isEmpty() || !missingReds.isEmpty()) {
             throw new GradleException("knownLimitationsCheck FAILED: " +
                     "${newReds.size()} new red(s), ${missingReds.size()} vanished known red(s). See report above.")
         }
-        println "knownLimitationsCheck PASSED: only the ${known.size()} known-limitation reds failed."
+        println "knownLimitationsCheck PASSED: only known-limitation reds failed (${presentKnown.size()} of ${known.size()} listed)."
     }
+}
+
+// Upstream launches its own browsers in many tests without a channel, i.e. a browser build that
+// Playwright downloads. playwright4j drives installed browsers (Chrome, Edge, Firefox over BiDi), so
+// every launch in the imported tests also gets BROWSER_CHANNEL; setChannel(null) keeps the default.
+// TestPlaywrightCreate is about the downloaded browsers themselves and stays as it is.
+def adaptUpstreamTestsToBrowserChannel(File javaRoot) {
+    def channel = '.setChannel(System.getenv("BROWSER_CHANNEL"))'
+    def browser = '.setBrowserName(System.getenv("BROWSER"))'
+    def rewrites = [
+            [~/new BrowserType\.LaunchOptions\(\)/, 'new BrowserType.LaunchOptions()' + channel],
+            [~/new BrowserType\.LaunchPersistentContextOptions\(\)/, 'new BrowserType.LaunchPersistentContextOptions()' + channel],
+            [~/\.launch\(\)/, '.launch(new BrowserType.LaunchOptions()' + channel + ')'],
+            [~/\.launchPersistentContext\(([^,()]+(?:\([^()]*\))?)\)/, '.launchPersistentContext($1, new BrowserType.LaunchPersistentContextOptions()' + channel + ')'],
+            [~/LaunchPersistentContextOptions browserOptions = null;/, 'LaunchPersistentContextOptions browserOptions = new BrowserType.LaunchPersistentContextOptions()' + channel + ';'],
+            [~/launchPersistent\(null\)/, 'launchPersistent(new BrowserType.LaunchPersistentContextOptions()' + channel + ')'],
+            // JUnit fixtures: the engine comes from BROWSER too; a factory's own setBrowserName still wins.
+            [~/new Options\(\)/, 'new Options()' + browser + channel],
+            [~/@UsePlaywright(?!\()/, '@UsePlaywright(com.microsoft.playwright.TestOptionsFactories.BasicOptionsFactory.class)'],
+    ]
+    int changed = 0
+    fileTree(javaRoot).matching { include '**/*.java'; exclude '**/TestPlaywrightCreate.java' }.each { File source ->
+        def original = source.getText('UTF-8')
+        def text = original
+        rewrites.each { rewrite -> text = text.replaceAll(rewrite[0], rewrite[1]) }
+        if (text != original) {
+            source.setText(text, 'UTF-8')
+            changed++
+        }
+    }
+    if (changed == 0) {
+        throw new GradleException("No launch call found to adapt under ${javaRoot}; upstream changed, revisit adaptUpstreamTestsToBrowserChannel")
+    }
+    logger.lifecycle("Passed BROWSER_CHANNEL to the launches in ${changed} upstream test files.")
 }
 
 tasks.register('syncUpstreamPlaywrightJavaTests') {
@@ -467,6 +523,8 @@ tasks.register('syncUpstreamPlaywrightJavaTests') {
             // PLAYWRIGHT_NODEJS_PATH) here; playwright4j replaces that driver by design.
             exclude 'com/microsoft/playwright/impl/driver/**'
         }
+
+        adaptUpstreamTestsToBrowserChannel(targetJava)
 
         delete targetResources
         if (sourceResources.directory) {

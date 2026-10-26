@@ -15,16 +15,41 @@ summarizes it.
 | `TestBrowserTypeConnect` (launch-server, connect, reconnect, disconnect) for Chrome and Edge | CI | yes |
 | Jar check: no native binaries in the artifact | CI, release | yes |
 | `consumer-check/`: resolves the documented setup twice, with Gradle (`build.gradle`) and with Maven from the published POM (`pom.xml`); both fail if `driver` or `driver-bundle` reaches the classpath, the Gradle check also fails on a native file in the jar | CI, release | yes |
-| Full upstream Playwright Java contract suite (`upstreamTest`) | `playwright-java-contract-tests` | no, audit |
-| `knownLimitationsCheck`: green iff exactly the known reds fail | `playwright-java-contract-tests` | no, audit |
+| Full upstream Playwright Java suite (`knownLimitationsCheck`): Chrome, Edge and Firefox on Windows, Chrome and Firefox on Linux; green iff only the listed known limitations fail | `release.yml`, job `upstream-gate` | yes, release gate |
 | `browserSignals`: page-observable automation signals (`navigator.webdriver`, headers, injected globals), see [browser-signals.md](browser-signals.md) | `playwright-java-contract-tests` | no, diagnostic |
 
-A raw `upstreamTest` run reports `BUILD FAILED` because of the known reds. That is
-intentional: no silent excludes are added to the normal test path.
+## Upstream suite
 
-The upstream contract suite targets the Chromium browser type (Chrome and Edge). Firefox
-is only covered by the BiDi smoke test so far; it has not been run against the full
-contract suite.
+`playwright-java-contract-tests/src/upstreamTest` holds Microsoft's Playwright Java tests of the
+pinned version (`syncUpstreamPlaywrightJavaTests` imports them). The import passes `BROWSER` and
+`BROWSER_CHANNEL` to every browser the tests launch themselves, because playwright4j drives only
+installed browsers. Run it with:
+
+```bash
+./gradlew :playwright-java-contract-tests:knownLimitationsCheck                                   # Chrome
+./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browserChannel=msedge
+./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=firefox     # moz-firefox
+```
+
+The check fails on any failure that is not listed in
+`playwright-java-contract-tests/known-limitations/<browser>.txt` and on a listed failure that
+passes, except for entries that depend on the host or on upstream timing (`OS_ENVIRONMENT`,
+`UPSTREAM_BIDI`). Each entry names its category; [`../problems.md`](../problems.md) explains them.
+A raw `upstreamTest` run reports `BUILD FAILED` because of the known reds: no silent excludes are
+added to the normal test path.
+
+To tell a playwright4j defect from upstream behaviour, run the same tests against Microsoft's
+Node.js driver (local diagnosis only, never in CI):
+
+```bash
+./gradlew :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=firefox \
+    -Pplaywright4j.referenceDriver=official --tests '*TestPageBasic'
+```
+
+Measured on Linux with Firefox 158.0.1 and Chrome for Testing 153 (1688 tests): Chrome 1648
+passed, 6 failed, 34 skipped; Firefox 1513 passed, 111 failed, 64 skipped. 108 of the Firefox
+failures fail the same way with Microsoft's driver on the same Firefox, and 8 tests that fail
+there pass with playwright4j (selector engines and atomic reads, which run in the utility world).
 
 ## Firefox windows and tabs
 
@@ -89,16 +114,6 @@ The known failures are documented limitations:
 
 No known Playwright4J runtime regression remains in the supported Chrome/Edge
 scope of this milestone.
-
-> CI note: the **release gate** is the fast Chrome + Edge channel smokes (launch →
-> page → evaluate → close) plus the Firefox BiDi smoke, which run on Windows CI and
-> must pass before publishing. CI additionally runs `TestBrowserTypeConnect`
-> (launch-server, connect, reconnect, disconnect) for Chrome and Edge and checks that
-> the jar contains no native binaries.
-> The full upstream compatibility suite runs separately as a **non-blocking audit**
-> (`knownLimitationsCheck`): green iff exactly the six known reds fail. A raw
-> `upstreamTest` run reports `BUILD FAILED` because of those reds — that is honest;
-> no silent excludes are added to the normal test path.
 
 These numbers describe that earlier milestone, not the current branch. See
 [`../problems.md`](../problems.md) for the details of each known limitation.

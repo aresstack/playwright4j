@@ -32,7 +32,7 @@ public class TestFixtureContextOptions {
   public static class CustomOptions implements OptionsFactory {
     @Override
     public Options getOptions() {
-      return new Options()
+      return new Options().setBrowserName(System.getenv("BROWSER")).setChannel(System.getenv("BROWSER_CHANNEL"))
         .setApiRequestOptions(new APIRequest.NewContextOptions()
           .setBaseURL(serverMap.get(TestFixtureContextOptions.class).EMPTY_PAGE))
         .setContextOptions(new Browser.NewContextOptions()

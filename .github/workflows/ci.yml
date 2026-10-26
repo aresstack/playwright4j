@@ -1,8 +1,7 @@
 name: CI
 
 # Fast gate for every push / PR: compile + a tiny per-channel smoke for Chrome and Edge.
-# The heavy end-to-end knownLimitationsCheck runs ONLY on a published release (see
-# known-limitations-check.yml), not here.
+# The full upstream suite (knownLimitationsCheck) is the upstream-gate job of release.yml.
 on:
   push:
     branches: [ main, master ]

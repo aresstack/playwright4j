@@ -4,10 +4,12 @@ name: Release to Maven Central
 # aresstack/msdos-game-browser, on Windows because the release gate drives the
 # installed Chrome, Edge and Firefox there. Triggered by a `v*` tag; version is derived from the tag.
 #
-# Release gate = the fast, reliable Chrome + Edge channel smokes (launch -> page -> evaluate
-# -> close) plus the Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and
-# process exit). All three are mandatory; a missing Firefox fails the release. The full upstream compatibility suite is NOT a blocking gate here — it runs
-# separately as a non-blocking audit (see known-limitations-check.yml).
+# Release gate = the Chrome + Edge channel smokes (launch -> page -> evaluate -> close) plus the
+# Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and process exit), and the full
+# upstream Playwright Java suite (upstream-gate) for Chrome, Edge and Firefox on Windows and Chrome
+# and Firefox on Linux: green iff exactly the failures listed in
+# playwright-java-contract-tests/known-limitations/ fail (see problems.md). All are mandatory; a
+# missing browser fails the release.
 #
 # Org secrets used: CENTRAL_USERNAME, CENTRAL_PASSWORD, GPG_PRIVATE_KEY, GPG_PASSPHRASE.
 #
@@ -25,9 +27,64 @@ on:
       - 'playwright4j/build.gradle'
       - 'build.gradle'
       - 'consumer-check/**'
+      - 'playwright-java-contract-tests/known-limitations/**'
 
 jobs:
+  upstream-gate:
+    name: Upstream suite (${{ matrix.os }}, ${{ matrix.channel }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, browser: chromium, channel: chrome }
+          - { os: windows-2022, browser: chromium, channel: msedge }
+          - { os: windows-2022, browser: firefox, channel: moz-firefox }
+          - { os: ubuntu-24.04, browser: chromium, channel: chrome }
+          - { os: ubuntu-24.04, browser: firefox, channel: moz-firefox }
+
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      # Playwright's moz-firefox channel looks for Firefox at /snap/bin/firefox on Linux; the runner
+      # installs it elsewhere.
+      - name: Point the moz-firefox channel at the installed Firefox (Linux)
+        if: runner.os == 'Linux' && matrix.browser == 'firefox'
+        run: |
+          firefox --version
+          sudo mkdir -p /snap/bin
+          sudo ln -sf "$(readlink -f "$(command -v firefox)")" /snap/bin/firefox
+
+      - name: Upstream suite against the known limitations
+        shell: bash
+        run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -Pplaywright4j.browser=${{ matrix.browser }} -Pplaywright4j.browserChannel=${{ matrix.channel }} --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-gate-${{ matrix.os }}-${{ matrix.channel }}
+          path: |
+            playwright-java-contract-tests/build/reports/tests/upstreamTestKnownLimitations/**
+            playwright-java-contract-tests/build/test-results/upstreamTestKnownLimitations/**
+
   publish:
+    needs: upstream-gate
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:

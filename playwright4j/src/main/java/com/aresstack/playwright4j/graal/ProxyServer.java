@@ -53,6 +53,14 @@ final class ProxyServer {
         return URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8);
     }
 
+    String host() {
+        return host;
+    }
+
+    int port() {
+        return port;
+    }
+
     String key() {
         return host + ":" + port + "\n" + username + "\n" + password;
     }

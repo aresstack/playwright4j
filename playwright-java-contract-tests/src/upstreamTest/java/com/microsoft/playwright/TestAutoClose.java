@@ -27,7 +27,7 @@ public class TestAutoClose {
   @Test
   void shouldAllowUsingTryWithResources() {
     try (Playwright playwright = Playwright.create();
-         Browser browser = Utils.getBrowserTypeFromEnv(playwright).launch();
+         Browser browser = Utils.getBrowserTypeFromEnv(playwright).launch(new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
          BrowserContext context = browser.newContext();
          Page page = context.newPage()) {
       assertEquals(2021, page.evaluate("() => 2021"));

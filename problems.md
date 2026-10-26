@@ -1,9 +1,11 @@
 # Known limitations
 
-Final state of the imported upstream contract suite (`upstreamTest`, Chromium via the `chrome`
-channel): **1606 passed / 6 failed / 35 skipped**, 144 classes, ran to completion, no hangs, no
-leaked playwright4j processes. All 6 failures are documented, non-blocking known limitations —
-**no known real playwright4j runtime bug remains**.
+The upstream Playwright Java suite (1.62.0, 1688 tests) is a release gate for Chrome, Edge and
+Firefox (`knownLimitationsCheck`, see [`docs/testing.md`](docs/testing.md#upstream-suite)). Only
+the failures listed in `playwright-java-contract-tests/known-limitations/<browser>.txt` may fail;
+each entry names one of the categories below. Measured on Linux (Chrome for Testing 153, Firefox
+158.0.1): Chrome 1648 passed / 6 failed / 34 skipped, Firefox 1513 passed / 111 failed / 64
+skipped.
 
 Historical, already-solved diagnosis (Tracing, Download stream, HAR zip, ClientCertificates/TLS,
 the node.exe launcher, etc.) has been moved to [`docs/history/problems-archive.md`](docs/history/problems-archive.md).
@@ -61,11 +63,40 @@ requests` instead of connecting directly. Credentials are sent when the proxy an
 preemptively as Playwright on Node does. The driver JVM enables Basic for `CONNECT`
 (`jdk.http.auth.tunneling.disabledSchemes`) unless the application sets that property.
 
-## UNSUPPORTED_ENGINE_FAST_FAIL — Firefox / WebKit
+## UNSUPPORTED_ENGINE — WebKit
 
-Playwright4J is **Chromium-only** (channels `chrome` / `msedge`). Fixtures that request WebKit or
-Firefox (e.g. `TestFixtureDeviceOption` — device "iPhone 14" → defaultBrowserType webkit — and
-`TestFixtureOptions` — `setBrowserName("webkit")`) **fail fast with a clear error**
-(`Unsupported browser engine: …`) instead of hanging. This is deliberate. Firefox support is planned
-for a separate branch/version (it needs Playwright's Firefox/Juggler pipe transport rather than the
-Chromium CDP/WebSocket path used today).
+playwright4j drives Chrome, Edge and Firefox. Fixtures that request WebKit
+(`TestFixtureDeviceOption` — device "iPhone 14", whose default browser type is webkit — and
+`TestFixtureOptions` — `setBrowserName("webkit")`) fail fast with `Unsupported browser engine`
+instead of hanging.
+
+## UPSTREAM_BIDI — Firefox over WebDriver BiDi
+
+About a hundred upstream tests fail on Firefox because Playwright's BiDi backend or Firefox's
+WebDriver BiDi does not implement what they check yet. Each of them fails the same way with
+Microsoft's own Node.js driver on the same Firefox (`-Pplaywright4j.referenceDriver=official`,
+compared test by test on Firefox 158.0.1). The main groups: touch and `tap`, drag and drop,
+double and triple click, keyboard `keyCode` values, worker realms and console arguments,
+WebSocket events, `emulateMedia` and the color-scheme/contrast/touch context options, cookie
+`sameSite` defaults and partitioning, request post data and `Referer`, `serverAddr()` of page
+responses, client certificates, abort error codes, HAR post data, and the deprecated
+`BrowserChannel` enum, which has no `moz-firefox`.
+
+Some of these do not fail on every run with either driver, so an `UPSTREAM_BIDI` entry may also
+pass:
+
+- `page.frame(name)` returns null for a frame whose name Playwright's BiDi page has not read yet:
+  it asks Firefox for the frame element only after reporting the frame
+  (`TestPageBasic.pageFrameShouldRespectName`, `framePressShouldWork`,
+  `frameDragAndDropShouldWork`, `TestElementHandleBoundingBox.shouldHandleNestedFrames`).
+- `TestPageScreenshot.shouldNotCaptureCssAnimationsInShadowDOM` fails with the official driver
+  when it runs with its class and passes alone.
+- `TestFrameNavigate.shouldContinueAfterClientRedirect` depends on whether the client redirect
+  commits before the test's timeout.
+
+8 tests that fail with the official driver pass with playwright4j: selector engines registered for
+the main and the isolated world, and the atomic `getAttribute`/`innerHTML`/`innerText`/
+`textContent` reads, which playwright4j runs in Playwright's utility world.
+
+Revisit the list when the Playwright or the Firefox version changes: a listed test that now passes
+on every run belongs off the list.

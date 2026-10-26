@@ -42,7 +42,7 @@ Run the imported upstream suite with:
 gradlew :playwright-java-contract-tests:upstreamTest
 ```
 
-The upstream tests must match the Playwright Java API version used by this module. The default dependency is `com.microsoft.playwright:playwright:1.59.0`; override it with:
+The upstream tests must match the Playwright Java API version used by this module. The default dependency is `com.microsoft.playwright:playwright:1.62.0`; override it with:
 
 ```bash
 gradlew :playwright-java-contract-tests:upstreamTest -PupstreamPlaywrightVersion=<version>
@@ -50,4 +50,10 @@ gradlew :playwright-java-contract-tests:upstreamTest -PupstreamPlaywrightVersion
 
 If the upstream branch is newer than the Maven Central Playwright Java jar, compilation can fail on newer API symbols. That is expected and means the upstream test branch and API jar version need to be aligned.
 
+The import passes `BROWSER` and `BROWSER_CHANNEL` to every browser launch in the tests (they would
+otherwise ask for a browser Playwright downloads), so the files differ from upstream only there.
 All copied upstream test files retain their Apache-2.0 headers.
+
+The release gate runs `knownLimitationsCheck` per browser (`-Pplaywright4j.browser=firefox`,
+`-Pplaywright4j.browserChannel=msedge`); the tolerated failures are listed in
+`known-limitations/<browser>.txt`, see [`../docs/testing.md`](../docs/testing.md#upstream-suite).

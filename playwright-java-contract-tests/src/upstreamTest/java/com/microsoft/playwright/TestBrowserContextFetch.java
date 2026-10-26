@@ -236,7 +236,7 @@ public class TestBrowserContextFetch extends TestBase {
         writer.write("<title>Served by the proxy</title>");
       }
     });
-    try (Browser browser = browserType.launch()) {
+    try (Browser browser = browserType.launch(new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")))) {
       BrowserContext context = browser.newContext(new Browser.NewContextOptions().setProxy("localhost:" + server.PORT));
       Future<Server.Request> request = server.futureRequest("/target.html");
       APIResponse response = context.request().get("http://non-existent.com/target.html");

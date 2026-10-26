@@ -16,7 +16,7 @@ import static com.microsoft.playwright.Utils.assertJsonEquals;
 import static org.junit.jupiter.api.Assertions.*;
 
 @FixtureTest
-@UsePlaywright
+@UsePlaywright(com.microsoft.playwright.TestOptionsFactories.BasicOptionsFactory.class)
 public class TestPageClock {
   private ArrayList<Object> calls;
 

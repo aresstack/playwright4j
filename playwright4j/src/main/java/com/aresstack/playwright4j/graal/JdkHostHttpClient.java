@@ -1,7 +1,9 @@
 package com.aresstack.playwright4j.graal;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -71,7 +73,7 @@ public final class JdkHostHttpClient implements HostHttpClient {
                         if (throwable != null) {
                             return mapThrowable(throwable);
                         }
-                        return toResponse(response);
+                        return withRemote(toResponse(response), response.uri(), proxyServer);
                     });
         } catch (RuntimeException exception) {
             // e.g. IllegalArgumentException for a malformed URI: surface as a network error.
@@ -128,6 +130,22 @@ public final class JdkHostHttpClient implements HostHttpClient {
             builder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
         }
         return builder.build();
+    }
+
+    /**
+     * Node reports the connected socket's address as the response's server address. The JDK client
+     * does not expose its socket, but it connects to the first address InetAddress resolves for the
+     * host (or the proxy), so resolving the same name gives the same address.
+     */
+    private static HostHttpResponse withRemote(HostHttpResponse response, URI uri, ProxyServer proxyServer) {
+        String host = proxyServer != null ? proxyServer.host() : uri.getHost();
+        int port = proxyServer != null ? proxyServer.port()
+                : uri.getPort() > 0 ? uri.getPort() : "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+        try {
+            return response.withRemote(InetAddress.getByName(host).getHostAddress(), port);
+        } catch (UnknownHostException exception) {
+            return response;
+        }
     }
 
     private HostHttpResponse toResponse(HttpResponse<byte[]> response) {

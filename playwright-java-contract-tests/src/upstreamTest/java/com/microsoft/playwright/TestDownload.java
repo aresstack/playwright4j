@@ -416,7 +416,7 @@ public class TestDownload extends TestBase {
 
   @Test
   void shouldDeleteDownloadsOnBrowserGone() {
-    Browser browser = browserType.launch();
+    Browser browser = browserType.launch(new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")));
     Page page = browser.newPage(new Browser.NewPageOptions().setAcceptDownloads(true));
     page.setContent("<a href='" + server.PREFIX + "/download'>download</a>");
     Download download1 = page.waitForDownload(() -> page.click("a"));

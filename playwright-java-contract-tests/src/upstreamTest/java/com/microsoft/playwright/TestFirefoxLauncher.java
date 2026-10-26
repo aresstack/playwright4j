@@ -42,7 +42,7 @@ public class TestFirefoxLauncher extends TestBase {
 
   @Test
   void shouldPassFirefoxUserPreferences() {
-    BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setFirefoxUserPrefs(
+    BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setFirefoxUserPrefs(
       mapOf(
         "network.proxy.type", 1,
         "network.proxy.http", "127.0.0.1",
@@ -55,7 +55,7 @@ public class TestFirefoxLauncher extends TestBase {
 
   @Test
   void shouldPassFirefoxUserPreferencesInPersistent(@TempDir Path tmpDir) {
-    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions().setFirefoxUserPrefs(
+    BrowserType.LaunchPersistentContextOptions options = new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")).setFirefoxUserPrefs(
       mapOf(
         "network.proxy.type", 1,
         "network.proxy.http", "127.0.0.1",

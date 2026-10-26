@@ -65,7 +65,7 @@ public class TestPdf extends TestBase {
   @DisabledIf(value="com.microsoft.playwright.TestBase#isChromium", disabledReason="skip")
   void correctExceptionWithPersistentContext(@TempDir Path tempDir) {
     Path profile = tempDir.resolve("profile");
-    try (BrowserContext context = browserType.launchPersistentContext(profile)) {
+    try (BrowserContext context = browserType.launchPersistentContext(profile, new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL")))) {
       Page page = context.newPage();
       PlaywrightException e = assertThrows(PlaywrightException.class, () -> page.pdf());
       assertTrue(e.getMessage().contains("PDF generation is only supported for Headless Chromium"), e.getMessage());

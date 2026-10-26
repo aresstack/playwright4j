@@ -31,7 +31,7 @@ public class TestFixtureDeviceOption {
   public static class CustomOptions implements OptionsFactory {
     @Override
     public Options getOptions() {
-      return new Options().setDeviceName("iPhone 14");
+      return new Options().setBrowserName(System.getenv("BROWSER")).setChannel(System.getenv("BROWSER_CHANNEL")).setDeviceName("iPhone 14");
     }
   }
 
