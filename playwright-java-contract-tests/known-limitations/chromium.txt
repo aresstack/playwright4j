@@ -1,0 +1,9 @@
+# Known limitations of the upstream Playwright Java suite on Chromium (chrome and msedge channels,
+# CDP). Format and categories: see problems.md.
+
+com.microsoft.playwright.TestBrowserTypeConnect > shouldRecordTraceWithSources  # KNOWN_UPSTREAM_PARITY: trace sources over connect, the official driver fails identically
+com.microsoft.playwright.TestPageEmulateMedia > shouldDefaultToLight  # OS_ENVIRONMENT: a host in Dark Mode makes Chrome default to dark
+com.microsoft.playwright.junit.TestFixtureDeviceOption > testPredefinedDeviceParameters  # UNSUPPORTED_ENGINE: the iPhone device descriptor launches WebKit
+com.microsoft.playwright.junit.TestFixtureOptions > testCustomBrowser  # UNSUPPORTED_ENGINE: the fixture launches WebKit
+com.microsoft.playwright.junit.TestFixtureOptions > testBaseUrl  # UNSUPPORTED_ENGINE: the fixture launches WebKit
+com.microsoft.playwright.junit.TestFixtureOptions > testCustomTestId  # UNSUPPORTED_ENGINE: the fixture launches WebKit

@@ -134,13 +134,13 @@ try (FirefoxBidi bidi = FirefoxBidi.open(page)) {
 | --- | --- | --- | --- |
 | Google Chrome | `chromium`, channel `chrome` | CDP | Tested (upstream contract suite + CI smoke) |
 | Microsoft Edge | `chromium`, channel `msedge` | CDP | Tested (upstream contract suite + CI smoke) |
-| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Smoke-tested only (`launch`, `launchPersistentContext`), since `0.2.0` |
+| Mozilla Firefox | `firefox`, channel `moz-firefox` | WebDriver BiDi | Tested (upstream contract suite + CI smoke) |
 | WebKit | – | – | Not supported, fails fast with an unsupported-engine error |
 
-"Tested" means Chrome and Edge run against the broad upstream Playwright Java contract
-suite. Firefox is covered by a launch/navigate/close smoke test on Windows CI, which is a
-release gate, but it has **not** been run against the full contract suite. Expect gaps in
-less common Firefox features.
+"Tested" means the browser runs the upstream Playwright Java contract suite as a release gate.
+On Firefox about a hundred upstream tests fail, the same way they fail with Microsoft's own
+driver over WebDriver BiDi (touch, drag and drop, worker realms, WebSocket events, media emulation,
+cookie details); they are listed in `playwright-java-contract-tests/known-limitations/firefox.txt`.
 
 `BrowserType.connect()` to a `launch-server` also works without Node.js (since `0.2.0`):
 the server is the same JVM driver started in `--node-compat` mode
@@ -206,8 +206,8 @@ startup, never on the command line.
 
 - Chrome/Edge smokes, the Firefox BiDi smoke, `launch-server`/`connect` tests and a
   no-native-binaries check run on CI and gate releases.
-- The full upstream contract suite runs as a non-blocking audit with a short, documented
-  list of known failures.
+- The full upstream contract suite runs for Chrome, Edge and Firefox and gates releases; only
+  the documented known limitations may fail.
 
 Details, the test layers and the historical test report are in
 [`docs/testing.md`](docs/testing.md). Known limitations and their analysis are in

@@ -40,7 +40,7 @@ public class TestBrowser2 {
 
       BrowserType.LaunchOptions launchOptions = createLaunchOptions();
       launchOptions.channel = channel;
-      return new Options().setLaunchOptions(launchOptions);
+      return new Options().setBrowserName(System.getenv("BROWSER")).setChannel(System.getenv("BROWSER_CHANNEL")).setLaunchOptions(launchOptions);
     }
 
     public static BrowserChannel getBrowserChannelEnumFromEnv() {

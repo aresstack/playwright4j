@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@UsePlaywright
+@UsePlaywright(com.microsoft.playwright.TestOptionsFactories.BasicOptionsFactory.class)
 public class TestFixtures {
   private static Playwright playwrightFromBeforeAll;
   private static Browser browserFromBeforeAll;

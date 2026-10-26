@@ -800,38 +800,112 @@
   // Expose the existing filesystem promises implementation through that canonical module ID.
   modules['fs/promises'] = modules.fs.promises;
 
-  modules.path = {
-    join: function () {
-      return Array.prototype.join.call(arguments, '/');
-    },
-    resolve: function () {
-      return Array.prototype.join.call(arguments, '/');
-    },
-    dirname: function (value) {
-      return String(value).replace(/[\\/][^\\/]*$/, '') || '.';
-    },
-    basename: function (value) {
-      return String(value).replace(/^.*[\\/]/, '');
-    },
-    extname: function (value) {
-      const match = String(value).match(/(\.[^./\\]+)$/);
-      return match ? match[1] : '';
-    },
-    isAbsolute: function (value) {
+  // Node's path module for both flavours; process.platform picks the default one. Windows paths
+  // must keep one separator: Firefox rejects a mixed C:\dir/file path (input.setFiles).
+  function createPathModule(windows) {
+    const sep = windows ? '\\' : '/';
+    const separators = windows ? /[\\/]+/ : /\/+/;
+    function splitRoot(value) {
+      // A UNC root (\\server\share\) keeps both leading separators, as in Node.
+      const unc = windows ? /^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)[\\/]*/.exec(value) : null;
+      if (unc) {
+        return { root: '\\\\' + unc[1] + '\\' + unc[2] + '\\', rest: value.substring(unc[0].length) };
+      }
+      const match = windows ? /^(?:[A-Za-z]:)?[\\/]?/.exec(value) : /^\/?/.exec(value);
+      return { root: match[0].replace(/[\\/]$/, sep), rest: value.substring(match[0].length) };
+    }
+    function isAbsolute(value) {
+      return windows ? /^(?:[A-Za-z]:)?[\\/]/.test(String(value)) : String(value).charAt(0) === '/';
+    }
+    function normalize(value) {
       const text = String(value);
-      return text.indexOf('/') === 0 || /^[A-Za-z]:[\\/]/.test(text);
-    },
-    normalize: function (value) {
-      return normalizeResourceName(String(value));
-    },
-    relative: function (from, to) {
-      return String(to).replace(String(from), '').replace(/^[\\/]/, '');
-    },
-    sep: '/'
-  };
-  // Chokidar's glob-parent requires path.posix.dirname in Playwright 1.62.
-  modules.path.posix = modules.path;
-  modules.path.win32 = modules.path;
+      if (text === '') {
+        return '.';
+      }
+      const parts = splitRoot(text);
+      const segments = [];
+      parts.rest.split(separators).forEach(function (segment) {
+        if (segment === '' || segment === '.') {
+          return;
+        }
+        if (segment === '..' && segments.length > 0 && segments[segments.length - 1] !== '..') {
+          segments.pop();
+        } else if (segment !== '..' || !parts.root) {
+          segments.push(segment);
+        }
+      });
+      let result = parts.root + segments.join(sep);
+      if (segments.length > 0 && separators.test(text.charAt(text.length - 1))) {
+        result += sep;
+      }
+      return result || '.';
+    }
+    function resolve() {
+      let resolved = '';
+      for (let index = arguments.length - 1; index >= -1 && !isAbsolute(resolved); index--) {
+        const segment = index >= 0 ? String(arguments[index]) : String(global.process.cwd());
+        if (segment) {
+          resolved = resolved ? segment + sep + resolved : segment;
+        }
+      }
+      const result = normalize(resolved);
+      return result.length > splitRoot(result).root.length ? result.replace(/[\\/]$/, '') : result;
+    }
+    function basename(value, extension) {
+      const text = String(value).replace(windows ? /[\\/]+$/ : /\/+$/, '');
+      let base = text.substring(text.search(windows ? /[^\\/:]*$/ : /[^/]*$/));
+      if (extension && base !== extension && base.endsWith(extension)) {
+        base = base.substring(0, base.length - extension.length);
+      }
+      return base;
+    }
+    function dirname(value) {
+      const text = String(value);
+      const parts = splitRoot(text);
+      const root = text.substring(0, text.length - parts.rest.length);
+      const rest = parts.rest.replace(windows ? /[\\/]+$/ : /\/+$/, '');
+      const index = Math.max(rest.lastIndexOf('/'), windows ? rest.lastIndexOf('\\') : -1);
+      if (index < 0) {
+        return root || '.';
+      }
+      return root + rest.substring(0, index).replace(windows ? /[\\/]+$/ : /\/+$/, '') || root;
+    }
+    function relative(from, to) {
+      const fromParts = resolve(from).split(sep).filter(Boolean);
+      const toParts = resolve(to).split(sep).filter(Boolean);
+      const same = function (a, b) { return windows ? a.toLowerCase() === b.toLowerCase() : a === b; };
+      let common = 0;
+      while (common < fromParts.length && common < toParts.length && same(fromParts[common], toParts[common])) {
+        common++;
+      }
+      return fromParts.slice(common).map(function () { return '..'; }).concat(toParts.slice(common)).join(sep);
+    }
+    return {
+      sep: sep,
+      delimiter: windows ? ';' : ':',
+      normalize: normalize,
+      isAbsolute: isAbsolute,
+      join: function () {
+        const segments = Array.prototype.filter.call(arguments, function (segment) { return String(segment) !== ''; });
+        return segments.length === 0 ? '.' : normalize(segments.join(sep));
+      },
+      resolve: resolve,
+      relative: relative,
+      dirname: dirname,
+      basename: basename,
+      extname: function (value) {
+        const base = basename(value);
+        const index = base.lastIndexOf('.');
+        return index <= 0 ? '' : base.substring(index);
+      },
+      toNamespacedPath: function (value) { return value; }
+    };
+  }
+  const posixPath = createPathModule(false);
+  const win32Path = createPathModule(true);
+  posixPath.posix = win32Path.posix = posixPath;
+  posixPath.win32 = win32Path.win32 = win32Path;
+  modules.path = host.environment().platform() === 'win32' ? win32Path : posixPath;
 
   modules.os = {
     type: function () {
@@ -845,10 +919,10 @@
       return host.environment().architecture();
     },
     tmpdir: function () {
-      return '/tmp';
+      return String(host.environment().temporaryDirectory());
     },
     homedir: function () {
-      return '/home/playwright4j';
+      return String(host.environment().homeDirectory());
     },
     release: function () {
       return 'playwright4j';
@@ -1569,12 +1643,24 @@
       return hex.substring(0, 8) + '-' + hex.substring(8, 12) + '-' + hex.substring(12, 16)
         + '-' + hex.substring(16, 20) + '-' + hex.substring(20);
     },
-    // RSA key-pair generation + RSA-SHA256 signing, used by Playwright's
-    // generateSelfSignedCertificate (client-certificate dummy server cert). Only RSA + the
-    // export forms that function uses (public pkcs1/der, private pkcs1/pem) are supported.
+    // RSA key pairs + RSA-SHA256 for Playwright's generateSelfSignedCertificate (client-certificate
+    // dummy server cert), P-256 key pairs + ECDSA-SHA256 for its virtual WebAuthn authenticator.
+    // Only the export forms those callers use are supported.
     generateKeyPairSync: function (type, options) {
+      if (String(type) === 'ec') {
+        const curve = options && options.namedCurve;
+        if (curve !== 'P-256' && curve !== 'prime256v1') {
+          throw new Error('crypto.generateKeyPairSync: only the P-256 curve is supported, got ' + curve);
+        }
+        const ec = String(host.crypto().generateEcP256KeyPair()).split(String.fromCharCode(30));
+        const pkcs8 = global.Buffer.from(ec[0], 'base64');
+        return {
+          publicKey: createEcPublicKey(global.Buffer.from(ec[1], 'base64'), ec[2], ec[3]),
+          privateKey: createPkcs8PrivateKey(pkcs8, 'ec')
+        };
+      }
       if (String(type) !== 'rsa') {
-        throw new Error('crypto.generateKeyPairSync: only RSA is supported');
+        throw new Error('crypto.generateKeyPairSync: only RSA and EC (P-256) are supported');
       }
       const bits = options && typeof options.modulusLength === 'number' ? options.modulusLength : 2048;
       const parts = String(host.crypto().generateRsaKeyPair(bits)).split(String.fromCharCode(30));
@@ -1585,15 +1671,61 @@
         privateKey: createKeyObject(parts[0], null, privatePkcs1Pem)
       };
     },
+    createPrivateKey: function (options) {
+      const format = options && options.format;
+      const type = options && options.type;
+      if (format === 'der' && type === 'pkcs8') {
+        return createPkcs8PrivateKey(toInputBuffer(options.key), undefined);
+      }
+      throw new Error('crypto.createPrivateKey: only PKCS#8 DER keys are supported');
+    },
     sign: function (algorithm, data, key) {
+      if (String(algorithm).toLowerCase().replace('-', '') !== 'sha256') {
+        throw new Error('crypto.sign: only sha256 is supported, got ' + algorithm);
+      }
+      if (key && key.__pw4jPkcs8) {
+        const signed = host.crypto().signSha256Pkcs8(key.__pw4jPkcs8.toString('base64'), toInputBuffer(data).toString('base64'));
+        return global.Buffer.from(signed, 'base64');
+      }
       const keyId = key && key.__pw4jKeyId;
       if (!keyId) {
-        throw new Error('crypto.sign requires a private KeyObject from generateKeyPairSync');
+        throw new Error('crypto.sign requires a private KeyObject from generateKeyPairSync or createPrivateKey');
       }
       const base64 = host.crypto().signSha256(keyId, toInputBuffer(data).toString('base64'));
       return global.Buffer.from(base64, 'base64');
     }
   };
+
+  function createPkcs8PrivateKey(pkcs8Der, asymmetricKeyType) {
+    return {
+      __pw4jPkcs8: pkcs8Der,
+      type: 'private',
+      asymmetricKeyType: asymmetricKeyType,
+      export: function (options) {
+        if (options && options.type !== undefined && options.type !== 'pkcs8') {
+          throw new Error('KeyObject.export: only pkcs8 is supported for this private key');
+        }
+        return options && options.format === 'pem' ? derToPem('PRIVATE KEY', pkcs8Der) : pkcs8Der;
+      }
+    };
+  }
+
+  function createEcPublicKey(spkiDer, x, y) {
+    return {
+      type: 'public',
+      asymmetricKeyType: 'ec',
+      export: function (options) {
+        const format = options && options.format;
+        if (format === 'jwk') {
+          return { kty: 'EC', crv: 'P-256', x: x, y: y };
+        }
+        if (options && options.type !== undefined && options.type !== 'spki') {
+          throw new Error('KeyObject.export: only spki and jwk are supported for this public key');
+        }
+        return format === 'pem' ? derToPem('PUBLIC KEY', spkiDer) : spkiDer;
+      }
+    };
+  }
 
   function createKeyObject(keyId, publicPkcs1Der, privatePkcs1Pem) {
     return {
@@ -3187,6 +3319,15 @@
       }
       request.emit('error', networkError);
       return;
+    }
+
+    const remoteAddress = String(response.remoteAddress() || '');
+    if (remoteAddress) {
+      // Playwright takes APIResponse.serverAddr() from the socket Node hands out with 'socket'.
+      const socket = new EventEmitter();
+      socket.remoteAddress = remoteAddress;
+      socket.remotePort = response.remotePort();
+      request.emit('socket', socket);
     }
 
     const incomingMessage = buildIncomingMessage(response);
@@ -4881,6 +5022,8 @@
         let bytes;
         if (normalized === 'base64') {
           bytes = base64Decode(value);
+        } else if (normalized === 'base64url') {
+          bytes = base64Decode(value.replace(/-/g, '+').replace(/_/g, '/'));
         } else if (normalized === 'hex') {
           bytes = hexDecode(value);
         } else if (normalized === 'latin1' || normalized === 'binary' || normalized === 'ascii') {
@@ -4957,6 +5100,9 @@
       const normalized = (encoding || 'utf8').toLowerCase();
       if (normalized === 'base64') {
         return base64Encode(view);
+      }
+      if (normalized === 'base64url') {
+        return base64Encode(view).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       }
       if (normalized === 'hex') {
         return hexEncode(view);
@@ -7386,14 +7532,42 @@
       + '          return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };\n'
       + '        }, {});\n'
       + '        if (!box || box === "error:notconnected")\n', 1);
-    // A main-world handle's preview would create the InjectedScript in the main world.
+    // Firefox answers handleUserPrompt for a beforeunload prompt of a closing tab only after the tab
+    // is destroyed, which disposes the dialog before Dialog.accept() returns. The prompt counts as
+    // handled once Firefox reports it closed, which it does before destroying the tab.
+    source = replaceCoreBundleAnchor(source,
+      '            await this._session.send("browsingContext.handleUserPrompt", { context: event.context, accept, userText });\n',
+      '            let promptClosed;\n'
+      + '            const closed = new Promise((resolve) => promptClosed = eventsHelper.addEventListener(this._session, "browsingContext.userPromptClosed", (closedEvent) => {\n'
+      + '              if (closedEvent.context === event.context)\n'
+      + '                resolve();\n'
+      + '            }));\n'
+      + '            try {\n'
+      + '              await Promise.race([this._session.send("browsingContext.handleUserPrompt", { context: event.context, accept, userText }), closed]);\n'
+      + '            } finally {\n'
+      + '              eventsHelper.removeEventListeners([promptClosed]);\n'
+      + '            }\n', 1);
+    // BiDi node handles keep the sharedId Firefox reports, so a main-world node can be referenced
+    // in the utility world without first asking the browser for it.
+    source = replaceCoreBundleAnchor(source,
+      '    return new ElementHandle(context2, remoteObject.handle);\n',
+      '    const elementHandle = new ElementHandle(context2, remoteObject.handle);\n'
+      + '    elementHandle._playwright4jSharedId = remoteObject.sharedId;\n'
+      + '    return elementHandle;\n', 1);
+    // A main-world handle's preview would create the InjectedScript in the main world. It is
+    // computed in the utility world in one call (by sharedId), so it is ready as soon as the
+    // caller's next evaluate returns, as on the main-world path.
     source = replaceCoreBundleAnchor(source,
       '        const utility = await this._context.injectedScript();\n'
       + '        this._setPreview(await utility.evaluate((injected, e) => "JSHandle@" + injected.previewNode(e), this));',
       '        if (this._context.world === "main" && ' + hooks + '.isBidiPage(this._page.delegate)) {\n'
-      + '          const preview = await this.evaluateInUtility(([injected, e]) => "JSHandle@" + injected.previewNode(e), {});\n'
-      + '          if (preview !== "error:notconnected")\n'
-      + '            this._setPreview(preview);\n'
+      + '          const utilityContext = await this._frame.utilityContext();\n'
+      + '          const injectedScript = await utilityContext.injectedScript();\n'
+      + '          const preview = await utilityContext.delegate._rawCallFunction(\n'
+      + '            "(injected, e) => \\"JSHandle@\\" + injected.previewNode(e)",\n'
+      + '            [{ handle: injectedScript._objectId }, { sharedId: this._playwright4jSharedId }]);\n'
+      + '          if (preview && preview.type === "string")\n'
+      + '            this._setPreview(preview.value);\n'
       + '          return;\n'
       + '        }\n'
       + '        const utility = await this._context.injectedScript();\n'
@@ -7506,9 +7680,9 @@
       }
 
       // The 1.62 bundle references its package.json using a normalized
-      // driver/package/lib/../package.json resource path.
-      if (name.indexOf('driver/package/') === 0) {
-        const candidate = normalizeResourceName(name);
+      // driver/package/lib/../package.json resource path (path.join, so backslashes on Windows).
+      const candidate = normalizeResourceName(name);
+      if (candidate.indexOf('driver/package/') === 0) {
         if (global.__playwright4jDriverBundleSource.hasResource(candidate)) {
           return loadCommonJsModule(candidate);
         }

@@ -22,17 +22,17 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
    (`v0.1.0` → `0.1.0`) and passed to Gradle via `-Pversion`.
 2. It runs on **windows-2022**, where Chrome, Edge and Firefox are preinstalled. No C toolchain
    is needed; the project contains no native code.
-3. **Release gate:** the fast Chrome + Edge channel smokes (`channelSmoke`, launch → page →
-   evaluate → close) and the Firefox WebDriver BiDi smoke (`firefoxSmoke`) must pass before
-   anything is published.
+3. **Release gate:** the Chrome + Edge channel smokes (`channelSmoke`, launch → page →
+   evaluate → close), the Firefox WebDriver BiDi smoke (`firefoxSmoke`) and the upstream suite
+   (jobs `upstream-gate` and `upstream-gate-check`: `knownLimitationsCheck` for Chrome, Edge and
+   Firefox on Windows, Chrome and Firefox on Linux) must pass before anything is published.
 4. A `publishToMavenLocal` sanity assembles the jar / sources / javadoc / POM.
 5. Gradle builds, signs (in-memory PGP key), and publishes via
    `publishAggregationToCentralPortal`.
 
-The full upstream compatibility suite (`knownLimitationsCheck`) is **not** a blocking release
-gate — it is heavy and environment-sensitive on the standard runner. It runs separately as a
-non-blocking audit (`.github/workflows/known-limitations-check.yml`, on `workflow_dispatch` and
-after a published release) and always uploads its test reports.
+The `upstream-gate` jobs run the suite in eight shards per browser (about 5 to 15 minutes each)
+and upload their test reports; `upstream-gate-check` evaluates the known limitations over all
+shards of a browser.
 
 ## Credentials (already set as organization GitHub secrets)
 
@@ -77,8 +77,7 @@ mvn -B -f consumer-check/pom.xml verify -Dplaywright4j.version=0.1.0
 
 - Confirm the push/PR CI (`ci.yml`: Chrome + Edge `channelSmoke`) is green. The release
   workflow re-runs the same smokes as its gate before publishing.
-- Optionally trigger the non-blocking audit (`known-limitations-check.yml` via
-  `workflow_dispatch`, or locally `./gradlew :playwright-java-contract-tests:knownLimitationsCheck`)
-  and review the uploaded reports — but this does not block the release.
+- A manual run of the release workflow (`workflow_dispatch`) runs every gate, including
+  `upstream-gate`, without publishing.
 - Then create the `v<version>` tag. Tagging is a deliberate manual step; the tag push runs the
   release workflow, which uploads the deployment to the Central Portal and auto-releases it.

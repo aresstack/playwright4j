@@ -125,7 +125,7 @@ public class TestHar extends TestBase {
     Path harPath = pageWithHar.harFile;
     Path userDataDir = Files.createTempDirectory("user-data-dir-");
     BrowserContext context = browserType.launchPersistentContext(userDataDir,
-      new BrowserType.LaunchPersistentContextOptions()
+      new BrowserType.LaunchPersistentContextOptions().setChannel(System.getenv("BROWSER_CHANNEL"))
         .setRecordHarPath(harPath).setIgnoreHTTPSErrors(true));
     Page page = context.pages().get(0);
 
