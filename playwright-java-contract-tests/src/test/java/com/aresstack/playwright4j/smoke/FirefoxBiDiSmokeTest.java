@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -27,6 +28,7 @@ import static com.aresstack.playwright4j.smoke.FirefoxTestSupport.runGuarded;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Firefox over WebDriver BiDi (Playwright's moz-firefox channel) against an installed Firefox.
@@ -92,7 +94,7 @@ public class FirefoxBiDiSmokeTest {
                 "persistent-" + rounds + "-" + System.currentTimeMillis() + ".log").toAbsolutePath();
         Files.createDirectories(protocol.getParent());
         Map<String, String> env = new HashMap<>();
-        env.put("DEBUG", "pw:protocol");
+        env.put("DEBUG", "pw:protocol,pw:api,pw:error");
         env.put("DEBUG_FILE", protocol.toString());
         boolean passed = false;
         try (Playwright playwright = Playwright.create(new Playwright.CreateOptions().setEnv(env))) {
@@ -118,8 +120,13 @@ public class FirefoxBiDiSmokeTest {
                     context.onPage(p -> events.add("page " + p.url()));
                     Response response = page.navigate("data:text/html,<title>persistent</title>");
                     events.add("navigate returned, response " + (response == null ? null : response.url()));
-                    assertEquals("persistent", page.title(),
-                            () -> events + ", url " + page.url() + ", pages " + context.pages().size() + ", protocol " + protocol);
+                    String title = page.title();
+                    if (!"persistent".equals(title)) {
+                        String state = events + ", url " + page.url() + ", pages " + context.pages().size() + ", protocol " + protocol;
+                        // Printed before any further browser call, so the record survives a hang.
+                        System.out.println("persistent title was '" + title + "': " + state);
+                        fail("expected persistent, title was '" + title + "'; " + state + "; " + titleProbes(page));
+                    }
                     // Loading a page must not grant it user activation without any input (the page
                     // records the state itself; page.title() is read only after that).
                     page.navigate("data:text/html,<script>setTimeout(() => document.title = 'activation:'"
@@ -144,6 +151,25 @@ public class FirefoxBiDiSmokeTest {
             if (passed) {
                 Files.deleteIfExists(protocol);
             }
+        }
+    }
+
+    // After a wrong title (#66): does a second read agree, and what does the document itself say in
+    // the main world, independent of Playwright's utility world? Each probe is caught on its own, so
+    // one failing probe cannot hide the others.
+    private static String titleProbes(Page page) {
+        StringBuilder probes = new StringBuilder();
+        probe(probes, "second title", page::title);
+        probe(probes, "main world [URL, readyState, title, visibilityState]",
+                () -> page.evaluate("[document.URL, document.readyState, document.title, document.visibilityState]"));
+        return probes.toString();
+    }
+
+    private static void probe(StringBuilder into, String name, Supplier<Object> read) {
+        try {
+            into.append(name).append(": ").append(read.get()).append("; ");
+        } catch (RuntimeException exception) {
+            into.append(name).append(" failed: ").append(exception.getMessage()).append("; ");
         }
     }
 
