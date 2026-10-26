@@ -92,6 +92,8 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNaturalPointerTest'
         // The leftover-process guard itself, without a browser.
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxTestSupportTest'
+        // keyboard.down/up/press with graphemes outside the US layout (#59).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxKeyboardGraphemeTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBidiTest'
     }
 

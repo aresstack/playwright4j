@@ -6086,6 +6086,42 @@
     return '(text) => {\nconst module = { exports: {} };\n' + bidiInsertTextSource + '\nreturn ' + insert + ';\n}';
   }
 
+  // keyboard.down/up/press("ä"): Playwright knows only the keys of the US layout and fails with
+  // "Unknown key" before the raw keyboard is reached. Over WebDriver BiDi any other single printable
+  // grapheme is a key of its own, sent as a real keyDown/keyUp whose text the browser generates, as
+  // for a person with a German layout (#59). The code is only Playwright's bookkeeping of pressed
+  // keys; BiDi does not send it. The hook marks the raw keyboard, so other engines keep refusing.
+  function isTypableGrapheme(text) {
+    if (typeof text !== 'string' || text.length === 0 || /[-]/.test(text) || /^[\u0000-\u001F\u007F]$/.test(text))
+      return false;
+    const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)[Symbol.iterator]();
+    return !graphemes.next().done && graphemes.next().done;
+  }
+
+  function graphemeKeyDescription(raw, keyString) {
+    if (!raw || raw.pw4jGraphemeKeys !== true || !isTypableGrapheme(keyString))
+      return undefined;
+    return { key: keyString, keyCode: 0, keyCodeWithoutLocation: 0, code: 'pw4j:' + keyString, text: keyString, location: 0 };
+  }
+
+  // A grapheme of several code points (é as e + U+0301, 👍🏽) is not one of Playwright's key names;
+  // the BiDi key action takes it as its value as it is.
+  function patchBidiKeyboardGraphemeKeys(RawKeyboard) {
+    RawKeyboard.prototype.pw4jGraphemeKeys = true;
+    const originalKeydown = RawKeyboard.prototype.keydown;
+    const originalKeyup = RawKeyboard.prototype.keyup;
+    RawKeyboard.prototype.keydown = function (progress, modifiers, keyName) {
+      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1)
+        return this._performActions(progress, [{ type: 'keyDown', value: keyName }]);
+      return originalKeydown.apply(this, arguments);
+    };
+    RawKeyboard.prototype.keyup = function (progress, modifiers, keyName) {
+      if (isTypableGrapheme(keyName) && Array.from(keyName).length > 1)
+        return this._performActions(progress, [{ type: 'keyUp', value: keyName }]);
+      return originalKeyup.apply(this, arguments);
+    };
+  }
+
   // playwright4j.bidi.nativeBehavior: an action scrolls its target into view with the mouse wheel
   // (input.performActions), as a user does, instead of calling scrollIntoView from a script (#42).
   // Each round wheels the innermost scroll container that still hides the target, over the visible
@@ -7157,7 +7193,13 @@
           patchBidiPageNaturalPointer(BidiPage);
         });
       },
-      insertTextExpression: insertTextExpression
+      insertTextExpression: insertTextExpression,
+      bidiKeyboard: function (RawKeyboard) {
+        return patchOnce(RawKeyboard, function () {
+          patchBidiKeyboardGraphemeKeys(RawKeyboard);
+        });
+      },
+      graphemeKeyDescription: graphemeKeyDescription
     };
     const hooks = 'globalThis.__playwright4jCoreBundle';
     // packages/utils/pipeTransport.ts (driver protocol) and server/pipeTransport.ts (CDP over
@@ -7182,6 +7224,11 @@
       '      _onAuthRequired(params2) {\n        ' + hooks + '.onBidiAuthRequired(this, params2);\n      }\n'
       + '      _answerAuthRequired(params2) {\n        const isBasic = ', 1);
     source = replaceCoreBundleAnchor(source, 'new BidiPage(', 'new (' + hooks + '.bidiPage(BidiPage, nullProgress))(', 1);
+    // Keyboard.down/up/press with a single grapheme outside the US layout (graphemeKeyDescription).
+    source = replaceCoreBundleAnchor(source, 'new RawKeyboardImpl2(', 'new (' + hooks + '.bidiKeyboard(RawKeyboardImpl2))(', 1);
+    source = replaceCoreBundleAnchor(source, '        let description = usKeyboardLayout.get(keyString);\n        if (!description)\n',
+      '        let description = usKeyboardLayout.get(keyString) || ' + hooks + '.graphemeKeyDescription(this._raw, keyString);\n'
+      + '        if (!description)\n', 1);
     source = replaceCoreBundleAnchor(source,
       '          if (await frame.mainContext() !== mainContext)\n            return;\n          const delegate = new BidiExecutionContext(',
       '          if (await frame.mainContext() !== mainContext || ' + hooks + '.isRealmDestroyed(this, result2.realm))\n'
@@ -7249,7 +7296,7 @@
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
       + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), WSServer: WSServer, createProfile: createProfile, '
-      + 'generateSelfSignedCertificate: generateSelfSignedCertificate };\n';
+      + 'generateSelfSignedCertificate: generateSelfSignedCertificate, Keyboard: Keyboard, RawKeyboardImpl2: ' + hooks + '.bidiKeyboard(RawKeyboardImpl2) };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
   }
