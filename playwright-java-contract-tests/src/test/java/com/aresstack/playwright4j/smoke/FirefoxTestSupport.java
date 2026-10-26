@@ -10,6 +10,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -82,14 +83,22 @@ final class FirefoxTestSupport {
     // processes were seen still running 5 s later and gone a moment after, so the exit window is
     // PROCESS_EXIT_GRACE_MILLIS, and any process running longer than SLOW_EXIT_MILLIS is named in
     // the log with its parent and command line.
+    // The runner's own Firefox can start during a test as well: on Windows the default-browser
+    // agent runs firefox.exe --backgroundtask on a schedule, with content processes of its own that
+    // do not carry the argument. Those are not the test's and are left out by their ancestry.
     private static void assertNoFirefoxLeftBehind(Set<Long> before) throws InterruptedException {
         long start = System.currentTimeMillis();
         long deadline = start + PROCESS_EXIT_GRACE_MILLIS;
         Map<Long, FirefoxProcess> slow = new LinkedHashMap<>();
+        Map<Long, FirefoxProcess> known = new HashMap<>();
         Set<Long> leftovers;
         while (true) {
             leftovers = firefoxPids();
             leftovers.removeAll(before);
+            if (!known.keySet().containsAll(leftovers)) {
+                known.putAll(firefoxProcessDetails());
+            }
+            leftovers = withoutBackgroundTasks(leftovers, known);
             if (leftovers.isEmpty()) {
                 break;
             }
@@ -100,6 +109,7 @@ final class FirefoxTestSupport {
                 Map<Long, FirefoxProcess> running = firefoxProcessDetails();
                 leftovers = firefoxPids();
                 leftovers.removeAll(before);
+                leftovers = withoutBackgroundTasks(leftovers, running);
                 if (leftovers.isEmpty()) {
                     break;
                 }
@@ -117,6 +127,28 @@ final class FirefoxTestSupport {
             System.out.println("Firefox processes still ran " + SLOW_EXIT_MILLIS + " ms after close() and ended within "
                     + (System.currentTimeMillis() - start) + " ms: " + slow.values());
         }
+    }
+
+    /**
+     * The pids without Firefox's background tasks (firefox.exe --backgroundtask ...) and their
+     * descendants among the described processes; a pid without details is kept.
+     */
+    static Set<Long> withoutBackgroundTasks(Set<Long> pids, Map<Long, FirefoxProcess> details) {
+        Set<Long> kept = new HashSet<>();
+        for (Long pid : pids) {
+            boolean background = false;
+            Set<Long> seen = new HashSet<>();
+            for (FirefoxProcess process = details.get(pid); process != null && seen.add(process.pid); process = details.get(process.parent)) {
+                if (process.isBackgroundTask()) {
+                    background = true;
+                    break;
+                }
+            }
+            if (!background) {
+                kept.add(pid);
+            }
+        }
+        return kept;
     }
 
     private static List<FirefoxProcess> describe(Set<Long> pids, Map<Long, FirefoxProcess> running) {
@@ -138,6 +170,10 @@ final class FirefoxTestSupport {
             this.pid = pid;
             this.parent = parent;
             this.commandLine = commandLine == null ? "" : commandLine;
+        }
+
+        boolean isBackgroundTask() {
+            return commandLine.contains(" --backgroundtask ");
         }
 
         @Override

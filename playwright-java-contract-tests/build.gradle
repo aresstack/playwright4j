@@ -90,6 +90,8 @@ tasks.register('firefoxSmoke', Test) {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNativeInputTest'
         // Mouse paths and click timing under playwright4j.bidi.naturalPointer (#43).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNaturalPointerTest'
+        // The leftover-process guard itself, without a browser.
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxTestSupportTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBidiTest'
     }
 
