@@ -1,8 +1,12 @@
 name: Firefox smoke repeat
 
 # Repeats one Firefox smoke test class on Windows to reproduce a sporadic failure (#66) without
-# running the whole CI. Started by hand only; every run's results and protocol traces are uploaded.
+# running the whole CI. Every run's results and protocol traces are uploaded. Started by hand
+# (once the file is on the default branch) or by a push to the repeat branch below, which runs
+# the defaults twice: without and with CPU load.
 on:
+  push:
+    branches: [ claude/project-thread-dz6oyr-repeat ]
   workflow_dispatch:
     inputs:
       tests:
@@ -20,14 +24,22 @@ on:
 
 jobs:
   repeat:
-    name: repeat (${{ inputs.tests }}, nativeBehavior=${{ inputs.nativeBehavior }}, x${{ inputs.repetitions }}, busy ${{ inputs.busyThreads }})
+    name: repeat (${{ inputs.tests || 'FirefoxBiDiSmokeTest' }}, nativeBehavior=${{ inputs.nativeBehavior || 'true' }}, x${{ inputs.repetitions || '8' }}, busy ${{ inputs.busyThreads || matrix.busyThreads }})
     runs-on: windows-2022
     timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        busyThreads: ${{ github.event_name == 'push' && fromJSON('["0", "3"]') || fromJSON('["dispatch"]') }}
 
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
       PLAYWRIGHT4J_REQUIRE_FIREFOX: "true"
+      TESTS: ${{ inputs.tests || 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest' }}
+      NATIVE_BEHAVIOR: ${{ inputs.nativeBehavior || 'true' }}
+      REPETITIONS: ${{ inputs.repetitions || '8' }}
+      BUSY_THREADS: ${{ inputs.busyThreads || matrix.busyThreads }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,22 +66,22 @@ jobs:
           "FIREFOX_EXECUTABLE=$exe" >> $env:GITHUB_ENV
 
       - name: Start CPU load
-        if: inputs.busyThreads != '0'
+        if: env.BUSY_THREADS != '0'
         shell: pwsh
         run: |
-          1..[int]"${{ inputs.busyThreads }}" | ForEach-Object {
+          1..[int]$env:BUSY_THREADS | ForEach-Object {
             Start-Process pwsh -ArgumentList "-NoProfile", "-Command", "while (`$true) {}" -WindowStyle Hidden
           }
-          Write-Host "Started ${{ inputs.busyThreads }} busy loops"
+          Write-Host "Started $env:BUSY_THREADS busy loops"
 
       - name: Repeat the Firefox smoke
         shell: pwsh
         run: |
           $failed = 0
-          $total = [int]"${{ inputs.repetitions }}"
+          $total = [int]$env:REPETITIONS
           for ($i = 1; $i -le $total; $i++) {
             Write-Host "=== run $i of $total"
-            ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --tests "${{ inputs.tests }}" "-Pplaywright4j.bidi.nativeBehavior=${{ inputs.nativeBehavior }}" --no-daemon
+            ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke --tests "$env:TESTS" "-Pplaywright4j.bidi.nativeBehavior=$env:NATIVE_BEHAVIOR" --no-daemon
             if ($LASTEXITCODE -ne 0) { $failed++ }
             $dest = "repeat-results/run-$i"
             New-Item -ItemType Directory -Force $dest | Out-Null
@@ -95,5 +107,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: firefox-smoke-repeat-${{ inputs.nativeBehavior }}-${{ github.run_id }}
+          name: firefox-smoke-repeat-nativeBehavior-${{ env.NATIVE_BEHAVIOR }}-busy-${{ env.BUSY_THREADS }}
           path: repeat-results/**
