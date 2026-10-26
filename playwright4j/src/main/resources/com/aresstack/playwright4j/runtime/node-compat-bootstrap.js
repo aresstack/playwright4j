@@ -6091,8 +6091,11 @@
   // grapheme is a key of its own, sent as a real keyDown/keyUp whose text the browser generates, as
   // for a person with a German layout (#59). The code is only Playwright's bookkeeping of pressed
   // keys; BiDi does not send it. The hook marks the raw keyboard, so other engines keep refusing.
+  // Not typable: a control character anywhere (CR+LF is one grapheme, U+0085 is beyond ASCII), a
+  // line or paragraph separator, BiDi's own key codes, or a grapheme that starts with a format
+  // character (a lone zero-width joiner); inside a grapheme a format character joins an emoji.
   function isTypableGrapheme(text) {
-    if (typeof text !== 'string' || text.length === 0 || /[-]/.test(text) || /^[\u0000-\u001F\u007F]$/.test(text))
+    if (typeof text !== 'string' || text.length === 0 || /[\p{Cc}\p{Zl}\p{Zp}\uE000-\uE05D]/u.test(text) || /^\p{Cf}/u.test(text))
       return false;
     const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)[Symbol.iterator]();
     return !graphemes.next().done && graphemes.next().done;

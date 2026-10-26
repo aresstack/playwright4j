@@ -49,6 +49,13 @@ final class NodeCompatFirefoxKeyboardGraphemeTest {
                 run("await keyboard.press(progress, 'ß'); await keyboard.press(progress, 'e\\u0301'); await keyboard.press(progress, '\\uD83D\\uDC4D\\uD83C\\uDFFD');"));
     }
 
+    // A family emoji joins its members with zero-width joiners, which are format characters.
+    @Test
+    void joinerSequencesAreOneKey() {
+        assertEquals("keyDown:\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67, keyUp:\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67",
+                run("await keyboard.press(progress, '\\uD83D\\uDC68\\u200D\\uD83D\\uDC69\\u200D\\uD83D\\uDC67');"));
+    }
+
     @Test
     void modifiersCombineWithSuchAGrapheme() {
         assertEquals("keyDown:\uE008, keyDown:ü, keyUp:ü, keyUp:\uE008", run("await keyboard.press(progress, 'Shift+ü');"));
@@ -61,7 +68,10 @@ final class NodeCompatFirefoxKeyboardGraphemeTest {
 
     @Test
     void severalGraphemesAndControlCharactersAreStillUnknownKeys() {
-        for (String key : new String[] {"äö", "\\u0001", "\\uE007", "", "ab"}) {
+        // U+0085 (NEXT LINE) and CR+LF are one grapheme each but control characters; a lone
+        // zero-width joiner is a format character with nothing to join. A lone CR or LF stays Enter,
+        // as in Playwright.
+        for (String key : new String[] {"äö", "\\u0001", "\\u0085", "\\r\\n", "\\u2028", "\\u200D", "\\uE007", "", "ab"}) {
             PolyglotException refused = Assertions.assertThrows(PolyglotException.class, () -> run("await keyboard.press(progress, '" + key + "');"));
             assertTrue(refused.getMessage().contains("Unknown key"), key + ": " + refused.getMessage());
         }

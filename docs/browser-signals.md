@@ -146,7 +146,8 @@ action can carry any single grapheme as its value, and Firefox generates the tex
 person with that layout. playwright4j therefore accepts a single printable grapheme as a key of its
 own on Firefox and Camoufox (independent of `nativeBehavior`; issue #59): `press("ä")` and
 `press("Shift+ü")` reach the page as trusted `keydown`, `keypress`, `input` and `keyup` events.
-Several graphemes, control characters and BiDi's private-use key codes stay unknown keys, and
+Several graphemes, control characters (also U+0085 and CR+LF, one grapheme by the Unicode rules),
+line separators, a lone format character and BiDi's private-use key codes stay unknown keys, and
 `type()`, `insertText()` and `fill()` are unchanged. `NodeCompatFirefoxKeyboardGraphemeTest` guards
 the key mapping, `FirefoxKeyboardGraphemeTest` (part of `firefoxSmoke`) the events in the browser.
 
