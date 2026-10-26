@@ -77,6 +77,8 @@ tasks.register('firefoxSmoke', Test) {
     useJUnitPlatform()
     filter {
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest'
+        // Umlauts and other non-US text as trusted key events, no __pw_bidiInsertText (#36).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxKeyboardInputTest'
         // Counts the real Firefox windows (EnumWindows on Windows, xdotool on Linux/X11).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxPersistentWindowTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxNativeBehaviorTest'

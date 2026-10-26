@@ -130,9 +130,10 @@ Upstream Playwright 1.62 runs some of its own code in the page's main world in F
 scripts see it: every document gets a `window.__pw_bidiInsertText` global; handle previews create
 the InjectedScript there (which reads `window.__pwClock` and dispatches
 `__playwright_global_listeners_check__`); and the offsets for input inside an `<iframe>` call
-`getClientRects`/`getBoundingClientRect` there, which a page can hook. playwright4j runs all three
-in Playwright's utility world instead (issues #36, #39, #50), as do its own checks of a taken-over
-start tab. Unchanged, because the Playwright API defines them: the caller's `evaluate` and its
+`getClientRects`/`getBoundingClientRect` there, which a page can hook. playwright4j installs no such
+global and types text as real key events (see "Text input" below); it runs the previews and the
+offsets in Playwright's utility world instead (issues #36, #39, #50), as do its own checks of a
+taken-over start tab. Unchanged, because the Playwright API defines them: the caller's `evaluate` and its
 main-world handles (`page.$`, `waitForSelector`, `elementHandle()`, `frameElement()`) run in the
 main world, and each evaluation there creates Playwright's UtilityScript in it.
 `FirefoxMainWorldTest` (part of `firefoxSmoke`) guards this.
@@ -213,6 +214,22 @@ Chrome. This was measured with both the official driver (pipe) and playwright4j 
   animation started right before a screenshot with `animations: "disabled"` was finished and two
   consecutive screenshots were identical in 20 of 20 runs, with and without the toggle. The caret
   (`caret-color` in the `style` attribute of editable elements) stays Playwright's default.
+
+- Text input: since Playwright 1.62 the BiDi layer installs `window.__pw_bidiInsertText` in the main
+  world of every document (`BidiBrowserContext.initialize` → `extendInjectedScript`) and types
+  every character outside the US keyboard layout (`ä`, `ß`, `é`, emoji), and all text of
+  `insertText`/`fill`, through it as an untrusted `InputEvent` without key events. playwright4j
+  does not install it and types such text as WebDriver BiDi `keyDown`/`keyUp` actions, one per
+  grapheme; Firefox then dispatches trusted `keydown`, `keypress`, `beforeinput`, `input` and
+  `keyup` to the focused element, also inside iframes. `keyboard.type`/`insertText` type line
+  breaks and tabs as Enter and Tab. `fill()` only sets the content and never submits or moves the
+  focus: before typing anything it refuses text with a tab, and text with a line break for a
+  single-line `<input>`; types a line break
+  as Enter into a `<textarea>` and as Shift+Enter into a rich-text (contenteditable) element.
+  `keyboard.down/up/press` accept any single grapheme (`ä`, `ß`, `é`, `👍🏽`), which
+  Playwright rejects as "Unknown key", and send it as a real key action.
+  `FirefoxKeyboardInputTest` (task `firefoxSmoke`) checks all of it. This differs from the
+  official driver (issue #36).
 
 **Caused by playwright4j, not page-observable**
 
