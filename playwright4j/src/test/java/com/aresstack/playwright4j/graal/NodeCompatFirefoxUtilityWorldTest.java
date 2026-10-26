@@ -76,6 +76,17 @@ final class NodeCompatFirefoxUtilityWorldTest {
                 "answers.shift()('S2');"));
     }
 
+    // The answering realm is remembered among the page's last destroyed realms only; more destroyed
+    // realms (workers, other sandboxes) while the answer is pending must not let it through.
+    @Test
+    void aDestroyedAnsweringRealmIsNotKeptAfterManyOtherRealmsWereDestroyed() {
+        assertEquals("none", replay(
+                "page._onRealmCreated(windowRealm('R2'));",
+                "page._onRealmDestroyed({ realm: 'S2' });"
+                        + " for (let i = 0; i < 64; i++) { page._onRealmDestroyed({ realm: 'W' + i }); }"
+                        + " answers.shift()('S2');"));
+    }
+
     // Each step is its own script evaluation; the promise jobs it starts settle before the next one
     // (GraalJS runs them when an evaluation ends). The result lists the utility realm after every step
     // but the first.

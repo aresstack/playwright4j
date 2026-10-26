@@ -7143,6 +7143,7 @@
         });
       },
       isRealmDestroyed: isRealmDestroyed,
+      restoreTakenOverPage: restoreTakenOverPage,
       isBidiPage: function (delegate) {
         return bidiPageClasses.some(function (BidiPage) { return delegate instanceof BidiPage; });
       },
@@ -7298,7 +7299,7 @@
     // Bundle-internal classes the shim tests drive directly (before 1.62 they were separate
     // modules such as lib/server/utils/wsServer.js).
     source += '\n;' + hooks + '.internals = { WebSocketTransport: WebSocketTransport, BidiFirefox: ' + hooks
-      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), WSServer: WSServer, createProfile: createProfile, '
+      + '.bidiFirefox(BidiFirefox), BidiPage: ' + hooks + '.bidiPage(BidiPage, nullProgress), BidiBrowser: ' + hooks + '.bidiBrowser(BidiBrowser, BidiBrowserContext2), WSServer: WSServer, createProfile: createProfile, '
       + 'generateSelfSignedCertificate: generateSelfSignedCertificate, Keyboard: Keyboard, RawKeyboardImpl2: ' + hooks + '.bidiKeyboard(RawKeyboardImpl2) };\n';
     pw4jDebug('Patched Playwright Core bundle: transports and BiDi classes');
     return source;
