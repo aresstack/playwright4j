@@ -1,12 +1,11 @@
 name: Firefox smoke repeat
 
 # Repeats one Firefox smoke test class on Windows to reproduce a sporadic failure (#66) without
-# running the whole CI. Every run's results and protocol traces are uploaded. Started by hand
-# (once the file is on the default branch) or by a push to the repeat branch below, which runs
-# the defaults twice: without and with CPU load.
+# running the whole CI. Started by hand only (workflow_dispatch: the Actions page offers it once the
+# file is on the default branch; the API or gh can dispatch it on any branch before that), with or
+# without CPU load as the inputs say. No push starts it. Every run's results and protocol traces
+# are uploaded as an artifact.
 on:
-  push:
-    branches: [ claude/project-thread-dz6oyr-repeat ]
   workflow_dispatch:
     inputs:
       tests:
@@ -24,22 +23,18 @@ on:
 
 jobs:
   repeat:
-    name: repeat (${{ inputs.tests || 'FirefoxBiDiSmokeTest' }}, nativeBehavior=${{ inputs.nativeBehavior || 'true' }}, x${{ inputs.repetitions || '8' }}, busy ${{ inputs.busyThreads || matrix.busyThreads }})
+    name: repeat (${{ inputs.tests }}, nativeBehavior=${{ inputs.nativeBehavior }}, x${{ inputs.repetitions }}, busy ${{ inputs.busyThreads }})
     runs-on: windows-2022
     timeout-minutes: 55
-    strategy:
-      fail-fast: false
-      matrix:
-        busyThreads: ${{ github.event_name == 'push' && fromJSON('["0", "3"]') || fromJSON('["dispatch"]') }}
 
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
       PLAYWRIGHT4J_REQUIRE_FIREFOX: "true"
-      TESTS: ${{ inputs.tests || 'com.aresstack.playwright4j.smoke.FirefoxBiDiSmokeTest' }}
-      NATIVE_BEHAVIOR: ${{ inputs.nativeBehavior || 'true' }}
-      REPETITIONS: ${{ inputs.repetitions || '8' }}
-      BUSY_THREADS: ${{ inputs.busyThreads || matrix.busyThreads }}
+      TESTS: ${{ inputs.tests }}
+      NATIVE_BEHAVIOR: ${{ inputs.nativeBehavior }}
+      REPETITIONS: ${{ inputs.repetitions }}
+      BUSY_THREADS: ${{ inputs.busyThreads }}
 
     steps:
       - uses: actions/checkout@v4
