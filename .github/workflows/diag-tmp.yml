@@ -1,0 +1,31 @@
+name: diag-tmp
+on:
+  push:
+    branches: [claude/project-thread-g2gyvk]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04]
+        driver: [ours, official]
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21', cache: gradle }
+      - if: runner.os == 'Linux'
+        run: sudo mkdir -p /snap/bin && sudo ln -sf "$(readlink -f "$(command -v firefox)")" /snap/bin/firefox
+      - shell: bash
+        run: |
+          extra=""; [ "${{ matrix.driver }}" = official ] && extra="-Pplaywright4j.referenceDriver=official"
+          for i in 1 2 3 4 5; do
+            ./gradlew -q :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=firefox -Pplaywright4j.browserChannel=moz-firefox $extra --tests '*TestBrowserContextHar.shouldGoBackToRedirectedNavigation' --no-daemon > run.log 2>&1 || true
+            echo "RESULT ${{ matrix.os }} ${{ matrix.driver }} $i $(grep -o 'failures="[0-9]*"' playwright-java-contract-tests/build/test-results/upstreamTestKnownLimitations/TEST-com.microsoft.playwright.TestBrowserContextHar.xml)"
+          done
