@@ -71,8 +71,9 @@ test output. The CI job uploads the `firefoxSmoke` reports and prints failures i
 outside a test method still fails the task and the reporting steps still run. On the Windows
 runners the task took 11.7 to 20.4 minutes for Camoufox with `nativeBehavior=true` (runs
 40254959794, 40258264595, 40258745412, 40267211801, 40256650996, 40266546059, 40266171805,
-40258681274, October 2026). The same commit varied by about 40 % between runners; every test is
-slower on a slow runner, because the GraalJS driver runs interpreted and is CPU-bound. The earlier
+40258681274, October 2026), so the slowest run took about 74 % longer than the fastest. Code
+without a runtime change varied about as much: 298f809 took 19.4 minutes and bd63373, which only
+changed a workflow file, 13.7 minutes. Every test is slower on a slow runner, because the GraalJS driver runs interpreted and is CPU-bound. The earlier
 20-minute limit cut off one otherwise passing run at 20.4 minutes.
 
 ## Historical upstream contract-test sweep
