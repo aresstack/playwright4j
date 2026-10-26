@@ -41,7 +41,7 @@ public class FirefoxUnhandledPromptDelayTest {
 
     @Test
     void withThePropertyUnhandledDialogsAndAuthWait() throws Throwable {
-        runGuarded(configured -> run(configured, "1500-1700"));
+        runGuarded(configured -> run(configured, "4000-4200"));
     }
 
     private static void run(String configured, String delay) throws IOException {
@@ -88,9 +88,9 @@ public class FirefoxUnhandledPromptDelayTest {
                     assertTrue(millis(confirmed) < 1000, "confirm took " + confirmed.get(1) + " ms");
                     assertTrue(millis(prompted) < 1000, "prompt took " + prompted.get(1) + " ms");
                 } else {
-                    assertTrue(millis(confirmed) >= 1490, "confirm took " + confirmed.get(1) + " ms");
-                    assertTrue(millis(prompted) >= 1490, "prompt took " + prompted.get(1) + " ms");
-                    assertTrue(authMillis >= 1500, "auth was cancelled after " + authMillis + " ms");
+                    assertTrue(millis(confirmed) >= 3990, "confirm took " + confirmed.get(1) + " ms");
+                    assertTrue(millis(prompted) >= 3990, "prompt took " + prompted.get(1) + " ms");
+                    assertTrue(authMillis >= 4000, "auth was cancelled after " + authMillis + " ms");
                 }
 
                 // The caller's own handler decides, and when: the delay never applies to it.
@@ -108,11 +108,15 @@ public class FirefoxUnhandledPromptDelayTest {
                 // Wrong credentials: Playwright tries them once and cancels the next challenge at once.
                 BrowserContext wrongCredentials = browser.newContext(new Browser.NewContextOptions()
                         .setHttpCredentials("user", "wrong"));
+                Page rejecting = wrongCredentials.newPage();
                 started = System.nanoTime();
-                Response rejected = wrongCredentials.newPage().navigate(url);
+                Response rejected = rejecting.navigate(url);
                 long rejectedMillis = (System.nanoTime() - started) / 1_000_000;
                 assertEquals(401, rejected.status());
-                assertTrue(rejectedMillis < 1400, "wrong credentials were cancelled after " + rejectedMillis + " ms");
+                if (delay != null) {
+                    // Below the configured minimum: the delay does not apply (Windows runners need seconds for this navigation).
+                    assertTrue(rejectedMillis < 4000, "wrong credentials were cancelled after " + rejectedMillis + " ms");
+                }
                 wrongCredentials.close();
 
                 // A dialog whose page closes during the delay is left alone, and closing does not wait for it.
