@@ -10,6 +10,8 @@ Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.
   Microsoft's `driver` artifact at build time.
 - Firefox pages are tabs (#27): `launchPersistentContext()` adopts the start tab instead of opening
   another one, `newPage()` opens a tab, and closing the last page leaves `pages()` empty as in Chrome.
+- Increased the Firefox smoke-test timeouts based on measured Camoufox runtimes: 30 minutes for
+  `firefoxSmoke` and 40 minutes for the `firefox-smoke` CI job (#75).
 
 ### Added
 
