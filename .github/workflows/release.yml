@@ -5,7 +5,8 @@ name: Release to Maven Central
 # installed Chrome, Edge and Firefox there. Triggered by a `v*` tag; version is derived from the tag.
 #
 # Release gate = the Chrome + Edge channel smokes (launch -> page -> evaluate -> close) plus the
-# Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and process exit), and the full
+# Firefox smoke over WebDriver BiDi (moz-firefox; context lifecycle and process exit), the Camoufox
+# smokes with and without playwright4j.bidi.nativeBehavior (camoufox-gate, as in ci.yml), and the full
 # upstream Playwright Java suite (upstream-gate) for Chrome, Edge and Firefox on Windows and Chrome
 # and Firefox on Linux, in eight shards per browser: green iff exactly the failures listed in
 # playwright-java-contract-tests/known-limitations/ fail (see problems.md). All are mandatory; a
@@ -125,8 +126,81 @@ jobs:
         shell: bash
         run: ./gradlew :playwright-java-contract-tests:knownLimitationsCheck -x :playwright-java-contract-tests:upstreamTestKnownLimitations -Pplaywright4j.browser=${{ matrix.browser }} -Pplaywright4j.browserChannel=${{ matrix.channel }} --no-daemon --stacktrace
 
+  # Camoufox (Firefox under another name, see docs/camoufox.md) with the two WebDriver BiDi fixes,
+  # with and without playwright4j.bidi.nativeBehavior: the same checks as ci.yml's firefox-smoke job.
+  camoufox-gate:
+    name: Camoufox gate (nativeBehavior=${{ matrix.nativeBehavior }})
+    runs-on: windows-2022
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        nativeBehavior: ["false", "true"]
+
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS: "1"
+      PLAYWRIGHT4J_REQUIRE_FIREFOX: "true"
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      # The script pins the release, checks the archive and both changed files.
+      - name: Install Camoufox (pinned, with the WebDriver BiDi fixes)
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\camoufox"
+          python docs/camoufox/hotpatch_omni.py --install $dir
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "CAMOUFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
+          "FIREFOX_EXECUTABLE=$dir\camoufox.exe" >> $env:GITHUB_ENV
+
+      - name: Release gate — Firefox smoke on Camoufox (moz-firefox, WebDriver BiDi)
+        shell: pwsh
+        run: ./gradlew.bat :playwright-java-contract-tests:firefoxSmoke "-Pplaywright4j.bidi.nativeBehavior=${{ matrix.nativeBehavior }}" --no-daemon --stacktrace
+
+      # CAMOU_CONFIG from setEnv, and one native window on the persistent start (#34).
+      - name: Release gate — Camoufox fingerprint smoke
+        shell: pwsh
+        env:
+          CAMOUFOX_BIDI_FIXES: "true"
+          PLAYWRIGHT4J_REQUIRE_CAMOUFOX: "true"
+        run: ./gradlew.bat :playwright-java-contract-tests:camoufoxSmoke "-Pplaywright4j.bidi.nativeBehavior=${{ matrix.nativeBehavior }}" --no-daemon --stacktrace
+
+      - name: Report leftover browser processes
+        if: always()
+        shell: pwsh
+        run: |
+          $left = Get-CimInstance Win32_Process -Filter "Name='firefox.exe' OR Name='camoufox.exe'"
+          if ($left) {
+            $left | Format-List Name, ProcessId, ParentProcessId, CreationDate, CommandLine
+            $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
+          else { Write-Host "No Firefox or Camoufox processes left." }
+
+      - name: Upload Camoufox gate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: camoufox-gate-nativeBehavior-${{ matrix.nativeBehavior }}
+          path: |
+            playwright-java-contract-tests/build/reports/tests/firefoxSmoke/**
+            playwright-java-contract-tests/build/test-results/firefoxSmoke/**
+            playwright-java-contract-tests/build/reports/tests/camoufoxSmoke/**
+            playwright-java-contract-tests/build/test-results/camoufoxSmoke/**
+
   publish:
-    needs: upstream-gate-check
+    needs: [upstream-gate-check, camoufox-gate]
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:
