@@ -23,7 +23,10 @@ setup. Only the `playwright4j` module is published; `playwright-java-contract-te
 2. It runs on **windows-2022**, where Chrome, Edge and Firefox are preinstalled. No C toolchain
    is needed; the project contains no native code.
 3. **Release gate:** the Chrome + Edge channel smokes (`channelSmoke`, launch → page →
-   evaluate → close), the Firefox WebDriver BiDi smoke (`firefoxSmoke`) and the upstream suite
+   evaluate → close), the Firefox WebDriver BiDi smoke (`firefoxSmoke`), the Camoufox smokes
+   (job `camoufox-gate`: `firefoxSmoke` and `camoufoxSmoke` on Camoufox installed by
+   `docs/camoufox/hotpatch_omni.py --install`, with `playwright4j.bidi.nativeBehavior` `false` and
+   `true`, as in `ci.yml`) and the upstream suite
    (jobs `upstream-gate` and `upstream-gate-check`: `knownLimitationsCheck` for Chrome, Edge and
    Firefox on Windows, Chrome and Firefox on Linux) must pass before anything is published.
 4. A `publishToMavenLocal` sanity assembles the jar / sources / javadoc / POM.
