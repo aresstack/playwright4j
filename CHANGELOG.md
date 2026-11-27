@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `FirefoxExtensions.install(page, path)` / `uninstall(page, id)`: installs an unsigned add-on
+  (folder or `.xpi`) into Firefox over Playwright's WebDriver BiDi session as a temporary add-on
+  (`webExtension.install`), for the installed Firefox where no add-on can be preinstalled.
+
 ## 0.3.0
 
 Built on Playwright Core `1.62.0`. Use it with Playwright Java `1.62.0`.

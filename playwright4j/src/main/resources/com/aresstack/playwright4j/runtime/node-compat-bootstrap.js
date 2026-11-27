@@ -6122,6 +6122,13 @@
     'network.getData',
     'storage.getCookies'
   ]);
+  // Add-ons for com.aresstack.playwright4j.bidi.FirefoxExtensions: a browser-wide command that runs
+  // no script in a page and leaves Playwright's pages and contexts alone; Firefox installs the add-on
+  // as a temporary one (unsigned, gone when the browser ends).
+  const BIDI_EXTENSION_COMMANDS = new Set([
+    'webExtension.install',
+    'webExtension.uninstall'
+  ]);
   const BIDI_DEFAULT_DATA_TIMEOUT_MS = 10000;
 
   function createBidiReadSession(SdkObject, context, target) {
@@ -6145,9 +6152,10 @@
           throw new Error('Firefox over WebDriver BiDi has no CDP session. Use '
             + 'com.aresstack.playwright4j.bidi.FirefoxBidi.open(page) for read-only BiDi access.');
         }
-        if (!BIDI_READ_COMMANDS.has(method)) {
+        if (!BIDI_READ_COMMANDS.has(method) && !BIDI_EXTENSION_COMMANDS.has(method)) {
           throw new Error('FirefoxBidi does not send ' + method + '; read-only commands: '
-            + Array.from(BIDI_READ_COMMANDS).join(', '));
+            + Array.from(BIDI_READ_COMMANDS).join(', ') + '; add-on commands: '
+            + Array.from(BIDI_EXTENSION_COMMANDS).join(', '));
         }
         params = Object.assign({}, params);
         if (method !== 'network.getData') {

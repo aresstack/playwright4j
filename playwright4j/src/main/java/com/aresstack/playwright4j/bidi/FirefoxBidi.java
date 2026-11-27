@@ -181,6 +181,11 @@ public final class FirefoxBidi implements AutoCloseable {
         session.detach();
     }
 
+    /** Sends one allowed command over the attached session ({@link FirefoxExtensions}). */
+    JsonObject send(String method, JsonObject params) {
+        return session.send(method, params);
+    }
+
     private static JsonObject locator(String type, String value) {
         JsonObject locator = new JsonObject();
         locator.addProperty("type", type);

@@ -102,6 +102,8 @@ tasks.register('firefoxSmoke', Test) {
         // keyboard.down/up/press with graphemes outside the US layout (#59).
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxKeyboardGraphemeTest'
         includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxBidiTest'
+        // Temporary add-ons over Playwright's BiDi session (webExtension.install).
+        includeTestsMatching 'com.aresstack.playwright4j.smoke.FirefoxExtensionsTest'
     }
 
     environment 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD', '1'
